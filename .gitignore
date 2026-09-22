@@ -1,0 +1,32 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Environments
+.env
+.venv
+env/
+venv/
+venv-back/
+venv-sim45/
+venv.zip
+ENV/
+env.bak/
+venv.bak/
+.idea/
+*.docx
+*.exe
+build/
+ShowConfigGUI/build/
+ShowConfigGUIRun/
+data/
+.claude/
+gg-test.py
+dist/
+Logs/

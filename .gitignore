@@ -11,7 +11,7 @@ __pycache__/
 # Environments
 .env
 .venv
-env/
+PythonScript/env/
 venv/
 venv-back/
 venv-sim45/

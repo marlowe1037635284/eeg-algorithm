@@ -17,3 +17,4 @@ raw = mne.io.read_raw_brainvision(file_path, preload=True)
 fig = raw.plot(n_channels=len(raw.ch_names), duration=5.0, scalings='auto')
 
 111
+222

@@ -424,9 +424,9 @@ Item {
     }
 
     Text {
-        x: 868
+        x: 872
         y: 87
-        text: qsTr("走纸速度")
+        text: qsTr("时基")
         color: Design.textPrimary
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -434,16 +434,27 @@ Item {
     }
 
     ToolField {
-        x: 948
+        x: 917
         y: 79
-        width: 93
-        value: "2mm/s"
+        width: 104
+        value: "50μV/div"
         showArrow: true
-        arrowX: 74
+        arrowX: 85
+    }
+
+    // 新版设计稿在时基后面加了一段括号说明（照抄）
+    Text {
+        x: 1037
+        y: 90
+        text: qsTr("(走纸速度：15mm/s)")
+        color: "#3b3b3b"
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
+        font.pixelSize: 16
     }
 
     Rectangle {
-        x: 1061
+        x: 1204
         y: 87
         width: 1
         height: 27
@@ -452,7 +463,7 @@ Item {
 
     // 滤波与后处理
     Rectangle {
-        x: 1081
+        x: 1224
         y: 79
         width: 137
         height: 43
@@ -642,8 +653,8 @@ Item {
 
     Repeater {
         model: [
-            { x: 1250, text: qsTr("采样率：256Hz") },
-            { x: 1357, text: qsTr("走纸速度：2mm/s") },
+            { x: 1134, text: qsTr("采样率：256Hz") },
+            { x: 1241, text: qsTr("时基：50μV/div(走纸速度：15mm/s)") },
             { x: 1483, text: qsTr("幅值：100μV/div") },
             { x: 1602, text: qsTr("数据点：1,024") },
             { x: 1703, text: qsTr("电极：10/16良好") },

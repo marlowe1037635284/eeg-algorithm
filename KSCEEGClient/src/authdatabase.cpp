@@ -176,10 +176,13 @@ QString AuthDatabase::settingValue(const QString &key) const
 
 QVariantMap AuthDatabase::lastLogin()
 {
+    const QString remember = settingValue(QString::fromLatin1(kSettingRemember));
     QVariantMap result;
     result[QStringLiteral("phone")] = settingValue(QString::fromLatin1(kSettingPhone));
     result[QStringLiteral("password")] = settingValue(QString::fromLatin1(kSettingPassword));
-    result[QStringLiteral("remember")] = settingValue(QString::fromLatin1(kSettingRemember)) == QStringLiteral("1");
+    result[QStringLiteral("remember")] = remember == QStringLiteral("1");
+    // 区分「从来没登录过」和「登录过但没勾记住密码」：前者按设计稿显示空表单 + 勾上记住密码
+    result[QStringLiteral("hasRecord")] = !remember.isEmpty();
     return result;
 }
 

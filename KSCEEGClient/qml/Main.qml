@@ -68,10 +68,6 @@ ApplicationWindow {
                 window.enterWorkbench()
                 authDatabase.saveLoginRecord(account, password, rememberPassword)
             }
-
-            onForgotPasswordRequested: {
-                errorMessage = qsTr("默认管理员：admin / admin123456")
-            }
         }
 
         Loader {
@@ -295,10 +291,12 @@ ApplicationWindow {
 
     Component.onCompleted: {
         // 账号库在 AuthDatabase 构造时就建好了表和默认管理员，这里只负责回填输入框。
-        // 上次登录的手机号总是回填；密码只有勾了「记住密码」才回填
+        //
+        // 从没登录过时按设计稿的样子：输入框留空显示占位提示、「记住密码」勾上；
+        // 登录过之后：手机号总是回填，密码只有勾了「记住密码」才回填。
         var last = authDatabase.lastLogin()
-        loginPage.rememberChecked = last.remember
-        loginPage.accountText = last.phone.length > 0 ? last.phone : "admin"
-        loginPage.passwordText = (last.remember && last.password.length > 0) ? last.password : "admin123456"
+        loginPage.rememberChecked = last.hasRecord ? last.remember : true
+        loginPage.accountText = last.phone
+        loginPage.passwordText = (last.remember && last.password.length > 0) ? last.password : ""
     }
 }

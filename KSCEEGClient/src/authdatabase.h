@@ -31,7 +31,7 @@ public:
     // 返回 { success, displayName, role, isNew }
     Q_INVOKABLE QVariantMap authenticateOrRegister(const QString &phone, const QString &password);
 
-    // 最近一次登录的信息：{ phone, password, remember }
+    // 最近一次登录的信息：{ phone, password, remember, hasRecord }
     Q_INVOKABLE QVariantMap lastLogin();
 
     // 记录最近一次登录（remember 为假时不保存密码）

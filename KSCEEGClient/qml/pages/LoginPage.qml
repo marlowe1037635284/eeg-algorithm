@@ -9,7 +9,6 @@ Item {
     id: loginPage
 
     signal loginRequested(string account, string password, bool rememberPassword)
-    signal forgotPasswordRequested()
     property string errorMessage: ""
     property alias accountText: accountInput.text
     property alias passwordText: passwordInput.text
@@ -228,16 +227,17 @@ Item {
         // 文案另起一个 Text 精确摆放 —— CheckBox 内部会额外留 padding，
         // 靠 leftPadding 对不齐设计稿的 x。
         Item {
-            x: 5
-            y: 328
-            width: 150
-            height: 21
+            // 新版设计稿把「记住密码」挪到了表单右侧，右对齐登录按钮（设计稿 x 537~628）
+            x: 258
+            y: 329
+            width: 91
+            height: 19
 
             CheckBox {
                 id: rememberPassword
                 objectName: "rememberPassword"
                 x: 0
-                y: 1
+                y: 0
                 width: 19
                 height: 19
                 checked: true
@@ -264,7 +264,7 @@ Item {
 
             Text {
                 x: 31
-                y: 0
+                y: -1
                 text: qsTr("记住密码")
                 color: "#262729"
                 font.family: Design.fontFamily
@@ -279,28 +279,6 @@ Item {
                 z: -1
                 cursorShape: Qt.PointingHandCursor
                 onClicked: rememberPassword.toggle()
-            }
-        }
-
-        Text {
-            id: forgotPassword
-            objectName: "forgotPassword"
-            x: 287
-            y: 328
-            text: qsTr("忘记密码")
-            color: forgotMouseArea.containsMouse ? Design.brand : Design.primary
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 15
-            renderType: Text.NativeRendering
-
-            MouseArea {
-                id: forgotMouseArea
-                anchors.fill: parent
-                anchors.margins: -8
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: loginPage.forgotPasswordRequested()
             }
         }
 

@@ -67,8 +67,8 @@ qt_add_executable(appKSCEEGClient
     # QML 门面与图像 provider
     src/acquisitionbridge.h
     src/acquisitionbridge.cpp
-    src/topomapimageprovider.h
-    src/topomapimageprovider.cpp
+    src/bridgeimageproviders.h
+    src/bridgeimageproviders.cpp
 )
 
 # Design.qml 是设计变量单例（画板尺寸、色板、字体名），需要在 QML 引擎里注册成 singleton，

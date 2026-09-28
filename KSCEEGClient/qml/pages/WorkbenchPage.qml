@@ -801,27 +801,35 @@ Item {
 
     // 底栏这几项原来全是写死的（采样率 256Hz、数据点 1,024、电极 10/16 良好…），
     // 与面板上的实际值互相矛盾。全部换成真实值；「电极良好数」没有数据源
-    // （协议只有 4 路无名字的阻抗，见 serialprotocol.h），所以整条去掉
-    Repeater {
-        model: [
-            { x: 1134, text: qsTr("采样率：") + Acq.sample_rate() + "Hz" },
-            { x: 1241, text: qsTr("时窗：") + Acq.timeWindow + qsTr("秒/屏") },
-            { x: 1483, text: Acq.yRangeUV > 0 ? qsTr("幅值：±") + Acq.yRangeUV + "μV"
-                                              : qsTr("幅值：自动") },
-            { x: 1602, text: qsTr("数据点：") + Acq.receivedFrames },
-            { x: 1703, text: Acq.statsText },
-            { x: 1821, text: qsTr("患者：") + root.patientName }
-        ]
+    // （协议只有 4 路无名字的阻抗，见 serialprotocol.h），所以整条去掉。
+    //
+    // 排布改成**从右往左依次排列**，不再是设计稿里那套写死的 x 坐标：
+    // 那些坐标是按「采样率：256Hz」这类固定短文本量的，而真实数值长度会变
+    // （「已收 12514 帧 · 已存 12514 帧 · 丢弃 0 字节」比它长一倍多），
+    // 按固定 x 排就会和后一项叠在一起、糊成一片
+    Row {
+        anchors.right: parent.right
+        anchors.rightMargin: 27
+        y: 1052
+        spacing: 22
 
-        delegate: Text {
-            required property var modelData
-            x: modelData.x
-            y: 1052
-            text: modelData.text
-            color: "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
+        Repeater {
+            model: [
+                qsTr("采样率：") + Acq.sample_rate() + "Hz",
+                qsTr("时窗：") + Acq.timeWindow + qsTr("秒/屏"),
+                Acq.yRangeUV > 0 ? qsTr("幅值：±") + Acq.yRangeUV + "μV" : qsTr("幅值：自动"),
+                Acq.statsText,
+                qsTr("患者：") + root.patientName
+            ]
+
+            delegate: Text {
+                required property string modelData
+                text: modelData
+                color: "#3b3b3b"
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+            }
         }
     }
     }

@@ -5,16 +5,20 @@ import KSCEEGClient
 // 设计稿里位于画板 (450,150)，尺寸 1109×884；本文件内的坐标都相对面板左上角，
 // 换算关系是「设计坐标 - (450,150)」。
 //
-// 波形数据来自 C++ 的 Acq（AcquisitionBridge）：每列取该列的最小/最大值
-// 做包络抽稀，比逐点连线更能反映真实幅度 —— 10 秒时窗下每列要压掉十几个点，
-// 只取一个点会把峰削平。
+// 波形本体由 C++ 画（AcquisitionBridge::render_wave_image），这里只留静态文字：
+// 通道名、量程标注、时间轴刻度、事件胶囊。绘制搬到 C++ 的原因见下面绘制区那段注释。
 Item {
     id: root
 
     property bool collecting: false
     property bool frozen: false
     property int channelCount: 16
-    property string eventTime: "02:16"
+
+    // 顶部的事件胶囊显示最近一条事件的墙钟时刻。原来这里是写死的「02:16」，
+    // 与事件面板那份假数据同源；现在两个面板共用 Acq.events，
+    // 没有事件时整个胶囊收起来，而不是挂一个不存在的时刻
+    readonly property var latestEvent: Acq.eventCount > 0
+                                       ? Acq.events[Acq.eventCount - 1] : null
 
     // 波形绘制区。设计稿里网格线从 (501,227) 起、宽 1037；
     // 通道中心从 242 开始每 106px 一个，正好落在每两条网格线之间。
@@ -29,17 +33,11 @@ Item {
     readonly property int laneStep: Math.floor(plotHeight / Math.max(1, channelCount))
     readonly property int firstLaneCenter: Math.floor(laneStep / 2)
 
-    // 有新数据且没冻结时才重绘。冻结是「画面停住」而不是「停止采集」，
-    // 数据照常进缓冲，解冻后立刻接上
-    Connections {
-        target: Acq
-        function onWaveRevisionChanged() {
-            if (!root.frozen)
-                plot.requestPaint()
-        }
+    // 冻结时把当前这一帧钉住（见下面 Image 的 source 绑定）
+    onFrozenChanged: {
+        if (frozen)
+            waveImage.frozenRevision = Acq.waveRevision
     }
-    onFrozenChanged: plot.requestPaint()
-    onChannelCountChanged: plot.requestPaint()
 
     Rectangle {
         anchors.fill: parent
@@ -87,6 +85,7 @@ Item {
         width: 79
         height: 29
         radius: 12
+        visible: root.latestEvent !== null
         color: "transparent"
         border.width: 1
         border.color: Design.bad
@@ -105,7 +104,7 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: root.eventTime
+            text: root.latestEvent !== null ? root.latestEvent.wallClock : ""
             color: Design.bad
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -114,114 +113,52 @@ Item {
     }
 
     // ---------- 波形绘制区 ----------
-    Canvas {
-        id: plot
+    //
+    // 图由 C++ 画好（onPaint 那套逻辑整体搬到了 AcquisitionBridge::render_wave_image），
+    // 这里只管贴。
+    //
+    // 为什么搬走：留在 Canvas 里画时实测一帧 76~120 ms —— 其中约 104 ms 花在
+    // Canvas 上（16 路 × 每列两个点共三万个 lineTo，走 JS 侧的软件光栅化），
+    // 另约 14 ms 花在把三万个 QVariant 跨线程搬进 JS 数组。GUI 线程因此只能跑到
+    // 十几帧，表现就是波形一卡一卡。同样的内容用 QPainter 画是毫秒级 ——
+    // 参考实现（pybindwithqt）正是这么做的，也正因如此它才顺。
+    //
+    // 通道名、量程标注、时间轴刻度仍然留在 QML：它们是静态文字，不随每帧变化，
+    // 画进图里反而每帧都要重排一遍字
+    Image {
+        id: waveImage
         x: root.plotX
         y: root.plotY
         width: root.plotWidth
         height: root.plotHeight
 
-        onWidthChanged: requestPaint()
-        onHeightChanged: requestPaint()
-        Component.onCompleted: requestPaint()
+        // 图像由 C++ 按这里的像素尺寸绘制，Stretch 就是 1:1 贴上
+        fillMode: Image.Stretch
+        // cache: false 是必须的：每来一帧就是一个新 URL，
+        // 不关缓存会为每个 revision 攒下一份纹理
+        cache: false
+        asynchronous: false
 
-        onPaint: {
-            var ctx = getContext("2d")
-            ctx.reset()
-            var w = width
-            var h = height
-            var step = root.laneStep
-            var first = root.firstLaneCenter
-            var lanes = Math.max(1, root.channelCount)
+        // 冻结时停在当前这一帧：冻结是「画面停住」而不是「停止采集」，
+        // 数据照常进缓冲，解冻后立刻接上。
+        // frozenRevision 由 root 的 onFrozenChanged 写入 —— frozen 是 root 的属性，
+        // 信号处理器必须声明在拥有该属性的对象上
+        property int frozenRevision: 0
+        source: "image://waveform/wave/" + (root.frozen ? frozenRevision : Acq.waveRevision)
 
-            // 横向网格：从第一个通道中心起，每半个通道一条。
-            // 条数跟着通道数走，固定成 15 条的话 16 通道时下半屏就没线了
-            ctx.strokeStyle = "rgba(0, 0, 0, 0.14)"
-            ctx.lineWidth = 1
-            for (var k = 0; k <= lanes * 2; ++k) {
-                var gy = Math.round(first + (step / 2) * k) + 0.5
-                if (gy > h)
-                    break
-                ctx.beginPath()
-                ctx.moveTo(0, gy)
-                ctx.lineTo(w, gy)
-                ctx.stroke()
-            }
-
-            // 纵向网格：设计稿里只有三条
-            var vlines = [186, 470, 743]
-            for (var v = 0; v < vlines.length; ++v) {
-                ctx.beginPath()
-                ctx.moveTo(vlines[v] + 0.5, 0)
-                ctx.lineTo(vlines[v] + 0.5, h - 1)
-                ctx.stroke()
-            }
-
-            // 事件竖线。原来这里是两条写死坐标的线（紫线 72.5、蓝线 170.5），
-            // 与事件面板那份假数据互不相干。现在两处共用 Acq.events：
-            // 标记一次事件，列表里多一行、波形上多一条线，位置按采集偏移算。
-            //
-            // 位置随窗口滑动：采集时刻 t 的事件，在当前窗口里离右端
-            // (now - t) 秒；超出窗口就不画
-            var now = Acq.elapsed_seconds()
-            var windowSeconds = Math.max(0.1, Acq.timeWindow)
-            var events = Acq.events
-            for (var e = 0; e < events.length; ++e) {
-                var event = events[e]
-                var age = now - event.offsetSeconds
-                if (age < 0 || age > windowSeconds)
-                    continue
-
-                var eventX = w * (1 - age / windowSeconds)
-                ctx.strokeStyle = event.dotColor
-                ctx.lineWidth = 1
-                ctx.beginPath()
-                ctx.moveTo(Math.round(eventX) + 0.5, 0)
-                ctx.lineTo(Math.round(eventX) + 0.5, h - 1)
-                ctx.stroke()
-
-                // 线顶端的标签块。宽度按字数估，够用即可 —— 画布上量文字宽度
-                // 要额外一次 measureText，而这里只有几个字
-                var chipWidth = 15 + event.label.length * 12
-                ctx.fillStyle = event.dotColor
-                ctx.fillRect(eventX - chipWidth / 2, 2, chipWidth, 17)
-                ctx.fillStyle = "#ffffff"
-                ctx.font = "12px sans-serif"
-                ctx.textAlign = "center"
-                ctx.textBaseline = "middle"
-                ctx.fillText(event.label, eventX, 11)
-            }
-            ctx.textAlign = "start"
-            ctx.textBaseline = "alphabetic"
-
-            // 各通道波形。数据来自 Acq.lane_samples()：每列依次给出该列的
-            // 最小值与最大值，顺次连线就得到包络正确的折线
-            var colors = Acq.channelColors
-            // 每个通道自己的量程。自动量程下各通道独立算，所以通道之间不能直接比大小
-            var maxHalf = step / 2 - 3
-            for (var c = 0; c < lanes; ++c) {
-                if (!Acq.is_channel_visible(c))
-                    continue
-
-                var center = first + step * c
-                var half = Math.max(2, maxHalf)
-                var scale = half / Math.max(1e-6, Acq.lane_range_uv(c))
-                var data = Acq.lane_samples(c, Math.round(w))
-
-                ctx.strokeStyle = colors[c % colors.length]
-                ctx.lineWidth = 1
-                ctx.beginPath()
-                for (var i = 0; i < data.length; ++i) {
-                    var x = Math.floor(i / 2)
-                    var y = center - data[i] * scale
-                    if (i === 0)
-                        ctx.moveTo(x, y)
-                    else
-                        ctx.lineTo(x, y)
-                }
-                ctx.stroke()
+        // 按物理像素画：波形是 1 像素宽的折线，若按逻辑像素画再被系统放大，
+        // 线条会发虚、细节糊掉。C++ 侧照这个尺寸出图，贴回来时正好是 1:1
+        function report_size() {
+            if (width > 0 && height > 0) {
+                // 200% 显示缩放下像素数是 4 倍，每帧的绘制与纹理上传会吃掉
+                // 大量 CPU 与显存带宽。封顶 1.5 倍
+                var scale = Math.min(Screen.devicePixelRatio, 1.5)
+                Acq.set_wave_view_size(Math.round(width * scale), Math.round(height * scale))
             }
         }
+        onWidthChanged: report_size()
+        onHeightChanged: report_size()
+        Component.onCompleted: report_size()
     }
 
     // ---------- 通道名 ----------
@@ -259,26 +196,25 @@ Item {
     }
 
     // ---------- 事件标签（波形顶部的小色块）----------
-    // 原来这里是两个写死的色块（「眼动」紫、「睁眼」蓝），指向两条同样写死的竖线。
-    // 现在改成画在 Canvas 里：标签跟着真实事件走，位置随显示窗口滑动，
-    // 划出窗口就一起消失。写死的色块做不到这件事
-    // （见上面 onPaint 里画事件竖线那一段）
+    // 事件竖线与它顶端的标签现在由 C++ 画进波形图里（见 render_wave_image）：
+    // 位置随显示窗口滑动，划出窗口就一起消失。原来这里有两个写死的色块
+    //（「眼动」紫、「睁眼」蓝），指向两条同样写死的竖线，与真实事件无关
 
     // ---------- 时间轴 ----------
+    // 设计稿那五个刻度写的是「-8s / -8s / -6s / -2s / 0s」—— 既有重复也对不上
+    // 默认的 2 秒时窗（看着像从别的画板抄过来的）。这里按当前时窗均分生成，
+    // 位置也按绘制区宽度算，切时窗时刻度跟着变
     Repeater {
-        model: [
-            { label: "-8s", offset: 43 },
-            { label: "-8s", offset: 228 },
-            { label: "-6s", offset: 512 },
-            { label: "-2s", offset: 785 },
-            { label: "0s", offset: 1081 }
-        ]
+        model: 5
 
         delegate: Text {
-            required property var modelData
-            x: modelData.offset
+            required property int index
+
+            readonly property real seconds: -Acq.timeWindow * (1 - index / 4)
+
+            x: root.plotX + root.plotWidth * index / 4 - width / 2
             y: 851
-            text: modelData.label
+            text: index === 4 ? "0s" : seconds.toFixed(1) + "s"
             color: Qt.rgba(0, 0, 0, 0.4)
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular

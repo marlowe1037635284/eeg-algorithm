@@ -153,12 +153,9 @@ public:
     Q_INVOKABLE void set_channel_visible(int channel, bool visible);
     Q_INVOKABLE void set_all_channels_visible(bool visible);
 
-    // 某通道在显示窗口内、按像素列抽稀后的样本（µV）。
-    // 返回 2*columns 个值：每列依次给出该列的最小值与最大值，
-    // Canvas 顺次连线就得到包络正确的折线（点远多于像素列时不会把峰削掉）
-    Q_INVOKABLE QVariantList lane_samples(int channel, int columns) const;
-    // 该通道当前的纵轴半量程（µV），QML 用它把 µV 换算成像素
-    Q_INVOKABLE double lane_range_uv(int channel) const;
+    // 波形显示区的像素尺寸。QML 在尺寸变化时报告，按它分配绘制用的 QImage
+    Q_INVOKABLE void set_wave_view_size(int width, int height);
+
     // 采样率，状态栏与「数据点」显示用
     Q_INVOKABLE int sample_rate() const { return m_sample_rate; }
     // 事件：手动标记，时间取自采集计时与墙钟
@@ -171,9 +168,14 @@ public:
     // 界面可以拿它显示进度；自检也靠它确认这条通路真的在进数据
     Q_INVOKABLE double raw_buffer_seconds() const;
 
-    // 提供地形图图像的 provider，所有权交给调用方
-    QQuickImageProvider *create_topo_image_provider();
+    // 取当前波形图。Qt 不保证 image provider 的调用线程，所以加锁并返回深拷贝
+    QImage current_wave_image() const;
+    // 同上，取当前地形图
     QImage current_topo_image() const;
+
+    // 创建 image provider；所有权交给调用方（main.cpp 转交给 QML 引擎）
+    QQuickImageProvider *create_wave_image_provider();
+    QQuickImageProvider *create_topo_image_provider();
 
     // ---- 属性读取 ----
     QStringList available_ports() const { return m_available_ports; }
@@ -299,8 +301,15 @@ private:
     void reset_channels(int channels);
     // 往显示缓冲追加一块样本。**可能在采集线程上被调用**，内部加锁
     void append_to_display(const SignalChunk &chunk);
-    // 由 m_display_timer 驱动：取显示缓冲的最新状态并重绘
+    // 由 m_display_timer 驱动：有新数据时才重画并自增 revision
     void render_wave();
+    // 把当前显示窗口画进 m_wave_image。锁内取快照、锁外绘制 ——
+    // 绘制要几毫秒，不该把采集线程挡在锁外面
+    void render_wave_image(const QVector<float> &window, int samples_per_channel);
+    // 该通道在给定窗口内的半量程（µV）。固定量程直接返回配置值，
+    // 自动量程按窗口内绝对值峰值向上取到整齐档位
+    double lane_range_uv(int channel, const QVector<float> &window,
+                         int samples_per_channel) const;
     // 把当前滤波参数与会话参数下发给算法线程
     void push_processing_config();
     void push_session_config();
@@ -336,6 +345,14 @@ private:
     int m_wave_revision = 0;
     double m_time_window = 2.0;
     int m_y_range_uv = 100;
+
+    // 波形图。与实际显示区一一对应（QML 报物理像素，贴回去正好 1:1）。
+    // image provider 的调用线程由 Qt 决定，所以加锁并交出深拷贝
+    QSize m_wave_view_size;
+    QImage m_wave_image;
+    mutable QMutex m_wave_mutex;
+    // 本帧用的窗口快照。做成成员是为了每帧重画时不必重新分配
+    mutable QVector<float> m_lane_window;
 
     QTimer m_display_timer;
     QTimer m_topo_timer;

@@ -6,7 +6,10 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFileInfo>
+#include <QFontMetricsF>
 #include <QMutexLocker>
+#include <QPainter>
+#include <QPolygonF>
 #include <QThread>
 #include <QSerialPortInfo>
 #include <QStandardPaths>
@@ -19,7 +22,7 @@
 #include "eegmontage.h"
 #include "pythonengine.h"
 #include "serialprotocol.h"
-#include "topomapimageprovider.h"
+#include "bridgeimageproviders.h"
 
 #include <algorithm>
 #include <cmath>
@@ -116,11 +119,17 @@ QRgb palette_color(double normalized)
 //
 // 必须这么做：算法算出的头部半径是「最远电极距离 × 1.15」，而电极坐标是按最大
 // 绝对值归一化的（见算法侧 topography_core.py）。本项目的蒙太奇算下来半径约
-// 1.20，**大于网格半宽 1** —— 直接把网格铺满整张图的话，头型会被图片四条边裁掉，
-// 画出来是一个四角略圆的方块，叠在设计稿的圆形底图上就是个方形色块。
+// 1.20，**大于网格半宽 1** —— 网格本身装不下这个头。
 //
-// 半径直接从掩膜取：掩膜是圆，网格里离中心最远的那个掩膜内点到中心的距离
-// 就是半径（网格四角在半径之外，所以这个最大值不会被边界截断）
+// 后果是掩膜被网格的四条边裁掉了：掩膜 = 半径 1.2 的圆 ∩ [-1,1]² 的方块
+// = 一个**八边形**。照它原样画出来就是个方块，叠在设计稿的圆形底图上很显眼。
+//
+// 所以这里按「先定圆、再取样」来画：
+//   · 圆外 → 透明（这才是「头外」）
+//   · 圆内 → 采样网格；网格够不到的地方（圆周方向上超界的那一圈窄带）
+//     按最近的边界点取值
+// 半径直接从掩膜里量：掩膜是圆，网格里离中心最远的掩膜内点到中心的距离就是
+// 半径（网格四角在半径之外，所以取最大值不会被边界截断）
 QImage render_topography(const TopographyFrame &frame, int size)
 {
     QImage image(size, size, QImage::Format_ARGB32_Premultiplied);
@@ -165,23 +174,30 @@ QImage render_topography(const TopographyFrame &frame, int size)
 
     for (int y = 0; y < size; ++y)
     {
-        // 输出像素 → 归一化坐标（把 ±radius 铺到 ±half）→ 网格下标
+        // 输出像素 → 归一化坐标（把 ±radius 铺到 ±half）
         const double ny = (static_cast<double>(y) - half) / half * radius;
-        const int grid_y = std::clamp(
-            static_cast<int>(std::lround((ny + 1.0) / 2.0 * last_y)), 0, frame.grid_height - 1);
 
         QRgb *line = reinterpret_cast<QRgb *>(image.scanLine(y));
         for (int x = 0; x < size; ++x)
         {
             const double nx = (static_cast<double>(x) - half) / half * radius;
+
+            // 头外保持透明。判据是**圆的方程**而不是掩膜查表：
+            // 掩膜只覆盖网格范围，而头圆在四个轴向超出网格，
+            // 那些位置查不到掩膜，按圆判断才画得出完整的圆形头型
+            if (nx * nx + ny * ny > radius * radius)
+            {
+                continue;
+            }
+
+            // 圆内但网格够不到的地方（圆周方向上超界的那一圈）按边界夹取。
+            // 那里没有任何电极，外推出来的值只是让头型完整，没有诊断含义
+            const int grid_y = std::clamp(
+                static_cast<int>(std::lround((ny + 1.0) / 2.0 * last_y)), 0, frame.grid_height - 1);
             const int grid_x = std::clamp(
                 static_cast<int>(std::lround((nx + 1.0) / 2.0 * last_x)), 0, frame.grid_width - 1);
             const int index = grid_y * frame.grid_width + grid_x;
 
-            if (index < frame.head_mask.size() && !frame.head_mask.at(index))
-            {
-                continue;   // 头外：保持透明
-            }
             if (index >= frame.grid_values.size())
             {
                 continue;
@@ -757,11 +773,10 @@ void AcquisitionBridge::append_to_display(const SignalChunk &chunk)
 
 void AcquisitionBridge::render_wave()
 {
-    // 只在显示缓冲真的变了时才自增。
+    // 只在显示缓冲真的变了时才重画。
     //
-    // 不能无条件每 33ms 自增一次：串口没开、或采集已停时数据根本不进来，
-    // 那样 QML 会老老实实每秒重绘 30 次同样的内容 —— 16 个通道、每通道
-    // 两千多个点的 Canvas 重绘，白烧 CPU 还会让界面在空闲时也发热
+    // 不能无条件每 33ms 画一次：串口没开、或采集已停时数据根本不进来，
+    // 那样会白烧 CPU 让界面在空闲时也发热
     const qint64 generation = m_display_generation.load(std::memory_order_relaxed);
     if (generation == m_rendered_generation)
     {
@@ -769,118 +784,234 @@ void AcquisitionBridge::render_wave()
     }
     m_rendered_generation = generation;
 
+    // 锁内取窗口快照、锁外绘制。绘制要几毫秒，握着锁画会把采集线程挡在外面 ——
+    // 而采集线程被挡住意味着串口缓冲积压，那正是要避免的事
+    int samples_per_channel = 0;
+    {
+        const QMutexLocker locker(&m_display_mutex);
+        const int wanted = std::min(m_display_filled,
+                                   static_cast<int>(m_time_window * m_sample_rate));
+        if (wanted > 0 && m_display_capacity > 0)
+        {
+            int start = (m_display_head - wanted) % m_display_capacity;
+            if (start < 0)
+            {
+                start += m_display_capacity;
+            }
+
+            samples_per_channel = wanted;
+            m_lane_window.resize(static_cast<qsizetype>(wanted) * eeg_montage::kChannelCount);
+            for (int i = 0; i < wanted; ++i)
+            {
+                const int slot = (start + i) % m_display_capacity;
+                std::memcpy(m_lane_window.data()
+                                + static_cast<qsizetype>(i) * eeg_montage::kChannelCount,
+                            m_display_data.constData()
+                                + static_cast<qsizetype>(slot) * eeg_montage::kChannelCount,
+                            static_cast<size_t>(eeg_montage::kChannelCount) * sizeof(float));
+            }
+        }
+    }
+
+    render_wave_image(m_lane_window, samples_per_channel);
+
     ++m_wave_revision;
     emit waveRevisionChanged();
 }
 
-QVariantList AcquisitionBridge::lane_samples(int channel, int columns) const
+void AcquisitionBridge::render_wave_image(const QVector<float> &window, int samples_per_channel)
 {
-    QVariantList result;
-    // 夹一下上限：columns 由 QML 传进来，极大值时 columns * 2 是有符号溢出（UB），
-    // 而 reserve 抛出的 bad_alloc 会穿过 QML 边界把进程带崩
-    columns = std::clamp(columns, 0, 8192);
-    if (columns == 0)
+    const QMutexLocker locker(&m_wave_mutex);
+    if (m_wave_view_size.isEmpty() || m_wave_view_size.width() < 8 || m_wave_view_size.height() < 8)
     {
-        return result;
+        return;
     }
+
+    const int width = m_wave_view_size.width();
+    const int height = m_wave_view_size.height();
+    if (m_wave_image.size() != m_wave_view_size)
+    {
+        m_wave_image = QImage(m_wave_view_size, QImage::Format_ARGB32_Premultiplied);
+    }
+    // 背景保持透明：面板底色由 QML 那边的 Rectangle 提供，
+    // 这里画死一个颜色的话，浅色主题下会和设计稿对不上
+    if (m_wave_image.isNull())
+    {
+        return;
+    }
+    m_wave_image.fill(Qt::transparent);
+
+    QPainter painter(&m_wave_image);
+
+    const int lanes = std::max(1, m_channel_count);
+    const double step = static_cast<double>(height) / lanes;
+    const double half = std::max(2.0, step / 2.0 - 3.0);
+    // 文字与线宽按高度等比缩放：图是按物理像素出的，高 DPI 下要跟着放大，
+    // 否则线条只有半个像素、字小得看不清
+    const double ui_scale = static_cast<double>(height) / 770.0;
+
+    // ---- 每个通道一个独立泳道：外框 + 零线 ----
+    // 抗锯齿关掉：1 像素的直线开了抗锯齿会糊成两像素的灰线
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    for (int c = 0; c < lanes; ++c)
+    {
+        const double top = step * c;
+        painter.setPen(QPen(QColor(0, 0, 0, 26), 1));
+        painter.drawRect(QRectF(0.5, top + 0.5, width - 1.0, step - 1.0));
+
+        // 零线：波形的基准，也是判断基线漂移的依据
+        painter.setPen(QPen(QColor(0, 0, 0, 40), 1));
+        const double center = top + step / 2.0;
+        painter.drawLine(QPointF(0.0, center), QPointF(width, center));
+    }
+
+    // ---- 纵向时间网格。设计稿里只有三条，位置按宽度等比放 ----
+    painter.setPen(QPen(QColor(0, 0, 0, 36), 1));
+    static const double kGridColumns[] = {186.0 / 1037.0, 470.0 / 1037.0, 743.0 / 1037.0};
+    for (const double fraction : kGridColumns)
+    {
+        const double x = std::round(width * fraction) + 0.5;
+        painter.drawLine(QPointF(x, 0.0), QPointF(x, static_cast<double>(height)));
+    }
+
+    // ---- 事件竖线 + 顶部标签 ----
+    // 位置随窗口滑动：采集时刻 t 的事件，在当前窗口里离右端 (now - t) 秒，
+    // 划出窗口就不画
+    if (m_collect_timer.isValid() && !m_events.isEmpty())
+    {
+        const double now = static_cast<double>(m_collect_timer.elapsed()) / 1000.0;
+        const double window_seconds = std::max(0.1, m_time_window);
+        QFont label_font = painter.font();
+        label_font.setPixelSize(std::max(8, static_cast<int>(std::round(12.0 * ui_scale))));
+
+        for (const QVariant &entry : m_events)
+        {
+            const QVariantMap event = entry.toMap();
+            const double age = now - event.value(QStringLiteral("offsetSeconds")).toDouble();
+            if (age < 0.0 || age > window_seconds)
+            {
+                continue;
+            }
+
+            const double x = width * (1.0 - age / window_seconds);
+            const QColor color(event.value(QStringLiteral("dotColor")).toString());
+            const QString label = event.value(QStringLiteral("label")).toString();
+
+            painter.setPen(QPen(color, 1));
+            painter.drawLine(QPointF(std::round(x) + 0.5, 0.0),
+                             QPointF(std::round(x) + 0.5, static_cast<double>(height)));
+
+            painter.setFont(label_font);
+            const QFontMetricsF metrics(label_font);
+            const double chip_width = metrics.horizontalAdvance(label) + 12.0 * ui_scale;
+            const double chip_height = metrics.height();
+            const QRectF chip(x - chip_width / 2.0, 2.0 * ui_scale, chip_width, chip_height);
+
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(color);
+            painter.drawRoundedRect(chip, 4.0 * ui_scale, 4.0 * ui_scale);
+            painter.setPen(Qt::white);
+            painter.drawText(chip, Qt::AlignCenter, label);
+            painter.setRenderHint(QPainter::Antialiasing, false);
+        }
+    }
+
+    // ---- 波形 ----
+    if (samples_per_channel <= 1 || window.isEmpty())
+    {
+        return;   // 还没数据：只留空泳道
+    }
+
+    // 折线开抗锯齿。实测它几乎不花时间（开 13.2ms / 关 13.4ms，Qt 光栅引擎
+    // 的 AA 走的是同一套快速路径），而关掉的话斜线段会有肉眼可见的台阶 ——
+    // 这条波形是给人看形状的，不值得为省不到 1% 换掉画质
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
 
     const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
-    if (channel < 0 || channel >= indices.size())
-    {
-        return result;
-    }
-    // 显示通道号 → 设备通道号。8 档挑的是 Fp1 Fp2 F3 F4 C3 C4 P3 P4 而不是前 8 路，
-    // 这样界面上的通道名与设计稿一致（见 eeg_montage::display_channel_indices）
-    const int source_channel = indices.at(channel);
+    const QStringList colors = channel_colors();
 
-    const QMutexLocker locker(&m_display_mutex);
-    const int wanted = std::min(m_display_filled,
-                               static_cast<int>(m_time_window * m_sample_rate));
-    if (wanted <= 0)
+    QVector<QPointF> points(width * 2);
+    for (int c = 0; c < lanes && c < indices.size(); ++c)
     {
-        return result;
-    }
-
-    int start = (m_display_head - wanted) % m_display_capacity;
-    if (start < 0)
-    {
-        start += m_display_capacity;
-    }
-
-    result.reserve(columns * 2);
-    for (int column = 0; column < columns; ++column)
-    {
-        // 每一列覆盖的样本区间。用整数除法，最后一列兜住余数
-        const int begin = static_cast<int>(static_cast<qint64>(column) * wanted / columns);
-        const int end = std::max(begin + 1,
-                                 static_cast<int>(static_cast<qint64>(column + 1) * wanted / columns));
-
-        float minimum = std::numeric_limits<float>::max();
-        float maximum = std::numeric_limits<float>::lowest();
-        for (int i = begin; i < end && i < wanted; ++i)
+        if (!is_channel_visible(c))
         {
-            const int slot = (start + i) % m_display_capacity;
-            const float value =
-                m_display_data.at(static_cast<qsizetype>(slot) * eeg_montage::kChannelCount
-                                  + source_channel);
-            minimum = std::min(minimum, value);
-            maximum = std::max(maximum, value);
+            continue;
         }
-        if (minimum > maximum)
+
+        const int source_channel = indices.at(c);
+        const double top = step * c;
+        const double center = top + step / 2.0;
+        // 每个样本都钳在自己泳道内。真实 EEG 的运动伪迹轻松超过固定量程，
+        // 不钳的话超量程部分会画到相邻几路的地盘上，看着就是几路叠成一团
+        const double low_limit = top + 2.0;
+        const double high_limit = top + step - 2.0;
+        const double range = lane_range_uv(source_channel, window, samples_per_channel);
+        const double scale = half / range;
+
+        // 每列取该列的最小/最大值，两点连成一段 —— 点远多于像素列时
+        // 才能保住肉眼要看的尖峰，否则正弦会被抽成锯齿
+        // 一次分配、按下标写入。这份缓冲是成员而不是每帧新建：
+        // 16 路 × 两千多个点，每帧重新分配一次是白白的开销
+        const float *samples = window.constData();
+        for (int x = 0; x < width; ++x)
         {
-            minimum = 0.0f;
-            maximum = 0.0f;
+            const int begin =
+                static_cast<int>(static_cast<qint64>(x) * samples_per_channel / width);
+            const int end = std::max(
+                begin + 1,
+                static_cast<int>(static_cast<qint64>(x + 1) * samples_per_channel / width));
+
+            float minimum = std::numeric_limits<float>::max();
+            float maximum = std::numeric_limits<float>::lowest();
+            for (int i = begin; i < end && i < samples_per_channel; ++i)
+            {
+                const float value = samples[static_cast<qsizetype>(i) * eeg_montage::kChannelCount
+                                            + source_channel];
+                minimum = std::min(minimum, value);
+                maximum = std::max(maximum, value);
+            }
+            if (minimum > maximum)
+            {
+                minimum = 0.0f;
+                maximum = 0.0f;
+            }
+
+            points[x * 2] = QPointF(x, std::clamp(center - minimum * scale, low_limit, high_limit));
+            points[x * 2 + 1] = QPointF(x, std::clamp(center - maximum * scale, low_limit, high_limit));
         }
-        // 每列给出最小与最大两个点，Canvas 顺次连线就得到包络正确的折线：
-        // 只给一个点的话，10 秒时窗下每列要压掉十几个样本，峰会被削平
-        result.append(static_cast<double>(minimum));
-        result.append(static_cast<double>(maximum));
+
+        painter.setPen(QPen(QColor(colors.value(c)), 1.0 * ui_scale));
+        painter.drawPolyline(points.constData(), points.size());
     }
-    return result;
 }
 
-double AcquisitionBridge::lane_range_uv(int channel) const
+double AcquisitionBridge::lane_range_uv(int source_channel, const QVector<float> &window,
+                                        int samples_per_channel) const
 {
     if (m_y_range_uv > 0)
     {
         return m_y_range_uv;
     }
+    if (samples_per_channel <= 0 || window.isEmpty())
+    {
+        return 100.0;
+    }
 
     // 自动量程：取窗口内绝对值峰值，向上取到一个整齐档位。
     // 每个通道各自算，所以自动量程下通道之间不能直接比大小
-    const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
-    if (channel < 0 || channel >= indices.size())
-    {
-        return 100.0;
-    }
-    const int source_channel = indices.at(channel);
-
-    const QMutexLocker locker(&m_display_mutex);
-    const int wanted = std::min(m_display_filled,
-                               static_cast<int>(m_time_window * m_sample_rate));
-    if (wanted <= 0)
-    {
-        return 100.0;
-    }
-
-    int start = (m_display_head - wanted) % m_display_capacity;
-    if (start < 0)
-    {
-        start += m_display_capacity;
-    }
-
     float peak = 0.0f;
-    for (int i = 0; i < wanted; ++i)
+    for (int i = 0; i < samples_per_channel; ++i)
     {
-        const int slot = (start + i) % m_display_capacity;
-        peak = std::max(peak, std::fabs(m_display_data.at(
-                                  static_cast<qsizetype>(slot) * eeg_montage::kChannelCount
-                                  + source_channel)));
+        peak = std::max(peak, std::fabs(window.at(static_cast<qsizetype>(i)
+                                                    * eeg_montage::kChannelCount
+                                                + source_channel)));
     }
 
-    static const double steps[] = {10.0, 25.0, 50.0, 100.0, 200.0, 500.0,
-                                   1000.0, 2000.0, 5000.0, 10000.0};
-    for (const double step : steps)
+    static const double kSteps[] = {10.0, 25.0, 50.0, 100.0, 200.0, 500.0,
+                                    1000.0, 2000.0, 5000.0, 10000.0};
+    for (const double step : kSteps)
     {
         if (peak <= step)
         {
@@ -888,6 +1019,41 @@ double AcquisitionBridge::lane_range_uv(int channel) const
         }
     }
     return 10000.0;
+}
+
+void AcquisitionBridge::set_wave_view_size(int width, int height)
+{
+    const QSize size(std::max(0, width), std::max(0, height));
+    if (size == m_wave_view_size)
+    {
+        return;
+    }
+    const QMutexLocker locker(&m_wave_mutex);
+    m_wave_view_size = size;
+    // 尺寸变了，下一帧重建图像。这里不主动画：等下一个数据节拍，
+    // 免得窗口拖动时每移动一像素就画一次整幅波形
+}
+
+QImage AcquisitionBridge::current_wave_image() const
+{
+    const QMutexLocker locker(&m_wave_mutex);
+    if (m_wave_image.isNull())
+    {
+        // 还没画过。**不能返回空 QImage**：QML 的 Image 会打一条
+        // "Failed to get image from provider"，而这是正常状态（刚启动、
+        // 或显示区尺寸还没报上来）。给一张全透明图，界面上什么都不会画
+        QImage placeholder(std::max(1, m_wave_view_size.width()),
+                           std::max(1, m_wave_view_size.height()),
+                           QImage::Format_ARGB32_Premultiplied);
+        placeholder.fill(Qt::transparent);
+        return placeholder;
+    }
+    return m_wave_image.copy();
+}
+
+QQuickImageProvider *AcquisitionBridge::create_wave_image_provider()
+{
+    return new WaveformImageProvider(this);
 }
 
 void AcquisitionBridge::set_channel_count(int count)
@@ -1675,23 +1841,39 @@ bool wait_bridge(const std::function<bool()> &condition, int timeout_ms)
     return condition();
 }
 
-// 通道 c 在 columns 列抽稀后的值域宽度。全 0（没数据）与有波动要能分开 ——
-// 「数组非空」是不够的：缓冲没被填过时 lane_samples 也会返回一串 0
-double lane_span(const QVariantList &samples)
+// 某一泳道里已绘制像素的纵向跨度（像素）。
+//
+// 直接验渲染结果而不是验中间数据：这样连「取窗口 → 抽稀 → 钳泳道 → 画线」
+// 整条绘制路径一起覆盖到。平线或没数据时跨度接近 0，有真实波动时会明显张开。
+//
+// 采样列取中间一段，避开左右边框；纵向网格线也在这段之外
+int lane_pixel_span(const QImage &image, int lane, int lanes)
 {
-    if (samples.isEmpty())
+    if (image.isNull() || lanes <= 0 || lane < 0 || lane >= lanes)
     {
-        return 0.0;
+        return 0;
     }
-    double minimum = std::numeric_limits<double>::max();
-    double maximum = std::numeric_limits<double>::lowest();
-    for (const QVariant &value : samples)
+    const int top = image.height() * lane / lanes;
+    const int bottom = image.height() * (lane + 1) / lanes;
+    const int x0 = image.width() / 4;
+    const int x1 = image.width() * 3 / 4;
+
+    int min_y = image.height();
+    int max_y = -1;
+    for (int y = top; y < bottom; ++y)
     {
-        const double number = value.toDouble();
-        minimum = std::min(minimum, number);
-        maximum = std::max(maximum, number);
+        const QRgb *line = reinterpret_cast<const QRgb *>(image.constScanLine(y));
+        for (int x = x0; x < x1; ++x)
+        {
+            if (qAlpha(line[x]) > 0)
+            {
+                min_y = std::min(min_y, y);
+                max_y = std::max(max_y, y);
+                break;
+            }
+        }
     }
-    return maximum - minimum;
+    return max_y < min_y ? 0 : max_y - min_y;
 }
 
 } // namespace
@@ -1710,6 +1892,10 @@ int run_bridge_selfcheck(PythonEngine &engine)
 
     {
         AcquisitionBridge bridge(&engine);
+
+        // 报告显示区尺寸。不报的话渲染会直接早退（没有尺寸就不知道画多大），
+        // 也正是界面第一次布局时会做的事
+        bridge.set_wave_view_size(1037, 770);
 
         // 收集日志：ASR 这类「不报错但要能看出有没有生效」的状态全靠它
         QStringList message_log;
@@ -1751,10 +1937,11 @@ int run_bridge_selfcheck(PythonEngine &engine)
                                   .arg(bridge.session_state()));
 
         // ---- 波形：数值必须真的有波动 ----
-        check_bridge(wait_bridge(
-                         [&] { return lane_span(bridge.lane_samples(0, 128)) > 1e-6; }, 20000),
-                     QStringLiteral("通道 0 的波形有真实波动（峰峰值 %1 µV）")
-                         .arg(lane_span(bridge.lane_samples(0, 128)), 0, 'f', 2));
+        const bool wave_drawn = wait_bridge(
+            [&] { return lane_pixel_span(bridge.current_wave_image(), 0, 16) > 4; }, 20000);
+        check_bridge(wave_drawn,
+                     QStringLiteral("波形已画出且有真实波动（泳道内像素跨度 %1 px）")
+                         .arg(lane_pixel_span(bridge.current_wave_image(), 0, 16)));
 
         // 通道档位：16 与 8 给出的通道名必须不同 —— 8 档挑的是
         // Fp1 Fp2 F3 F4 C3 C4 P3 P4，而不是前 8 路
@@ -1836,7 +2023,8 @@ int run_bridge_selfcheck(PythonEngine &engine)
         // ---- 滤波参数下发后仍有数据（不能把链路打断）----
         bridge.set_low_pass_high_hz(45.0);
         check_bridge(
-            wait_bridge([&] { return lane_span(bridge.lane_samples(0, 64)) > 1e-6; }, 20000),
+            wait_bridge(
+                [&] { return lane_pixel_span(bridge.current_wave_image(), 0, 16) > 4; }, 20000),
             QStringLiteral("改滤波参数后波形仍在更新"));
 
         // ---- ASR 的数据来源必须真的接上 ----

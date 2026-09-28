@@ -63,8 +63,10 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
 
     // 产品名要显式设置：QStandardPaths 的 AppLocalDataLocation 会以它为一级目录，
-    // 日志与采集记录的落盘位置都由它决定，不设的话会退化成可执行文件名
-    QCoreApplication::setOrganizationName(QStringLiteral("EEG-KSC"));
+    // 日志与采集记录的落盘位置都由它决定，不设的话会退化成可执行文件名。
+    //
+    // **组织名刻意不设**：Qt 这个位置是「组织/应用」两级，两个都设成 EEG-KSC 的话
+    // 会得到 %LOCALAPPDATA%\EEG-KSC\EEG-KSC\... 这种重复一层的路径
     QCoreApplication::setApplicationName(QStringLiteral("EEG-KSC"));
 
     // --selfcheck：不启界面，在控制台把两条最容易出错、又最难在界面上看出来的
@@ -153,6 +155,11 @@ int main(int argc, char *argv[])
         AcquisitionBridge bridge(&python_engine);
 
         QQmlApplicationEngine engine;
+        // 波形与地形图都由 C++ 画好交给 Image 贴。波形留在 QML Canvas 里画的话
+        // 实测一帧要 76~120ms（三万个点全走 JS 侧的软件光栅化），界面只能跑到
+        // 十几帧；同样的内容 QPainter 画是毫秒级
+        engine.addImageProvider(QStringLiteral("waveform"),
+                                bridge.create_wave_image_provider());
         engine.addImageProvider(QStringLiteral("topography"),
                                 bridge.create_topo_image_provider());
         // 注入成 QML 里的 Acq。用 setContextProperty 而不是注册 QML 类型：

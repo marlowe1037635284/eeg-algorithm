@@ -74,6 +74,9 @@ CMakeLists.txt.user*
 *.dll
 *.exe
 
+# 本地账号库（含明文密码，不进版本库）
+eeg-ksc.db
+
 # Directories with generated files
 .moc/
 .obj/
@@ -82,3 +85,4 @@ CMakeLists.txt.user*
 .uic/
 /build*/
 /.qtcreator/
+/build/

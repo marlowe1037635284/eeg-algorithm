@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Controls.Basic
+import KSCEEGClient
 
 // 「频谱分析」面板。
 // 设计稿里位于画板 (1572,754)，尺寸 331×280；本文件坐标 = 设计坐标 - (1572,754)。
@@ -9,6 +11,12 @@ Item {
     property bool frozen: false
     property real waveformPhase: 0
     property string channelName: "Fp1"
+    property bool channelMenuOpen: false
+    // 选中的频段（下面那排数值块），点一下切换
+    property int selectedBand: 2
+
+    // 通道序号：切换通道时曲线形态也跟着变，不然点了没反馈
+    readonly property int channelIndex: Math.max(0, Design.channelNames.indexOf(channelName))
 
     // 采集时让曲线轻微起伏，冻结/停止时归于静态（形状按设计稿的三个峰）
     readonly property bool live: collecting && !frozen
@@ -36,7 +44,8 @@ Item {
         y: 8
         text: qsTr("频谱分析")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -47,7 +56,8 @@ Item {
         verticalAlignment: Text.AlignVCenter
         text: qsTr("通道")
         color: Design.textSecondary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -67,17 +77,84 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: root.channelName
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
 
         Image {
             x: 62
             anchors.verticalCenter: parent.verticalCenter
-            width: 7
+            width: 7.47
             height: 7
             rotation: 90
-            source: "assets/icons/icon-arrow-down.svg"
+            source: Design.assetRoot + "icons/icon-arrow-down.svg"
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.channelMenuOpen = !root.channelMenuOpen
+
+            ToolTip.visible: containsMouse
+            ToolTip.text: qsTr("切换显示通道")
+            ToolTip.delay: 400
+        }
+    }
+
+    // 通道下拉列表（盖在面板内容之上）
+    Rectangle {
+        x: 248
+        y: 40
+        width: 71
+        height: Design.channelNames.length * 26 + 8
+        radius: 8
+        color: "#ffffff"
+        border.width: 1
+        border.color: Design.panelBorder
+        visible: root.channelMenuOpen
+        z: 10
+
+        Column {
+            anchors.fill: parent
+            anchors.margins: 4
+            spacing: 0
+
+            Repeater {
+                model: Design.channelNames
+
+                delegate: Rectangle {
+                    required property string modelData
+
+                    width: parent.width
+                    height: 26
+                    radius: 5
+                    color: (root.channelName === modelData || channelItemMouse.containsMouse)
+                           ? Design.primarySoft : "transparent"
+
+                    Text {
+                        anchors.centerIn: parent
+                        text: modelData
+                        color: root.channelName === modelData ? Design.primary : "#3b3b3b"
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 13
+                    }
+
+                    MouseArea {
+                        id: channelItemMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                            root.channelName = modelData
+                            root.channelMenuOpen = false
+                            curve.requestPaint()
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -129,10 +206,12 @@ Item {
             }
 
             // 三个峰的 PSD 形状（δ / α / β 主峰），与设计稿的曲线走势一致
+            // 各通道主峰位置略有差异，切通道时曲线会跟着变
+            var shift = (root.channelIndex % 4) * 0.018
             function psd(x) {
-                var p1 = 34 * Math.exp(-Math.pow((x - w * 0.22) / (w * 0.075), 2))
-                var p2 = 52 * Math.exp(-Math.pow((x - w * 0.46) / (w * 0.070), 2))
-                var p3 = 26 * Math.exp(-Math.pow((x - w * 0.68) / (w * 0.095), 2))
+                var p1 = 34 * Math.exp(-Math.pow((x - w * (0.22 + shift)) / (w * 0.075), 2))
+                var p2 = 52 * Math.exp(-Math.pow((x - w * (0.46 + shift)) / (w * 0.070), 2))
+                var p3 = 26 * Math.exp(-Math.pow((x - w * (0.68 + shift)) / (w * 0.095), 2))
                 var p4 = 6 * Math.exp(-Math.pow((x - w * 0.92) / (w * 0.070), 2))
                 return p1 + p2 + p3 + p4 + jitter
             }
@@ -170,7 +249,8 @@ Item {
         y: 58
         text: qsTr("PSD·dB")
         color: "#898989"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 12
     }
 
@@ -179,7 +259,8 @@ Item {
         y: 166
         text: "Θ"
         color: "#898989"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 12
     }
 
@@ -188,7 +269,8 @@ Item {
         y: 166
         text: "50Hz"
         color: "#898989"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 12
     }
 
@@ -200,13 +282,17 @@ Item {
             required property var modelData
             required property int index
 
+            readonly property bool active: root.selectedBand === index
+
             Rectangle {
                 x: 14 + 63 * index
                 y: 206
                 width: 54
                 height: 60
                 radius: 7
-                color: Design.panelFillSoft
+                color: parent.active ? Design.primarySoft : Design.panelFillSoft
+                border.width: parent.active ? 1 : 0
+                border.color: Design.primary
             }
 
             Text {
@@ -218,7 +304,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.letter
                 color: Design.primary
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 16
             }
 
@@ -231,8 +318,23 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.value
                 color: Design.textPrimary
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 14
+            }
+
+            MouseArea {
+                x: 14 + 63 * index
+                y: 206
+                width: 54
+                height: 60
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.selectedBand = index
+
+                ToolTip.visible: containsMouse
+                ToolTip.text: qsTr("查看 %1 频段").arg(modelData.letter)
+                ToolTip.delay: 400
             }
         }
     }

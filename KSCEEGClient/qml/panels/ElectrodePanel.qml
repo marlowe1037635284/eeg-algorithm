@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 「电极贴合状态」面板。
 // 设计稿里位于画板 (107,225)，尺寸 331×499；本文件坐标 = 设计坐标 - (107,225)。
@@ -31,8 +32,27 @@ Item {
         { name: "Fp1", value: "8.2kΩ", level: "良好", barWidth: 45 },
         { name: "Fp2", value: "4.1kΩ", level: "一般", barWidth: 89 },
         { name: "F3",  value: "4.1kΩ", level: "不良", barWidth: 33 },
-        { name: "F4",  value: "4.1kΩ", level: "不良", barWidth: 33 }
+        { name: "F4",  value: "4.1kΩ", level: "不良", barWidth: 33 },
+        { name: "C3",  value: "3.2kΩ", level: "良好", barWidth: 52 },
+        { name: "C4",  value: "3.6kΩ", level: "良好", barWidth: 48 },
+        { name: "P3",  value: "5.4kΩ", level: "一般", barWidth: 72 },
+        { name: "P4",  value: "9.1kΩ", level: "不良", barWidth: 26 },
+        { name: "O1",  value: "3.0kΩ", level: "良好", barWidth: 55 },
+        { name: "O2",  value: "2.8kΩ", level: "良好", barWidth: 58 },
+        { name: "F7",  value: "4.8kΩ", level: "一般", barWidth: 80 },
+        { name: "F8",  value: "6.2kΩ", level: "一般", barWidth: 66 },
+        { name: "T7",  value: "3.4kΩ", level: "良好", barWidth: 50 },
+        { name: "T8",  value: "4.0kΩ", level: "良好", barWidth: 46 },
+        { name: "Fz",  value: "2.6kΩ", level: "良好", barWidth: 60 },
+        { name: "Cz",  value: "2.4kΩ", level: "良好", barWidth: 62 }
     ]
+
+    // 阻抗列表可视高度与滚动：设计稿画了 4 行 + 右侧滚动条，说明下面是可滚的
+    readonly property int impedanceRowHeight: 32
+    readonly property int impedanceViewHeight: 134
+    property real impedanceScroll: 0
+    readonly property real impedanceMaxScroll: Math.max(0, impedances.length * impedanceRowHeight - impedanceViewHeight)
+
 
     Rectangle {
         anchors.fill: parent
@@ -47,7 +67,8 @@ Item {
         y: 10
         text: qsTr("电极贴合状态")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -67,7 +88,7 @@ Item {
             y: 10
             width: 16
             height: 13
-            source: "assets/icons/icon-scan.svg"
+            source: Design.assetRoot + "icons/icon-scan.svg"
         }
 
         Text {
@@ -77,7 +98,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("阻抗扫描")
             color: "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
     }
@@ -124,7 +146,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.label
                     color: Design.textSecondary
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 14
                 }
             }
@@ -137,7 +160,7 @@ Item {
         y: 89
         width: 303
         height: 260
-        source: "assets/icons/head-panel.svg"
+        source: Design.assetRoot + "icons/head-panel.svg"
         fillMode: Image.Stretch
     }
 
@@ -146,7 +169,7 @@ Item {
         y: 104
         width: 224
         height: 223
-        source: "assets/icons/head-outline.svg"
+        source: Design.assetRoot + "icons/head-outline.svg"
         fillMode: Image.Stretch
     }
 
@@ -176,81 +199,102 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.name
                 color: Design.impedanceColor(modelData.state)
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 8
             }
         }
     }
 
-    // ---------- 阻抗列表 ----------
-    Repeater {
-        model: root.impedances
+    // ---------- 阻抗列表（可视 4 行，滚轮滚动）----------
+    Item {
+        id: impedanceViewport
+        x: 0
+        y: 365
+        width: root.width
+        height: root.impedanceViewHeight
+        clip: true
 
-        delegate: Item {
-            required property var modelData
-            required property int index
+        Repeater {
+            model: root.impedances
 
-            readonly property int rowY: 365 + 32 * index
+            delegate: Item {
+                required property var modelData
+                required property int index
 
-            // 行分隔线（首行上方不画）
-            PanelDivider {
-                y: rowY - 1
-                width: 303
-                visible: index > 0
+                readonly property int rowY: 32 * index - root.impedanceScroll
+
+                // 行分隔线（首行上方不画）
+                PanelDivider {
+                    y: rowY - 1
+                    width: 303
+                    visible: index > 0
+                }
+
+                Text {
+                    x: 14
+                    y: rowY
+                    width: 40
+                    height: 28
+                    verticalAlignment: Text.AlignVCenter
+                    text: modelData.name
+                    color: Design.textPrimary
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
+                    font.pixelSize: 14
+                }
+
+                Rectangle {
+                    x: 46
+                    y: rowY + 10
+                    width: 178
+                    height: 10
+                    radius: 5
+                    color: Qt.rgba(0, 0, 0, 0.07)
+                }
+
+                Rectangle {
+                    x: 46
+                    y: rowY + 10
+                    width: modelData.barWidth
+                    height: 10
+                    radius: 5
+                    color: Design.impedanceColor(modelData.level)
+                }
+
+                Text {
+                    x: 236
+                    y: rowY
+                    width: 50
+                    height: 28
+                    verticalAlignment: Text.AlignVCenter
+                    text: modelData.value
+                    color: Design.textSecondary
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
+                    font.pixelSize: 14
+                }
+
+                Text {
+                    x: 280
+                    y: rowY
+                    width: 44
+                    height: 28
+                    verticalAlignment: Text.AlignVCenter
+                    text: modelData.level
+                    color: Design.impedanceColor(modelData.level)
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
+                    font.pixelSize: 14
+                }
             }
+        }
 
-            Text {
-                x: 14
-                y: rowY
-                width: 40
-                height: 28
-                verticalAlignment: Text.AlignVCenter
-                text: modelData.name
-                color: Design.textPrimary
-                font.family: Design.fontRegular
-                font.pixelSize: 14
-            }
-
-            Rectangle {
-                x: 46
-                y: rowY + 10
-                width: 178
-                height: 10
-                radius: 5
-                color: Qt.rgba(0, 0, 0, 0.07)
-            }
-
-            Rectangle {
-                x: 46
-                y: rowY + 10
-                width: modelData.barWidth
-                height: 10
-                radius: 5
-                color: Design.impedanceColor(modelData.level)
-            }
-
-            Text {
-                x: 236
-                y: rowY
-                width: 50
-                height: 28
-                verticalAlignment: Text.AlignVCenter
-                text: modelData.value
-                color: Design.textSecondary
-                font.family: Design.fontRegular
-                font.pixelSize: 14
-            }
-
-            Text {
-                x: 280
-                y: rowY
-                width: 44
-                height: 28
-                verticalAlignment: Text.AlignVCenter
-                text: modelData.level
-                color: Design.impedanceColor(modelData.level)
-                font.family: Design.fontRegular
-                font.pixelSize: 14
+        MouseArea {
+            anchors.fill: parent
+            onWheel: (wheel) => {
+                var step = wheel.angleDelta.y > 0 ? -root.impedanceRowHeight : root.impedanceRowHeight
+                root.impedanceScroll = Math.max(0, Math.min(root.impedanceMaxScroll, root.impedanceScroll + step))
             }
         }
     }
@@ -267,7 +311,8 @@ Item {
 
     Rectangle {
         x: 319
-        y: 386
+        // 轨道 114 高、滑块 24 高，可走 90px
+        y: 386 + (root.impedanceMaxScroll > 0 ? root.impedanceScroll / root.impedanceMaxScroll : 0) * 90
         width: 7
         height: 24
         radius: 4

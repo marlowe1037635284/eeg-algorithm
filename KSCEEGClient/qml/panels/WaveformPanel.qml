@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 「实时波形」面板。
 // 设计稿里位于画板 (450,150)，尺寸 1109×884；本文件内的坐标都相对面板左上角，
@@ -37,7 +38,8 @@ Item {
         y: 13
         text: qsTr("实时波形")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -49,7 +51,8 @@ Item {
         y: 16
         text: qsTr("16通道·256HZ")
         color: Design.textSecondary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 16
     }
 
@@ -87,7 +90,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: root.eventTime
             color: Design.bad
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
     }
@@ -182,7 +186,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: modelData
             color: Design.channelColors[index]
-            font.family: Design.fontMedium
+            font.family: Design.fontFamily
+            font.styleName: Design.styleMedium
             font.pixelSize: 16
         }
     }
@@ -193,7 +198,8 @@ Item {
         y: 61
         text: qsTr("±100μV")
         color: Qt.rgba(0, 0, 0, 0.4)
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 12
     }
 
@@ -210,7 +216,8 @@ Item {
             anchors.centerIn: parent
             text: qsTr("眼动")
             color: "#ffffff"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 12
         }
     }
@@ -227,7 +234,8 @@ Item {
             anchors.centerIn: parent
             text: qsTr("睁眼")
             color: "#ffffff"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 12
         }
     }
@@ -248,7 +256,8 @@ Item {
             y: 851
             text: modelData.label
             color: Qt.rgba(0, 0, 0, 0.4)
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 12
         }
     }

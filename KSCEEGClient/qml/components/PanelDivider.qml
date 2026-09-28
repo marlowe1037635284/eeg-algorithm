@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 面板分隔线。设计稿里有两类：
 //  - 默认（fade）：标题下方那条，从左侧的主色向右淡出

@@ -18,6 +18,11 @@ QtObject {
     readonly property int canvasWidth: 1920
     readonly property int canvasHeight: 1080
 
+    // ---------- 资源 ----------
+    // QML 按用途分了子目录，文件里的相对路径不再指向 assets/，
+    // 所以统一走这个绝对前缀（模块资源固定在 qrc 的这个位置）。
+    readonly property string assetRoot: "qrc:/qt/qml/KSCEEGClient/assets/"
+
     // ---------- 主色 ----------
     readonly property color primary: "#7092ab"       // 主蓝灰：面板描边、按钮、主色文字
     readonly property color brand: "#ff8d1a"         // 品牌橙：Logo、登录页标题
@@ -43,6 +48,7 @@ QtObject {
     readonly property color good: "#23af6e"
     readonly property color warning: "#fea85d"
     readonly property color bad: "#d65a5d"
+    readonly property color badSoft: Qt.rgba(0xd6 / 255, 0x5a / 255, 0x5d / 255, 0.10)  // 危险按钮底
     readonly property color offline: "#a3a3a3"
 
     // 阻抗等级 → 颜色
@@ -68,17 +74,28 @@ QtObject {
     }
 
     // ---------- 字体 ----------
-    // 设计稿用「阿里巴巴普惠体 2.0」，随程序一起打包（加载见 main.cpp）。
-    // 这套字体每个字重是独立的家族名（如 "Alibaba PuHuiTi 2.0 55 Regular"），
-    // 所以要按家族名选字重，而不是靠 font.weight —— font.weight 在这里不起作用。
-    readonly property string fontRegular: "Alibaba PuHuiTi 2.0 55 Regular"   // 55 Regular
-    readonly property string fontMedium: "Alibaba PuHuiTi 2.0 65 Medium"     // 65 Medium
-    readonly property string fontBold: "Alibaba PuHuiTi 2.0 85 Bold"         // 85 Bold：页面标题、选中的导航项
-    readonly property string fontHeavy: "Alibaba PuHuiTi 2.0 105 Heavy"      // 105 Heavy：登录页 Welcome.
+    // 设计稿用「阿里巴巴普惠体 2.0」，随程序打包（加载见 main.cpp）。
+    //
+    // 关键：这四个字重在 Qt 里会**合并成一个家族** "Alibaba PuHuiTi 2.0"，
+    // 只有 55/65/105 的扁平别名能用、而且取到的都是 Regular 字重，85 Bold 更是直接掉到别的字体。
+    // 正确取法是「家族名 + font.styleName」，所以这里分别给家族名和各字重的样式名，
+    // QML 里写成 font.family: Design.fontFamily + font.styleName: Design.styleMedium。
+    readonly property string fontFamily: "Alibaba PuHuiTi 2.0"
+    readonly property string styleRegular: "55 Regular"
+    readonly property string styleMedium: "65 Medium"
+    readonly property string styleBold: "85 Bold"
+    readonly property string styleHeavy: "105 Heavy"
 
     // Logo 设计稿用的是「阿里妈妈书黑体」，本项目没有该字体文件，
     // 用普惠体最重的 105 Heavy 替代，字形接近。
-    readonly property string fontLogo: fontHeavy
+    readonly property string styleLogo: styleHeavy
+
+    // 顶栏头像里的字：设计稿里管理员显示 AD，其它用户取名字首字
+    function avatarText(name) {
+        if (name === "管理员" || name === "admin")
+            return "AD"
+        return name && name.length > 0 ? name.substring(0, 1) : "?"
+    }
 
     // ---------- 波形通道 ----------
     // 8 个通道各自的曲线颜色，取自设计稿

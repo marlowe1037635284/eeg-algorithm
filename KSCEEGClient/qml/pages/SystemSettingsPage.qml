@@ -1,14 +1,19 @@
 import QtQuick
+import KSCEEGClient
 
 // 「系统设置」页。设计稿画板 1920×1080，用 AppShell 当外壳。
 //
 // 两套坐标（同 PatientManagementPage.qml）：
 //   - 直接摆在画布上的东西（顶栏右侧的「保存设置」）用设计稿绝对坐标；
-//   - 放进 AppShell 内容槽里的东西，坐标要减去内容卡片原点 (201,150)。
+//   - 放进 AppShell 内容槽里的东西，坐标要减去内容卡片原点 (154,150)。
 // 内容槽里的四个设置面板再各自以「面板」为原点摆放子元素（省去大量 +216/+1057 的平移），
 // 每个面板上都注明了它在设计稿里的绝对原点，方便逐条对照施工图。
 Item {
     id: root
+
+    // 顶栏右上角显示的用户（登录后由 Main 传进来）
+    property string userName: qsTr("管理员")
+    property string userRole: qsTr("管理员")
 
     signal navRequested(string label)
     signal logoutRequested()
@@ -26,6 +31,8 @@ Item {
         anchors.fill: parent
         pageTitle: qsTr("系统设置")
         currentNav: qsTr("系统设置")
+        userName: root.userName
+        userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
 
@@ -49,7 +56,8 @@ Item {
                 y: 9
                 text: qsTr("数据存储")
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 18
             }
 
@@ -59,7 +67,8 @@ Item {
                 y: 64
                 text: qsTr("记录保存目录")
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
             }
 
@@ -71,7 +80,8 @@ Item {
                 horizontalAlignment: Text.AlignRight
                 text: "D:\\EEGData\\Records"
                 color: Design.textSecondary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
             }
 
@@ -89,7 +99,8 @@ Item {
                     anchors.centerIn: parent
                     text: qsTr("浏览")
                     color: Design.primary
-                    font.family: Design.fontMedium
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleMedium
                     font.pixelSize: 14
                 }
             }
@@ -138,7 +149,8 @@ Item {
                 y: 9
                 text: qsTr("采集默认值")
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 18
             }
 
@@ -186,7 +198,8 @@ Item {
                 y: 9
                 text: qsTr("系统信息")
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 18
             }
 
@@ -196,7 +209,8 @@ Item {
                 y: 121
                 text: "EEG-KSC"
                 color: Design.brand
-                font.family: Design.fontLogo
+                font.family: Design.fontFamily
+                font.styleName: Design.styleLogo
                 font.pixelSize: 36
             }
 
@@ -205,7 +219,8 @@ Item {
                 y: 191
                 text: qsTr("型号:EEG-KSC-NN")
                 color: Design.textPrimary
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 18
             }
 
@@ -214,7 +229,8 @@ Item {
                 y: 234
                 text: qsTr("版本:1.0.0.0")
                 color: Design.textPrimary
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 18
             }
         }
@@ -239,7 +255,8 @@ Item {
                 y: 9
                 text: qsTr("标签管理")
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 18
             }
 
@@ -277,7 +294,8 @@ Item {
                     y: 68
                     text: modelData.text
                     color: Design.textPrimary
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 16
                 }
             }
@@ -318,7 +336,8 @@ Item {
                         verticalAlignment: Text.AlignVCenter
                         text: modelData.name
                         color: Design.textPrimary
-                        font.family: Design.fontRegular
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
                         font.pixelSize: 14
                     }
 
@@ -335,7 +354,8 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             text: modelData.code
                             color: "#3b3b3b"
-                            font.family: Design.fontRegular
+                            font.family: Design.fontFamily
+                            font.styleName: Design.styleRegular
                             font.pixelSize: 14
                         }
                     }
@@ -386,7 +406,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: qsTr("新增标签")
                     color: Design.textPrimary
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 18
                 }
 
@@ -419,7 +440,8 @@ Item {
                 y: 791
                 text: qsTr("未使用过的标签,可修改名称,可删除;\n已使用过的标签,仅支持修改名称且修改后,历史数据及新数据全部修改,请情真操作!")
                 color: Design.brand
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
                 lineHeight: 22
                 lineHeightMode: Text.FixedHeight
@@ -442,7 +464,8 @@ Item {
             anchors.centerIn: parent
             text: qsTr("保存设置")
             color: "#ffffff"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 18
         }
 
@@ -475,7 +498,8 @@ Item {
             y: 0
             text: settingRow.label
             color: Design.textPrimary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -485,7 +509,8 @@ Item {
             visible: settingRow.hint.length > 0
             text: settingRow.hint
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -511,7 +536,8 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 text: settingRow.value
                 color: "#3b3b3b"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
             }
 
@@ -521,7 +547,7 @@ Item {
                 width: 7.47
                 height: 7
                 rotation: 90
-                source: "assets/icons/icon-arrow-down.svg"
+                source: Design.assetRoot + "icons/icon-arrow-down.svg"
             }
         }
     }
@@ -543,7 +569,8 @@ Item {
             anchors.centerIn: parent
             text: tagAction.text
             color: "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -594,7 +621,8 @@ Item {
             anchors.centerIn: parent
             text: "!"
             color: Design.brand
-            font.family: Design.fontBold
+            font.family: Design.fontFamily
+            font.styleName: Design.styleBold
             font.pixelSize: 13
         }
     }

@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 「采集记录预览」弹窗。按 Figma 设计稿 1:1 实现。
 //
@@ -13,6 +14,9 @@ Item {
 
     signal dismissed()
     signal accepted()
+
+    // 要预览的记录号，弹出前由 Main 回填
+    property string recordNo: "R-0011"
 
     // ---------- 头部信息 ----------
     property string recordId: "R-0011"
@@ -72,53 +76,14 @@ Item {
         { x: 836, label: "1.6s" }
     ]
 
-    // ---------- 遮罩 ----------
-    Rectangle {
-        anchors.fill: parent
-        color: Qt.rgba(0xdb / 255, 0xdd / 255, 0xe0 / 255, 0.60)
-
-        // 弹窗是模态的：吞掉点击，避免穿透到底下的记录列表
-        MouseArea {
-            anchors.fill: parent
-        }
-    }
-
-    // ---------- 白色卡片 ----------
-    Rectangle {
-        x: 516
-        y: 61
-        width: 888
-        height: 957
-        radius: 16
-        color: "#ffffff"
-
-        // ---------- 标题 ----------
-        Text {
-            x: 26
-            y: 23
-            height: 28
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("采集记录预览 · %1").arg(root.recordId)
-            color: Design.textPrimary
-            font.family: Design.fontBold
-            font.pixelSize: 24
-            font.letterSpacing: -0.27
-        }
-
-        Image {
-            x: 848.44
-            y: 31.44
-            width: 14.12
-            height: 14.12
-            source: "assets/icons/icon-close.svg"
-
-            MouseArea {
-                anchors.fill: parent
-                anchors.margins: -8      // 放大点击热区
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.dismissed()
-            }
-        }
+    DialogFrame {
+        title: qsTr("采集记录预览 · %1").arg(root.recordNo)
+        cardX: 516
+        cardY: 61
+        cardWidth: 888
+        cardHeight: 957
+        dismissOnBackdrop: false
+        onDismissed: root.dismissed()
 
         PanelDivider { x: 7; y: 66; width: 859 }
 
@@ -139,7 +104,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: root.patientName
             color: "#000000"
-            font.family: Design.fontMedium
+            font.family: Design.fontFamily
+            font.styleName: Design.styleMedium
             font.pixelSize: 20
             font.letterSpacing: 0.73
         }
@@ -151,7 +117,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: root.patientMeta
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
             font.letterSpacing: 0.73
         }
@@ -163,7 +130,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: root.patientRecordNo
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
             font.letterSpacing: -0.27
         }
@@ -193,7 +161,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.label
                     color: Design.textSecondary
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 16
                     font.letterSpacing: -0.27
                 }
@@ -205,7 +174,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.value
                     color: modelData.good ? Design.good : "#333333"
-                    font.family: Design.fontMedium
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleMedium
                     font.pixelSize: 16
                     font.letterSpacing: 0.73
                 }
@@ -317,7 +287,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: root.laneNames[index]
                 color: root.laneColors[index]
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 16
                 font.letterSpacing: -0.27
             }
@@ -350,7 +321,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: "02:16"
                 color: Design.bad
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
                 font.letterSpacing: -0.27
             }
@@ -381,7 +353,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: qsTr("眼动")
                     color: "#ffffff"
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 12
                     font.letterSpacing: -0.27
                 }
@@ -401,7 +374,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.label
                 color: Qt.rgba(0, 0, 0, 0.40)
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 12
                 font.letterSpacing: -0.27
             }
@@ -432,7 +406,7 @@ Item {
                 height: 11
                 rotation: -90
                 transformOrigin: Item.TopLeft
-                source: "assets/icons/icon-play.svg"
+                source: Design.assetRoot + "icons/icon-play.svg"
             }
 
             Text {
@@ -442,7 +416,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: qsTr("回放")
                 color: "#ffffff"
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 16
                 font.letterSpacing: -0.27
             }
@@ -470,7 +445,8 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("重置")
                 color: "#4f4f4f"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
                 font.letterSpacing: -0.27
             }
@@ -531,7 +507,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: root.playbackTime
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
             font.letterSpacing: -0.27
         }
@@ -551,7 +528,8 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("导出PDF")
                 color: Design.primary
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 14
                 font.letterSpacing: -0.27
             }
@@ -609,7 +587,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.time
                     color: "#333333"
-                    font.family: Design.fontMedium
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleMedium
                     font.pixelSize: 20
                     font.letterSpacing: 0.73
                 }
@@ -621,7 +600,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.label
                     color: "#3b3b3b"
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 16
                     font.letterSpacing: -0.27
                 }

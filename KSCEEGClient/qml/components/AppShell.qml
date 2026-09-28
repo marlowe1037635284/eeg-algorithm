@@ -1,20 +1,23 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import KSCEEGClient
 
-// 除「采集工作台」以外所有页面共用的外壳：左侧 189px 导航栏 + 顶栏 + 底部状态栏 + 内容卡片。
+// 除「采集工作台」以外所有页面共用的外壳：左侧 92px 图标导航 + 顶栏 + 底部状态栏 + 内容卡片。
 //
-// 设计稿里这几个页面（患者管理 / 历史记录 / 用户管理 / 系统设置，以及采集前确认等弹窗页
-// 的背景）共用同一套外壳，这里抽出来一份，避免每个页面抄一遍。
-//
-// 注意：采集工作台用的是另一套「窄导航（92px、只有图标）」的外壳，见 WorkbenchPage.qml。
-// 这是设计稿本身的差异，没有合并。
+// 导航条和采集工作台用的是同一个 AppNavRail —— 全应用只有这一种导航样式，
+// 页面之间跳转时导航栏不会变形（图标含义靠悬停提示补足）。
 //
 // 坐标一律是设计稿画板（1920×1080）上的绝对坐标。
+// 内容槽 contentArea 的原点在 (154,150)：页面把自己的内容写进来，
+// 坐标按「内容卡片内的相对坐标」给即可。
 Item {
     id: shell
 
     property string pageTitle: ""
     property string currentNav: ""
+    // 顶栏右上角的当前用户（登录后由 Main 传进来）
+    property string userName: qsTr("管理员")
+    property string userRole: qsTr("管理员")
 
     // 内容区插槽：页面把自己的东西塞进来即可，会被放进内容卡片里
     default property alias contentChildren: contentArea.data
@@ -22,113 +25,44 @@ Item {
     signal navRequested(string label)
     signal logoutRequested()
 
-    readonly property var navItems: [
-        qsTr("采集工作台"), qsTr("患者管理"), qsTr("历史记录"), qsTr("用户管理"), qsTr("系统设置")
-    ]
-
     // ---------- 背景 ----------
     Image {
         x: -8
         y: -2
         width: 1928
         height: 1085
-        source: "assets/login-background.jpg"
+        source: Design.assetRoot + "login-background.jpg"
         fillMode: Image.Stretch
         smooth: true
         mipmap: true
     }
 
-    Rectangle {
-        x: 931
-        y: -98
-        width: 1247
-        height: 280
-        radius: 140
-        color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.19)
+    // 两个带模糊的大椭圆装饰（设计稿里是 FOREGROUND_BLUR 272）
+    SoftBlob {
+        x: 659
+        y: -370
+        tint: Design.primary
+        peakAlpha: 0.19
     }
 
-    Rectangle {
-        x: -324
-        y: 972
-        width: 1247
-        height: 280
-        radius: 140
-        color: Qt.rgba(0xff / 255, 0x8d / 255, 0x1a / 255, 0.05)
+    SoftBlob {
+        x: -596
+        y: 700
+        tint: Design.brand
+        peakAlpha: 0.05
     }
 
     // ---------- 左侧导航 ----------
-    Rectangle {
-        x: 0
-        y: 0
-        width: 189
-        height: 1080
-        color: Design.panelFill
-    }
-
-    Rectangle {
-        x: 189
-        y: 0
-        width: 1
-        height: 1080
-        color: Design.divider
-    }
-
-    Text {
-        x: 18
-        y: 28
-        text: "EEG-KSC"
-        color: Design.brand
-        font.family: Design.fontLogo
-        font.pixelSize: 36
-    }
-
-    Repeater {
-        model: shell.navItems
-
-        delegate: Item {
-            required property string modelData
-            required property int index
-
-            readonly property bool active: shell.currentNav === modelData
-            readonly property int itemY: 120 + 74 * index
-
-            Rectangle {
-                x: 14
-                y: parent.itemY
-                width: 161
-                height: 56
-                color: Design.primarySoft
-                border.width: 1
-                border.color: Design.primary
-                visible: parent.active
-            }
-
-            Text {
-                x: 56
-                y: parent.itemY + 14
-                text: modelData
-                color: parent.active ? Design.primary : Qt.rgba(0x57 / 255, 0x57 / 255, 0x57 / 255, 0.8)
-                font.family: parent.active ? Design.fontBold : Design.fontRegular
-                font.pixelSize: 20
-            }
-
-            MouseArea {
-                x: 14
-                y: parent.itemY
-                width: 161
-                height: 56
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: shell.navRequested(modelData)
-            }
-        }
+    AppNavRail {
+        current: shell.currentNav
+        onNavRequested: (label) => shell.navRequested(label)
     }
 
     // ---------- 顶栏 ----------
     Rectangle {
-        x: 189
+        x: 92
         y: 51
-        width: 1731
+        width: 1828
         height: 1
         color: Design.divider
     }
@@ -159,7 +93,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("Neurolink-6016 已连接")
             color: "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -181,7 +116,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("电极贴合  16/16 良好")
             color: "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -196,9 +132,10 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            text: "AD"
+            text: Design.avatarText(shell.userName)
             color: "#ffffff"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -206,18 +143,20 @@ Item {
     Text {
         x: 1833
         y: 8
-        text: "admin"
+        text: shell.userName
         color: "#4f4f4f"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
     Text {
         x: 1833
         y: 26
-        text: qsTr("管理员")
+        text: shell.userRole
         color: "#878787"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 12
     }
 
@@ -227,7 +166,7 @@ Item {
         width: 7.47
         height: 7
         rotation: -90
-        source: "assets/icons/icon-arrow-down.svg"
+        source: Design.assetRoot + "icons/icon-arrow-down.svg"
     }
 
     MouseArea {
@@ -246,9 +185,9 @@ Item {
 
     // ---------- 内容区标题条 ----------
     Rectangle {
-        x: 201
+        x: 107
         y: 63
-        width: 1702
+        width: 1796
         height: 75
         radius: 18
         color: Design.panelFill
@@ -257,19 +196,20 @@ Item {
     }
 
     Text {
-        x: 229
+        x: 135
         y: 87
         text: shell.pageTitle
         color: Design.textPrimary
-        font.family: Design.fontBold
+        font.family: Design.fontFamily
+        font.styleName: Design.styleBold
         font.pixelSize: 24
     }
 
     // ---------- 内容卡片 ----------
     Rectangle {
-        x: 201
+        x: 107
         y: 150
-        width: 1702
+        width: 1796
         height: 883
         radius: 16
         color: Design.panelFill
@@ -277,9 +217,10 @@ Item {
         border.color: Design.panelBorder
     }
 
+    // 内容槽：原点放在卡片内居中（左右各留 47），页面内容按这个原点的相对坐标写
     Item {
         id: contentArea
-        x: 201
+        x: 154
         y: 150
         width: 1702
         height: 883
@@ -287,23 +228,23 @@ Item {
 
     // ---------- 底部状态栏 ----------
     Rectangle {
-        x: 189
+        x: 92
         y: 1046
-        width: 1731
+        width: 1828
         height: 34
         color: Design.panelFill
     }
 
     Rectangle {
-        x: 189
+        x: 92
         y: 1046
-        width: 1731
+        width: 1828
         height: 1
         color: Design.divider
     }
 
     Rectangle {
-        x: 214
+        x: 117
         y: 1057
         width: 12
         height: 12
@@ -312,11 +253,12 @@ Item {
     }
 
     Text {
-        x: 235
+        x: 140
         y: 1052
         text: qsTr("采集待机")
         color: "#3b3b3b"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -336,7 +278,8 @@ Item {
             y: 1052
             text: modelData.text
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }

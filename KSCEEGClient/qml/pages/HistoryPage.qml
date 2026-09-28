@@ -1,12 +1,17 @@
 import QtQuick
+import KSCEEGClient
 
 // 「历史记录」页。设计稿画板 1920×1080，外壳复用 AppShell。
 //
 // 两套坐标（同 PatientManagementPage）：
 //   - 直接摆在画布上的东西（标题条右侧那排筛选控件）用设计稿绝对坐标；
-//   - 放进 AppShell 内容槽的东西，坐标要减去内容卡片原点 (201,150)。
+//   - 放进 AppShell 内容槽的东西，坐标要减去内容卡片原点 (154,150)。
 Item {
     id: root
+
+    // 顶栏右上角显示的用户（登录后由 Main 传进来）
+    property string userName: qsTr("管理员")
+    property string userRole: qsTr("管理员")
 
     signal navRequested(string label)
     signal logoutRequested()
@@ -40,15 +45,17 @@ Item {
         anchors.fill: parent
         pageTitle: qsTr("历史采集记录")
         currentNav: qsTr("历史记录")
+        userName: root.userName
+        userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
 
         // ---------- 表头 ----------
         // 设计稿坐标 x=272/438/589/771/922/1073/1239/1390/1559，均已减卡片原点 201
         Rectangle {
-            x: 0
+            x: -47
             y: 0
-            width: 1702
+            width: 1796
             height: 52
             color: Design.primarySoft
         }
@@ -72,7 +79,8 @@ Item {
                 y: 15
                 text: modelData.text
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
             }
         }
@@ -91,22 +99,22 @@ Item {
 
                 // 交替行底色（设计稿只画了第 1 行的 25% 白底）
                 Rectangle {
-                    x: 0
+                    x: -47
                     y: rowY
-                    width: 1700
+                    width: 1794
                     height: 51
                     color: Qt.rgba(1, 1, 1, 0.25)
                     visible: (index % 2) === 0
                 }
 
                 // 文本基线统一比行顶低 16（设计稿 218-202=16）
-                Text { x: 68;   y: rowY + 16; text: modelData.no;       color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 237;  y: rowY + 16; text: modelData.patient;  color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 345;  y: rowY + 16; text: modelData.time;     color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 553;  y: rowY + 16; text: modelData.duration; color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 727;  y: rowY + 16; text: modelData.channels; color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 871;  y: rowY + 16; text: modelData.rate;     color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 1049; y: rowY + 16; text: modelData.events;   color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
+                Text { x: 68;   y: rowY + 16; text: modelData.no;       color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 237;  y: rowY + 16; text: modelData.patient;  color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 345;  y: rowY + 16; text: modelData.time;     color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 553;  y: rowY + 16; text: modelData.duration; color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 727;  y: rowY + 16; text: modelData.channels; color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 871;  y: rowY + 16; text: modelData.rate;     color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 1049; y: rowY + 16; text: modelData.events;   color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
 
                 QualityPill {
                     x: 1169
@@ -115,32 +123,32 @@ Item {
                     accent: root.qualityColor(modelData.level)
                 }
 
-                RowAction {
+                TableRowButton {
                     x: 1358
                     y: rowY + 11
                     text: qsTr("预览")
                     onClicked: root.recordPreviewRequested(modelData.no)
                 }
-                RowAction {
+                TableRowButton {
                     x: 1429
                     y: rowY + 11
                     text: qsTr("分析")
                 }
-                RowAction {
+                TableRowButton {
                     x: 1500
                     y: rowY + 11
                     text: qsTr("导出")
                 }
-                RowAction {
+                TableRowButton {
                     x: 1571
                     y: rowY + 11
                     text: qsTr("删除")
                 }
 
                 Rectangle {
-                    x: 0
+                    x: -47
                     y: rowY + 51
-                    width: 1669
+                    width: 1763
                     height: 1
                     color: Qt.rgba(0, 0, 0, 0.10)
                 }
@@ -172,7 +180,8 @@ Item {
             y: 846
             text: qsTr("共 %1 条记录（当前显示 %1 条）").arg(root.records.length)
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
 
@@ -190,7 +199,8 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("上一页")
                 color: "#3b3b3b"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
             }
         }
@@ -209,7 +219,8 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("下一页")
                 color: "#3b3b3b"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
             }
         }
@@ -219,7 +230,8 @@ Item {
             y: 845
             text: "1/1"
             color: "#000000"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -240,7 +252,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("搜索记录ID/患者姓名")
             color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.3)
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
     }
@@ -260,7 +273,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("全部患者")
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -270,7 +284,7 @@ Item {
             width: 7.47
             height: 7
             rotation: 90
-            source: "assets/icons/icon-arrow-down.svg"
+            source: Design.assetRoot + "icons/icon-arrow-down.svg"
         }
     }
 
@@ -289,7 +303,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("全部通道")
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -299,37 +314,7 @@ Item {
             width: 7.47
             height: 7
             rotation: 90
-            source: "assets/icons/icon-arrow-down.svg"
-        }
-    }
-
-    // 表格行里的文字小按钮。
-    // 注意：本页设计稿里的「删除」和其他三个按钮长得完全一样（不像患者管理页那样画成红色），
-    // 所以这里不做 danger 变体，四个按钮共用一套样式。
-    component RowAction: Rectangle {
-        id: rowAction
-        property string text: ""
-        signal clicked()
-
-        width: 59
-        height: 31
-        radius: 8
-        color: Design.primarySoft
-        border.width: 1
-        border.color: Design.panelBorder
-
-        Text {
-            anchors.centerIn: parent
-            text: rowAction.text
-            color: "#4f4f4f"
-            font.family: Design.fontRegular
-            font.pixelSize: 16
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: rowAction.clicked()
+            source: Design.assetRoot + "icons/icon-arrow-down.svg"
         }
     }
 
@@ -351,7 +336,8 @@ Item {
             anchors.centerIn: parent
             text: qualityPill.text
             color: qualityPill.accent
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }

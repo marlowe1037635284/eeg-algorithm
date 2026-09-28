@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtCore
+import KSCEEGClient
 
 // 采集工作台。按设计稿「采集工作台」画板 1:1 还原。
 //
@@ -42,19 +43,6 @@ Item {
                String(seconds).padStart(2, "0")
     }
 
-    // 左侧导航：设计稿里只有图标没有文字，这里补了 ToolTip 免得看不懂
-    readonly property var navItems: [
-        { icon: "assets/icons/nav-monitor.svg", activeIcon: "assets/icons/nav-monitor-active.svg",
-          label: qsTr("采集工作台"), w: 29, h: 25 },
-        { icon: "assets/icons/nav-patient.svg", activeIcon: "assets/icons/nav-patient-active.svg",
-          label: qsTr("患者管理"), w: 23, h: 24 },
-        { icon: "assets/icons/nav-history.svg", activeIcon: "assets/icons/nav-history-active.svg",
-          label: qsTr("历史记录"), w: 25, h: 24 },
-        { icon: "assets/icons/nav-user.svg", activeIcon: "assets/icons/nav-user-active.svg",
-          label: qsTr("用户管理"), w: 19, h: 24 },
-        { icon: "assets/icons/nav-setting.svg", activeIcon: "assets/icons/nav-setting-active.svg",
-          label: qsTr("系统设置"), w: 26, h: 24 }
-    ]
 
     function resetSession() {
         collecting = false
@@ -116,117 +104,31 @@ Item {
         y: -2
         width: 1928
         height: 1085
-        source: "assets/login-background.jpg"
+        source: Design.assetRoot + "login-background.jpg"
         fillMode: Image.Stretch
         smooth: true
         mipmap: true
     }
 
-    // 设计稿里两个大椭圆装饰（浅蓝在上、浅橙在下）
-    Rectangle {
-        x: 931
-        y: -98
-        width: 1247
-        height: 280
-        radius: 140
-        color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.19)
+    // 设计稿里两个大椭圆装饰（浅蓝在上、浅橙在下），都带 272px 模糊
+    SoftBlob {
+        x: 659
+        y: -370
+        tint: Design.primary
+        peakAlpha: 0.19
     }
 
-    Rectangle {
-        x: -324
-        y: 972
-        width: 1247
-        height: 280
-        radius: 140
-        color: Qt.rgba(0xff / 255, 0x8d / 255, 0x1a / 255, 0.05)
+    SoftBlob {
+        x: -596
+        y: 700
+        tint: Design.brand
+        peakAlpha: 0.05
     }
 
-    // ---------- 左侧导航条 ----------
-    Rectangle {
-        id: sideRail
-        x: 0
-        y: 0
-        width: 92
-        height: 1080
-        color: Design.panelFill
-    }
-
-    Rectangle {
-        x: 92
-        y: 0
-        width: 1
-        height: 1080
-        color: Design.divider
-    }
-
-    Text {
-        x: 16
-        y: 14
-        text: "EEG\nKSC"
-        color: Design.brand
-        font.family: Design.fontLogo
-        font.pixelSize: 24
-        lineHeight: 29
-        lineHeightMode: Text.FixedHeight
-    }
-
-    Repeater {
-        model: root.navItems
-
-        delegate: Item {
-            required property var modelData
-            required property int index
-
-            readonly property bool active: root.selectedNav === modelData.label
-            readonly property int itemY: 99 + 74 * index
-
-            // 选中态底板
-            Rectangle {
-                x: 16
-                y: parent.itemY
-                width: 60
-                height: 60
-                radius: 10
-                color: Design.primarySoft
-                visible: parent.active
-            }
-
-            // 选中态左侧的橙色指示条（设计稿里是 3×24 的竖条）
-            Rectangle {
-                x: 19
-                y: parent.itemY + 18
-                width: 3
-                height: 24
-                color: Design.primary
-                visible: parent.active
-            }
-
-            Image {
-                x: 16 + (60 - modelData.w) / 2
-                y: parent.itemY + (60 - modelData.h) / 2
-                width: modelData.w
-                height: modelData.h
-                source: parent.active ? modelData.activeIcon : modelData.icon
-                fillMode: Image.PreserveAspectFit
-            }
-
-            MouseArea {
-                x: 16
-                y: parent.itemY
-                width: 60
-                height: 60
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: {
-                    root.selectedNav = modelData.label
-                    root.navRequested(modelData.label)
-                }
-
-                ToolTip.visible: containsMouse
-                ToolTip.text: modelData.label
-                ToolTip.delay: 400
-            }
-        }
+    // ---------- 左侧导航条（与各业务页共用同一个组件）----------
+    AppNavRail {
+        current: root.selectedNav
+        onNavRequested: (label) => root.navRequested(label)
     }
 
     // ---------- 顶栏 ----------
@@ -265,7 +167,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("Neurolink-6016 已连接")
             color: "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -288,7 +191,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("电极贴合  16/16 良好")
             color: "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -304,9 +208,10 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            text: "AD"
+            text: Design.avatarText(root.userName)
             color: "#ffffff"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -314,9 +219,10 @@ Item {
     Text {
         x: 1833
         y: 8
-        text: "admin"
+        text: root.userName
         color: "#4f4f4f"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -325,7 +231,8 @@ Item {
         y: 26
         text: root.userRole
         color: "#878787"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 12
     }
 
@@ -335,7 +242,7 @@ Item {
         width: 7.47
         height: 7
         rotation: -90
-        source: "assets/icons/icon-arrow-down.svg"
+        source: Design.assetRoot + "icons/icon-arrow-down.svg"
     }
 
     MouseArea {
@@ -376,7 +283,8 @@ Item {
             y: 21
             text: root.patientName
             color: "#000000"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 24
         }
 
@@ -385,7 +293,8 @@ Item {
             y: 12
             text: root.patientGenderAge
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -394,7 +303,8 @@ Item {
             y: 42
             text: root.patientMeta
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -427,7 +337,8 @@ Item {
         y: 87
         text: qsTr("通道")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -452,7 +363,7 @@ Item {
             y: 4
             width: 43
             height: 36
-            source: "assets/icons/slider-thumb.svg"
+            source: Design.assetRoot + "icons/slider-thumb.svg"
             fillMode: Image.Stretch
         }
 
@@ -473,7 +384,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.value
                 color: root.channelCount === modelData.value ? "#ffffff" : Design.textMuted
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 18
 
                 MouseArea {
@@ -499,7 +411,8 @@ Item {
         y: 87
         text: qsTr("幅值")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -515,7 +428,8 @@ Item {
         y: 87
         text: qsTr("走纸速度")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -552,7 +466,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("滤波与后处理")
             color: Design.textPrimary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 18
         }
     }
@@ -562,7 +477,7 @@ Item {
         x: 1582
         width: 89
         text: root.frozen ? qsTr("继续") : qsTr("冻结")
-        iconSource: "assets/icons/icon-freeze.svg"
+        iconSource: Design.assetRoot + "icons/icon-freeze.svg"
         iconWidth: 17
         iconHeight: 17
         enabled: root.collecting
@@ -574,7 +489,7 @@ Item {
         x: 1689
         width: 89
         text: qsTr("截图")
-        iconSource: "assets/icons/icon-camera.svg"
+        iconSource: Design.assetRoot + "icons/icon-camera.svg"
         iconWidth: 16
         iconHeight: 16
         onClicked: root.snapshotRequested()
@@ -607,7 +522,7 @@ Item {
             width: 16.13
             height: 14.5
             rotation: -90
-            source: "assets/icons/icon-play.svg"
+            source: Design.assetRoot + "icons/icon-play.svg"
         }
 
         Text {
@@ -615,7 +530,8 @@ Item {
             y: 15
             text: root.collecting ? qsTr("停止采集") : qsTr("开始采集")
             color: "#ffffff"
-            font.family: Design.fontMedium
+            font.family: Design.fontFamily
+            font.styleName: Design.styleMedium
             font.pixelSize: 24
         }
 
@@ -708,7 +624,8 @@ Item {
         y: 1052
         text: root.collecting ? qsTr("采集进行中") : qsTr("采集已停止")
         color: "#3b3b3b"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -718,7 +635,8 @@ Item {
         y: 1052
         text: qsTr("记录时长  ") + root.elapsedText
         color: "#3b3b3b"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -738,7 +656,8 @@ Item {
             y: 1052
             text: modelData.text
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -761,7 +680,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: toolField.value
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -771,7 +691,7 @@ Item {
             width: 7.47
             height: 7
             rotation: 90
-            source: "assets/icons/icon-arrow-down.svg"
+            source: Design.assetRoot + "icons/icon-arrow-down.svg"
             visible: toolField.showArrow
         }
     }
@@ -811,7 +731,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: toolButton.text
             color: Design.textPrimary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 18
         }
 

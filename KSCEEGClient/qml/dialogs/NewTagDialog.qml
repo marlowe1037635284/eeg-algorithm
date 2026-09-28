@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 「新建标签」弹窗。按 Figma 设计稿 1:1 实现。
 //
@@ -20,54 +21,16 @@ Item {
     property int selectedColorIndex: 7      // 设计稿默认选中第 8 个（灰）
     readonly property string selectedColor: root.tagColors[root.selectedColorIndex]
 
-    // ---------- 遮罩 ----------
-    Rectangle {
-        anchors.fill: parent
-        color: Qt.rgba(0xdb / 255, 0xdd / 255, 0xe0 / 255, 0.60)
-
-        // 弹窗是模态的：吞掉点击，避免穿透到底下的列表
-        MouseArea {
-            anchors.fill: parent
-        }
-    }
-
-    // ---------- 白色卡片 ----------
-    Rectangle {
-        x: 657
-        y: 413
-        width: 606
-        height: 255
-        radius: 16
-        color: "#ffffff"
-
-        // 标题
-        Text {
-            x: 26
-            y: 14
-            height: 28
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("新建标签")
-            color: Design.textPrimary
-            font.family: Design.fontBold
-            font.pixelSize: 24
-            font.letterSpacing: -0.27
-        }
-
-        // 关闭叉
-        Image {
-            x: 560.44
-            y: 20.44
-            width: 14.12
-            height: 14.12
-            source: "assets/icons/icon-close.svg"
-
-            MouseArea {
-                anchors.fill: parent
-                anchors.margins: -8      // 放大点击热区
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.dismissed()
-            }
-        }
+    DialogFrame {
+        title: qsTr("新建标签")
+        cardX: 657
+        cardY: 413
+        cardWidth: 606
+        cardHeight: 255
+        titleY: 14
+        closeY: 20
+        dismissOnBackdrop: false
+        onDismissed: root.dismissed()
 
         // 上下两条分隔线（设计稿是渐变描边）
         PanelDivider { x: 7; y: 57; width: 592 }
@@ -81,7 +44,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("标签名称")
             color: Design.textPrimary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 18
             font.letterSpacing: -0.27
         }
@@ -101,7 +65,8 @@ Item {
                 width: parent.width - 20 - 40     // 右侧给字数提示留位置
                 height: 22
                 color: "#3b3b3b"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
                 font.letterSpacing: -0.27
                 selectionColor: Design.primary
@@ -120,7 +85,8 @@ Item {
                 text: qsTr("例如：紧急、设计评审···")
                 visible: tagNameInput.text.length === 0
                 color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.30)
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
                 font.letterSpacing: -0.27
             }
@@ -133,7 +99,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: tagNameInput.text.length + "/" + root.maxNameLength
                 color: Qt.rgba(0, 0, 0, 0.40)
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 12
                 font.letterSpacing: -0.27
             }
@@ -147,7 +114,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("标签颜色")
             color: Design.textPrimary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 18
             font.letterSpacing: -0.27
         }
@@ -187,7 +155,7 @@ Item {
                     anchors.centerIn: parent
                     width: 13.63
                     height: 9.48
-                    source: "assets/icons/icon-check-bold.svg"
+                    source: Design.assetRoot + "icons/icon-check-bold.svg"
                     visible: index === root.selectedColorIndex
                 }
 
@@ -237,7 +205,8 @@ Item {
             anchors.centerIn: parent
             text: dialogButton.text
             color: dialogButton.primary ? "#ffffff" : "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
             font.letterSpacing: -0.27
         }

@@ -12,43 +12,50 @@ if (MSVC)
 endif()
 set(QT_QML_GENERATE_QMLLS_INI ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick)
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
 qt_add_executable(appKSCEEGClient
-    main.cpp
+    src/main.cpp
+    # 账号库用 Qt Sql 直接读写一个真正的 SQLite 文件（不用 QML 的 LocalStorage）
+    src/authdatabase.cpp
+    src/authdatabase.h
 )
 
 # Design.qml 是设计变量单例（画板尺寸、色板、字体名），需要在 QML 引擎里注册成 singleton，
 # 否则同模块的页面 import 不到它。
-set_source_files_properties(Design.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/Design.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(appKSCEEGClient
     URI KSCEEGClient
     QML_FILES
-        AppShell.qml
-        Design.qml
-        DesignCanvas.qml
-        EditPatientDialog.qml
-        ElectrodePanel.qml
-        EventPanel.qml
-        HistoryPage.qml
-        LoginPage.qml
-        Main.qml
-        NewPatientDialog.qml
-        NewTagDialog.qml
-        PanelDivider.qml
-        PatientManagementPage.qml
-        PrecheckDialog.qml
-        RecordPreviewDialog.qml
-        SelectPatientDialog.qml
-        SpectrumPanel.qml
-        SystemSettingsPage.qml
-        TopographyPanel.qml
-        UserManagementPage.qml
-        WaveformPanel.qml
-        WorkbenchPage.qml
+        qml/Design.qml
+        qml/DesignCanvas.qml
+        qml/Main.qml
+        qml/components/AppNavRail.qml
+        qml/components/AppShell.qml
+        qml/components/DialogFrame.qml
+        qml/components/PanelDivider.qml
+        qml/components/SoftBlob.qml
+        qml/components/TableRowButton.qml
+        qml/dialogs/EditPatientDialog.qml
+        qml/dialogs/NewPatientDialog.qml
+        qml/dialogs/NewTagDialog.qml
+        qml/dialogs/PrecheckDialog.qml
+        qml/dialogs/RecordPreviewDialog.qml
+        qml/dialogs/SelectPatientDialog.qml
+        qml/pages/HistoryPage.qml
+        qml/pages/LoginPage.qml
+        qml/pages/PatientManagementPage.qml
+        qml/pages/SystemSettingsPage.qml
+        qml/pages/UserManagementPage.qml
+        qml/pages/WorkbenchPage.qml
+        qml/panels/ElectrodePanel.qml
+        qml/panels/EventPanel.qml
+        qml/panels/SpectrumPanel.qml
+        qml/panels/TopographyPanel.qml
+        qml/panels/WaveformPanel.qml
     RESOURCES
         assets/login-background.jpg
         assets/asset-03.svg
@@ -95,8 +102,20 @@ set_target_properties(appKSCEEGClient PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
+# C++ 源码在 src/ 下，QML 类型注册生成的头文件里是 #include "authdatabase.h"，
+# 得把 src 加进包含路径
+target_include_directories(appKSCEEGClient
+    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+# 把源码目录告诉程序：账号库文件放在代码目录里，清理 build 目录不会丢
+target_compile_definitions(appKSCEEGClient
+    PRIVATE KSCEEG_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
 target_link_libraries(appKSCEEGClient
     PRIVATE Qt6::Quick
+    PRIVATE Qt6::Sql
 )
 
 install(TARGETS appKSCEEGClient

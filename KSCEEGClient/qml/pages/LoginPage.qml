@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import KSCEEGClient
 
 // 登录页。按设计稿「登录」画板 1:1 还原：
 // 所有坐标、尺寸、字号、颜色都取自设计稿规格（画板 1920×1080）。
@@ -42,7 +43,7 @@ Item {
         y: -1
         width: 1928
         height: 1085
-        source: "assets/login-background.jpg"
+        source: Design.assetRoot + "login-background.jpg"
         fillMode: Image.Stretch
         smooth: true
         mipmap: true
@@ -54,7 +55,7 @@ Item {
         y: 333.65
         width: 996.85
         height: 475.5
-        source: "assets/asset-03.svg"
+        source: Design.assetRoot + "asset-03.svg"
         fillMode: Image.Stretch
         smooth: true
     }
@@ -64,7 +65,7 @@ Item {
         y: 394.96
         width: 981.05
         height: 403.38
-        source: "assets/asset-09.svg"
+        source: Design.assetRoot + "asset-09.svg"
         fillMode: Image.Stretch
         smooth: true
     }
@@ -74,7 +75,7 @@ Item {
         y: 448.58
         width: 1245
         height: 242.25
-        source: "assets/asset-10.svg"
+        source: Design.assetRoot + "asset-10.svg"
         fillMode: Image.Stretch
         smooth: true
     }
@@ -97,7 +98,8 @@ Item {
             y: -43
             text: qsTr("Welcome.")
             color: Design.brand
-            font.family: Design.fontHeavy
+            font.family: Design.fontFamily
+            font.styleName: Design.styleHeavy
             font.pixelSize: 60
             renderType: Text.NativeRendering
         }
@@ -107,7 +109,8 @@ Item {
             y: 51
             text: qsTr("登录 EEG -空山慈 脑电采集与分析平台")
             color: Design.brand
-            font.family: Design.fontMedium
+            font.family: Design.fontFamily
+            font.styleName: Design.styleMedium
             font.pixelSize: 20
             renderType: Text.NativeRendering
         }
@@ -117,7 +120,8 @@ Item {
             y: 117
             text: qsTr("手机号：")
             color: "#262729"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 17
             renderType: Text.NativeRendering
         }
@@ -144,7 +148,8 @@ Item {
                 color: "#3d3d3d"
                 selectionColor: Design.primary
                 selectedTextColor: "#ffffff"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 15
                 verticalAlignment: TextInput.AlignVCenter
                 selectByMouse: true
@@ -169,7 +174,8 @@ Item {
             y: 223
             text: qsTr("密码：")
             color: "#262729"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 17
             renderType: Text.NativeRendering
         }
@@ -195,7 +201,8 @@ Item {
                 color: "#3d3d3d"
                 selectionColor: Design.primary
                 selectedTextColor: "#ffffff"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 15
                 verticalAlignment: TextInput.AlignVCenter
                 selectByMouse: true
@@ -248,7 +255,7 @@ Item {
                         y: 7
                         width: 8
                         height: 6
-                        source: "assets/icons/icon-check.svg"
+                        source: Design.assetRoot + "icons/icon-check.svg"
                         visible: rememberPassword.checked
                     }
                 }
@@ -260,7 +267,8 @@ Item {
                 y: 0
                 text: qsTr("记住密码")
                 color: "#262729"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 15
                 renderType: Text.NativeRendering
             }
@@ -281,7 +289,8 @@ Item {
             y: 328
             text: qsTr("忘记密码")
             color: forgotMouseArea.containsMouse ? Design.brand : Design.primary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 15
             renderType: Text.NativeRendering
 
@@ -311,7 +320,8 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("登    录")
                 color: "#ffffff"
-                font.family: Design.fontMedium
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
                 font.pixelSize: 24
                 font.letterSpacing: -0.27
                 renderType: Text.NativeRendering
@@ -333,7 +343,8 @@ Item {
             width: 346
             text: loginPage.errorMessage
             color: Design.bad
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
             horizontalAlignment: Text.AlignHCenter
             visible: text.length > 0

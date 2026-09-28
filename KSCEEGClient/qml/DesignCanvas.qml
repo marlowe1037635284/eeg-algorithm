@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 设计画布：把 1920×1080 的绝对坐标内容等比缩放到实际窗口大小。
 //

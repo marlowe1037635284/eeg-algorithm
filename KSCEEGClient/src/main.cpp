@@ -1,6 +1,7 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QFontDatabase>
+#include <QFontInfo>
 #include <QCoreApplication>
 #include <QDebug>
 
@@ -36,6 +37,15 @@ void load_design_fonts()
         }
         qInfo() << "[font] 已加载" << font_file << "家族名:" << QFontDatabase::applicationFontFamilies(font_id);
     }
+
+    // 普惠体四个字重在 Qt 里会合并成一个家族，靠 styleName 区分。
+    // 把实际可用的家族/样式打出来，字体对不上时看日志就能定位。
+    for (const QString &family : QFontDatabase::families())
+    {
+        if (family.contains(QStringLiteral("PuHuiTi")))
+            qInfo() << "[font] 可用家族:" << family << "样式:" << QFontDatabase::styles(family);
+    }
+
 }
 
 } // namespace

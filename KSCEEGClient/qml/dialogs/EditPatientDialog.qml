@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 「编辑患者」弹窗。按 Figma 设计稿 1:1 实现。
 //
@@ -19,54 +20,14 @@ Item {
     property string gender: qsTr("男")
     property string department: qsTr("神经内科")
 
-    // ---------- 遮罩 ----------
-    Rectangle {
-        anchors.fill: parent
-        color: Qt.rgba(0xdb / 255, 0xdd / 255, 0xe0 / 255, 0.60)
-
-        // 弹窗是模态的：吞掉点击，避免穿透到底下的列表
-        MouseArea {
-            anchors.fill: parent
-        }
-    }
-
-    // ---------- 白色卡片 ----------
-    Rectangle {
-        x: 657
-        y: 339
-        width: 606
-        height: 402
-        radius: 16
-        color: "#ffffff"
-
-        // 标题（设计稿 85 Bold，24/28）
-        Text {
-            x: 26
-            y: 23
-            height: 28
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("编辑患者")
-            color: Design.textPrimary
-            font.family: Design.fontBold
-            font.pixelSize: 24
-            font.letterSpacing: -0.27
-        }
-
-        // 关闭叉（设计稿矢量 14.12×14.12）
-        Image {
-            x: 560.44
-            y: 29.44
-            width: 14.12
-            height: 14.12
-            source: "assets/icons/icon-close.svg"
-
-            MouseArea {
-                anchors.fill: parent
-                anchors.margins: -8      // 放大点击热区
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.dismissed()
-            }
-        }
+    DialogFrame {
+        title: qsTr("编辑患者")
+        cardX: 657
+        cardY: 339
+        cardWidth: 606
+        cardHeight: 402
+        dismissOnBackdrop: false
+        onDismissed: root.dismissed()
 
         // 上下两条分隔线（设计稿是渐变描边，用 PanelDivider 的淡出效果）
         PanelDivider { x: 7; y: 66; width: 592 }
@@ -167,7 +128,8 @@ Item {
         height: 28
         verticalAlignment: Text.AlignVCenter
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
         font.letterSpacing: -0.27
     }
@@ -192,7 +154,8 @@ Item {
             width: field.width - 26
             height: 22
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
             font.letterSpacing: -0.27
             selectionColor: Design.primary
@@ -210,7 +173,8 @@ Item {
             text: field.placeholder
             visible: fieldInput.text.length === 0
             color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.30)
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
             font.letterSpacing: -0.27
         }
@@ -222,7 +186,7 @@ Item {
         height: 8
         rotation: 90
         transformOrigin: Item.TopLeft
-        source: "assets/icons/icon-arrow-down.svg"
+        source: Design.assetRoot + "icons/icon-arrow-down.svg"
     }
 
     // 弹窗底部的胶囊按钮：次要按钮主色 50% 描边，主按钮实心主色
@@ -246,7 +210,8 @@ Item {
             anchors.centerIn: parent
             text: dialogButton.text
             color: dialogButton.primary ? "#ffffff" : "#4f4f4f"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
             font.letterSpacing: -0.27
         }

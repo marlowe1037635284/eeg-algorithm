@@ -1,13 +1,18 @@
 import QtQuick
+import KSCEEGClient
 
 // 「用户管理」页。设计稿画板 1920×1080，用 AppShell 当外壳（左侧导航 + 顶栏 + 状态栏 + 内容卡片）。
 //
 // 两套坐标别混：
 //   - 页面里直接摆在画布上的东西（顶栏右侧那排控件）用设计稿绝对坐标；
-//   - 放进 AppShell 内容槽里的东西，坐标要减去内容卡片原点 (201,150)，
+//   - 放进 AppShell 内容槽里的东西，坐标要减去内容卡片原点 (154,150)，
 //     因为 AppShell 的 contentArea 已经定位在那里了。
 Item {
     id: root
+
+    // 顶栏右上角显示的用户（登录后由 Main 传进来）
+    property string userName: qsTr("管理员")
+    property string userRole: qsTr("管理员")
 
     signal navRequested(string label)
     signal logoutRequested()
@@ -66,14 +71,16 @@ Item {
         anchors.fill: parent
         pageTitle: qsTr("用户管理")
         currentNav: qsTr("用户管理")
+        userName: root.userName
+        userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
 
         // ---------- 表头 ----------
         Rectangle {
-            x: 0
+            x: -47
             y: 0
-            width: 1702
+            width: 1796
             height: 52
             color: Design.primarySoft
         }
@@ -97,7 +104,8 @@ Item {
                 y: 15
                 text: modelData.text
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
             }
         }
@@ -116,20 +124,20 @@ Item {
                 readonly property int textY: rowTop + 16
 
                 Rectangle {
-                    x: 0
+                    x: -47
                     y: rowTop
-                    width: 1700
+                    width: 1794
                     height: 51
                     color: Qt.rgba(1, 1, 1, 0.25)
                     visible: (index % 2) === 0
                 }
 
-                Text { x: 68;   y: textY; text: modelData.uid;        color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 232;  y: textY; text: modelData.account;    color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 393;  y: textY; text: modelData.name;       color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 690;  y: textY; text: modelData.dept;       color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 1012; y: textY; text: modelData.registered; color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
-                Text { x: 1156; y: textY; text: modelData.lastLogin;  color: Design.textSecondary; font.family: Design.fontRegular; font.pixelSize: 16 }
+                Text { x: 68;   y: textY; text: modelData.uid;        color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 232;  y: textY; text: modelData.account;    color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 393;  y: textY; text: modelData.name;       color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 690;  y: textY; text: modelData.dept;       color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 1012; y: textY; text: modelData.registered; color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 1156; y: textY; text: modelData.lastLogin;  color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
 
                 RoleBadge {
                     x: 513
@@ -142,7 +150,7 @@ Item {
                     status: modelData.status
                 }
 
-                TableAction {
+                TableRowButton {
                     x: 1358
                     y: rowTop + 11
                     width: 59
@@ -150,14 +158,14 @@ Item {
                     onClicked: root.editUserRequested(modelData.account)
                 }
 
-                TableAction {
+                TableRowButton {
                     x: 1429
                     y: rowTop + 11
                     width: 81
                     text: qsTr("重置密码")
                 }
 
-                TableAction {
+                TableRowButton {
                     x: 1522
                     y: rowTop + 11
                     width: 59
@@ -165,9 +173,9 @@ Item {
                 }
 
                 Rectangle {
-                    x: 0
+                    x: -47
                     y: rowTop + 51
-                    width: 1669
+                    width: 1763
                     height: 1
                     color: Qt.rgba(0, 0, 0, 0.10)
                 }
@@ -199,7 +207,8 @@ Item {
             y: 846
             text: qsTr("共 %1 条记录（当前显示 %1 条）").arg(root.users.length)
             color: Design.textSecondary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
 
@@ -217,7 +226,8 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("上一页")
                 color: "#3b3b3b"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
             }
         }
@@ -236,7 +246,8 @@ Item {
                 anchors.centerIn: parent
                 text: qsTr("下一页")
                 color: "#3b3b3b"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
             }
         }
@@ -246,7 +257,8 @@ Item {
             y: 845
             text: "1/1"
             color: "#000000"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -267,7 +279,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("搜索用户名/姓名/手机号")
             color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.3)
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
     }
@@ -287,7 +300,8 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("全部角色")
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -297,7 +311,7 @@ Item {
             width: 7.47
             height: 7
             rotation: 90
-            source: "assets/icons/icon-arrow-down.svg"
+            source: Design.assetRoot + "icons/icon-arrow-down.svg"
         }
     }
 
@@ -315,7 +329,8 @@ Item {
             anchors.centerIn: parent
             text: qsTr("新增用户")
             color: "#ffffff"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 18
         }
 
@@ -325,33 +340,6 @@ Item {
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             onClicked: root.addUserRequested()
-        }
-    }
-
-    // 表格行里的小圆角按钮
-    component TableAction: Rectangle {
-        id: tableAction
-        property string text: ""
-        signal clicked()
-
-        height: 31
-        radius: 8
-        color: Design.primarySoft
-        border.width: 1
-        border.color: Design.panelBorder
-
-        Text {
-            anchors.centerIn: parent
-            text: tableAction.text
-            color: "#4f4f4f"
-            font.family: Design.fontRegular
-            font.pixelSize: 16
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: tableAction.clicked()
         }
     }
 
@@ -386,7 +374,8 @@ Item {
             y: 4
             text: roleBadge.role
             color: roleBadge.accent
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -416,7 +405,8 @@ Item {
             x: 16
             text: statusLabel.status
             color: statusLabel.accent
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
     }

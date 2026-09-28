@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Controls.Basic
+import KSCEEGClient
 
 // 「实时脑电地形图」面板。
 // 设计稿里位于画板 (1572,150)，尺寸 331×590；本文件坐标 = 设计坐标 - (1572,150)。
@@ -37,15 +39,18 @@ Item {
         "#6ac663", "#96c74a", "#c0c443", "#e2bc3c", "#eba23d", "#f1883c", "#e5643d", "#d9403c"
     ]
 
-    // 色标下方的频段选择块。第一块是选中态（主色淡底 + 主色描边），其余为未选中态。
+    // 色标下方的频段选择块。第一块默认选中（主色淡底 + 主色描边），点其它块可切换。
     // boxX/letterX/rangeX 都是设计稿里的 x 坐标（已减去面板原点）。
     readonly property var bandSelectors: [
-        { letter: "δ", range: "0.5-4", boxX: 26,  letterX: 45,  rangeX: 33,  selected: true },
-        { letter: "θ", range: "0.5-4", boxX: 84,  letterX: 103, rangeX: 91,  selected: false },
-        { letter: "α", range: "0.5-4", boxX: 142, letterX: 161, rangeX: 149, selected: false },
-        { letter: "β", range: "0.5-4", boxX: 199, letterX: 218, rangeX: 206, selected: false },
-        { letter: "γ", range: "0.5-4", boxX: 258, letterX: 278, rangeX: 265, selected: false }
+        { letter: "δ", range: "0.5-4", boxX: 26,  letterX: 45,  rangeX: 33 },
+        { letter: "θ", range: "0.5-4", boxX: 84,  letterX: 103, rangeX: 91 },
+        { letter: "α", range: "0.5-4", boxX: 142, letterX: 161, rangeX: 149 },
+        { letter: "β", range: "0.5-4", boxX: 199, letterX: 218, rangeX: 206 },
+        { letter: "γ", range: "0.5-4", boxX: 258, letterX: 278, rangeX: 265 }
     ]
+
+    // 当前选中的频段（地形图按这个频段着色）
+    property int selectedBand: 0
 
     readonly property var metrics: [
         { label: "峰值电极", value: "01" },
@@ -68,7 +73,8 @@ Item {
         y: 6
         text: qsTr("实时脑电地形图")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -84,7 +90,7 @@ Item {
         y: 61
         width: 224
         height: 223
-        source: "assets/icons/topo-circle.svg"
+        source: Design.assetRoot + "icons/topo-circle.svg"
         fillMode: Image.Stretch
     }
 
@@ -130,7 +136,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.name
                 color: "#424242"
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 8
             }
         }
@@ -142,7 +149,7 @@ Item {
         y: 102
         width: 41
         height: 22
-        source: "assets/icons/peak-badge.svg"
+        source: Design.assetRoot + "icons/peak-badge.svg"
         fillMode: Image.Stretch
     }
 
@@ -155,7 +162,8 @@ Item {
         verticalAlignment: Text.AlignVCenter
         text: qsTr("峰值")
         color: "#ffffff"
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 12
     }
 
@@ -165,7 +173,8 @@ Item {
         y: 286
         text: qsTr("μV²/Hz")
         color: Design.textSecondary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -190,7 +199,8 @@ Item {
         y: 324
         text: "0"
         color: Design.textSecondary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -199,7 +209,8 @@ Item {
         y: 324
         text: "30"
         color: Design.textSecondary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -208,7 +219,8 @@ Item {
         y: 324
         text: "60"
         color: Design.textSecondary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
@@ -218,6 +230,9 @@ Item {
 
         delegate: Item {
             required property var modelData
+            required property int index
+
+            readonly property bool active: root.selectedBand === index
 
             Rectangle {
                 x: modelData.boxX
@@ -225,9 +240,9 @@ Item {
                 width: 48.74
                 height: 51
                 radius: 10
-                color: modelData.selected ? Design.primarySoft : Qt.rgba(0xc9 / 255, 0xc9 / 255, 0xc9 / 255, 0.29)
+                color: parent.active ? Design.primarySoft : Qt.rgba(0xc9 / 255, 0xc9 / 255, 0xc9 / 255, 0.29)
                 border.width: 1
-                border.color: modelData.selected ? Design.primary : Qt.rgba(0xa3 / 255, 0xa3 / 255, 0xa3 / 255, 0.27)
+                border.color: parent.active ? Design.primary : Qt.rgba(0xa3 / 255, 0xa3 / 255, 0xa3 / 255, 0.27)
             }
 
             Text {
@@ -238,8 +253,9 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.letter
-                color: modelData.selected ? Design.primary : Design.textMuted
-                font.family: Design.fontRegular
+                color: parent.active ? Design.primary : Design.textMuted
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
             }
 
@@ -251,9 +267,24 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.range
-                color: modelData.selected ? Design.primary : Design.textMuted
-                font.family: Design.fontRegular
+                color: parent.active ? Design.primary : Design.textMuted
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 14
+            }
+
+            MouseArea {
+                x: modelData.boxX
+                y: 353
+                width: 48.74
+                height: 51
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.selectedBand = index
+
+                ToolTip.visible: containsMouse
+                ToolTip.text: qsTr("%1 频段（%2 Hz）").arg(modelData.letter).arg(modelData.range)
+                ToolTip.delay: 400
             }
         }
     }
@@ -281,7 +312,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.label
                 color: Design.textPrimary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
             }
 
@@ -293,7 +325,8 @@ Item {
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.value
                 color: Design.textSecondary
-                font.family: Design.fontRegular
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
                 font.pixelSize: 16
             }
         }

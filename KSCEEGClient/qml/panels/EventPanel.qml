@@ -1,4 +1,5 @@
 import QtQuick
+import KSCEEGClient
 
 // 「事件标注」面板。
 // 设计稿里位于画板 (107,738)，尺寸 331×296；本文件坐标 = 设计坐标 - (107,738)。
@@ -6,6 +7,12 @@ Item {
     id: root
 
     property alias eventCount: eventModel.count
+
+    // 事件列表可视 3 行，超出部分滚轮滚动（设计稿画了 3 行 + 一根滚动条）
+    property real eventScroll: 0
+    readonly property int eventRowHeight: 44
+    readonly property int eventViewHeight: 132
+    readonly property real eventMaxScroll: Math.max(0, eventModel.count * eventRowHeight - eventViewHeight)
 
     function clearEvents() {
         eventModel.clear()
@@ -47,7 +54,8 @@ Item {
         y: 13
         text: qsTr("事件标注")
         color: Design.textPrimary
-        font.family: Design.fontRegular
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
         font.pixelSize: 18
     }
 
@@ -64,7 +72,8 @@ Item {
             anchors.centerIn: parent
             text: eventModel.count
             color: Design.textMuted
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
     }
@@ -84,7 +93,8 @@ Item {
             anchors.centerIn: parent
             text: qsTr("清空")
             color: Design.textPrimary
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
@@ -118,17 +128,18 @@ Item {
             verticalAlignment: Text.AlignVCenter
             text: qsTr("手动标记")
             color: "#3b3b3b"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
 
         Image {
             x: 132
             anchors.verticalCenter: parent.verticalCenter
-            width: 7
+            width: 7.47
             height: 7
             rotation: 90
-            source: "assets/icons/icon-arrow-down.svg"
+            source: Design.assetRoot + "icons/icon-arrow-down.svg"
         }
     }
 
@@ -145,7 +156,8 @@ Item {
             anchors.centerIn: parent
             text: qsTr("标记事件")
             color: "#ffffff"
-            font.family: Design.fontRegular
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
             font.pixelSize: 14
         }
 
@@ -157,15 +169,15 @@ Item {
         }
     }
 
-    // ---------- 事件列表 ----------
-    // 列表区高度按设计稿取「3 行」：设计稿画了 3 条事件，下面留白，
-    // 条数徽标却写 6 —— 说明列表是可滚动的，这里就只露出前 3 行，
-    // 其余留在模型里（删掉前面的会自然露出来）。
+    // ---------- 事件列表（可视 3 行，滚轮滚动）----------
+    // 列表区高度按设计稿取「3 行」：设计稿画了 3 条事件、下面留白，
+    // 条数徽标却写 6 —— 说明列表是可滚动的，这里露出 3 行，其余靠滚动看。
     Item {
+        id: eventViewport
         x: 0
         y: 101
         width: root.width
-        height: 132
+        height: root.eventViewHeight
         clip: true
 
         Repeater {
@@ -175,7 +187,7 @@ Item {
                 required property var model
                 required property int index
 
-                readonly property int rowY: 44 * index
+                readonly property int rowY: root.eventRowHeight * index - root.eventScroll
 
                 PanelDivider {
                     y: rowY + 36
@@ -199,7 +211,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: model.time
                     color: "#333333"
-                    font.family: Design.fontMedium
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleMedium
                     font.pixelSize: 16
                 }
 
@@ -210,7 +223,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: model.offset
                     color: Design.textSecondary
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 12
                 }
 
@@ -221,7 +235,8 @@ Item {
                     verticalAlignment: Text.AlignVCenter
                     text: model.label
                     color: Design.textSecondary
-                    font.family: Design.fontRegular
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
                     font.pixelSize: 16
                 }
 
@@ -237,10 +252,10 @@ Item {
                     Image {
                         x: 108
                         anchors.verticalCenter: parent.verticalCenter
-                        width: 7
+                        width: 7.47
                         height: 7
                         rotation: 90
-                        source: "assets/icons/icon-arrow-down.svg"
+                        source: Design.assetRoot + "icons/icon-arrow-down.svg"
                     }
                 }
 
@@ -259,7 +274,7 @@ Item {
                         y: 7
                         width: 14
                         height: 14
-                        source: "assets/icons/icon-trash.svg"
+                        source: Design.assetRoot + "icons/icon-trash.svg"
                     }
 
                     MouseArea {
@@ -269,6 +284,14 @@ Item {
                         onClicked: eventModel.remove(index)
                     }
                 }
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            onWheel: (wheel) => {
+                var step = wheel.angleDelta.y > 0 ? -root.eventRowHeight : root.eventRowHeight
+                root.eventScroll = Math.max(0, Math.min(root.eventMaxScroll, root.eventScroll + step))
             }
         }
     }
@@ -285,7 +308,8 @@ Item {
 
     Rectangle {
         x: 319
-        y: 108
+        // 轨道 186 高、滑块 24 高，可走 162px
+        y: 108 + (root.eventMaxScroll > 0 ? root.eventScroll / root.eventMaxScroll : 0) * 162
         width: 7
         height: 24
         radius: 4

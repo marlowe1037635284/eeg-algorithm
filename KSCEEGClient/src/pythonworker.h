@@ -86,7 +86,11 @@ public:
     void request_stop();
 
 signals:
-    // 算法处理后的样本块（交错布局，单位 µV）
+    // 算法处理后的样本块（交错布局，单位 µV）。
+    //
+    // 当前界面**不消费**它：波形显示的是原始采集值（原因见 acquisitionbridge.cpp
+    // 里 deliver() 的说明）。保留这个信号是因为它本来就是算法线程对外的正常输出，
+    // 将来要看处理后波形时接上即可 —— 地形图与频谱用的就是这份数据
     void block_processed(const SignalChunk &chunk);
     void session_opened(int config_version);
     void session_closed();

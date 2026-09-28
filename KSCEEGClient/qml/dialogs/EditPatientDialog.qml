@@ -11,6 +11,13 @@ Item {
     signal dismissed()
     signal accepted()
 
+    // 应用数据库，由外层注入
+    property var database
+    // 改的是哪一位（改病历号时要用它定位原记录）
+    property string originalNo
+    // 保存失败的原因
+    property string errorText
+
     // 表单初值，外部在弹出前回填当前患者信息
     property alias recordNo: recordNoField.text
     property alias patientName: nameField.text
@@ -19,6 +26,45 @@ Item {
     property alias remark: remarkField.text
     property string gender: qsTr("男")
     property string department: qsTr("神经内科")
+
+    readonly property var genderChoices: [qsTr("男"), qsTr("女")]
+    readonly property var departmentChoices: [qsTr("神经内科"), qsTr("神经外科"), qsTr("康复科"), qsTr("其他")]
+
+    // 把一行患者数据填进表单
+    function load(row) {
+        if (!row)
+            return
+        errorText = ""
+        originalNo = row.no
+        recordNo = row.no
+        patientName = row.name
+        age = String(row.age)
+        diagnosis = row.diag
+        remark = row.note
+        gender = row.gender.length > 0 ? row.gender : genderChoices[0]
+        department = row.dept.length > 0 ? row.dept : departmentChoices[0]
+    }
+
+    function save() {
+        errorText = ""
+        if (!database) {
+            errorText = qsTr("数据库不可用，无法保存")
+            return
+        }
+
+        var years = Number(age)
+        if (isNaN(years))
+            years = 0
+
+        var result = database.updatePatient(originalNo, recordNo, patientName, gender, years,
+                                            department, diagnosis, remark)
+        if (!result.success) {
+            errorText = result.message
+            return
+        }
+        accepted()
+    }
+
 
     DialogFrame {
         title: qsTr("编辑患者")
@@ -51,27 +97,23 @@ Item {
             placeholder: qsTr("留空自动生成")
         }
 
-        Field {
-            id: genderField
+        // 下拉：点开列表来选
+        ChoiceField {
             x: 89
             y: 144
             width: 204
-            text: root.gender
-            readOnly: true
-
-            // 下拉箭头（设计稿 10×8 rot=90，绕左上角旋转）
-            DropArrow { x: 189; y: 16 }
+            choices: root.genderChoices
+            currentIndex: Math.max(0, root.genderChoices.indexOf(root.gender))
+            onActivated: (index) => root.gender = root.genderChoices[index]
         }
 
-        Field {
-            id: deptField
+        ChoiceField {
             x: 89
             y: 209
             width: 204
-            text: root.department
-            readOnly: true
-
-            DropArrow { x: 189; y: 16 }
+            choices: root.departmentChoices
+            currentIndex: Math.max(0, root.departmentChoices.indexOf(root.department))
+            onActivated: (index) => root.department = root.departmentChoices[index]
         }
 
         Field {
@@ -95,7 +137,8 @@ Item {
             x: 372
             y: 144
             width: 204
-            placeholder: qsTr("如：李四")
+            placeholder: qsTr("如：45")
+            numeric: true
         }
 
         Field {
@@ -114,12 +157,28 @@ Item {
             onClicked: root.dismissed()
         }
 
+        // 保存失败的原因。设计稿没有错误栏，放在分隔线上方的空处
+        Text {
+            x: 89
+            y: 340
+            width: 487
+            height: 20
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            visible: root.errorText.length > 0
+            text: root.errorText
+            color: Design.bad
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 14
+        }
+
         DialogButton {
             x: 460
             y: 353
             text: qsTr("保存")
             primary: true
-            onClicked: root.accepted()
+            onClicked: root.save()
         }
     }
 
@@ -142,6 +201,8 @@ Item {
         property alias text: fieldInput.text
         property alias readOnly: fieldInput.readOnly
         property string placeholder: ""
+        // 只收整数（年龄这种）。校验器挂在 TextInput 上，非法字符根本敲不进去
+        property bool numeric: false
 
         height: 43
         radius: 12
@@ -162,6 +223,9 @@ Item {
             selectedTextColor: "#ffffff"
             selectByMouse: true
             clip: true
+            validator: field.numeric ? ageValidator : null
+
+            IntValidator { id: ageValidator; bottom: 0; top: 150 }
         }
 
         // 占位提示（设计稿里占位文字同样是 #3b3b3b，只是 30% 透明）

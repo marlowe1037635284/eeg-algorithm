@@ -25,9 +25,25 @@ Item {
 
     property string userName: "管理员"
     property string userRole: "管理员"
-    property string patientName: "张文涛"
-    property string patientGenderAge: "男  45岁"
-    property string patientMeta: "P-0001·神经内科·记录1次"
+    // 刚进工作台时是**没有患者**的：设计稿对应「未选择患者 / 点击选择/登记」
+    // 那块空态卡片，选完患者才切成患者信息。效果图 E:/UI/效果/未选择患者.png
+    property bool hasPatient: false
+    property string patientNo: ""
+    property string patientName: ""
+    property string patientGenderAge: ""
+    property string patientMeta: ""
+
+    // 「选择/登记患者」弹窗确认后由外层调用，参数是 patients 表里的一行
+    function setPatient(row) {
+        if (!row || !row.no) {
+            return
+        }
+        patientNo = row.no
+        patientName = row.name
+        patientGenderAge = row.gender + "  " + row.age + qsTr("岁")
+        patientMeta = row.no + "·" + row.dept + qsTr("·记录") + row.count
+        hasPatient = true
+    }
 
     // collecting 直接绑到 Acq：真正的开关是 C++ 侧的采集线程，
     // QML 再存一份的话两者迟早不同步（拔线时线程自己就退了）
@@ -50,6 +66,12 @@ Item {
     function resetSession() {
         frozen = false
         elapsedSeconds = 0
+        // 重新进工作台就回到「未选择患者」：设计稿里这一页是**从选患者开始**的
+        hasPatient = false
+        patientNo = ""
+        patientName = ""
+        patientGenderAge = ""
+        patientMeta = ""
         selectedNav = qsTr("采集工作台")
     }
 
@@ -270,17 +292,21 @@ Item {
         border.width: 1
         border.color: Design.panelBorder
 
+        // 姓名与档案摘要之间的竖分隔线。空态下没有姓名，这条线就没有意义
         Rectangle {
             x: 96
             y: 16
             width: 1
             height: 44
+            visible: root.hasPatient
             color: "#c2c2c2"
         }
 
+        // ---------- 有患者：姓名 + 性别年龄 + 档案摘要 ----------
         Text {
             x: 12
             y: 21
+            visible: root.hasPatient
             text: root.patientName
             color: "#000000"
             font.family: Design.fontFamily
@@ -291,6 +317,7 @@ Item {
         Text {
             x: 110
             y: 12
+            visible: root.hasPatient
             text: root.patientGenderAge
             color: Design.textSecondary
             font.family: Design.fontFamily
@@ -301,11 +328,36 @@ Item {
         Text {
             x: 110
             y: 42
+            visible: root.hasPatient
             text: root.patientMeta
             color: Design.textSecondary
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 16
+        }
+
+        // ---------- 未选择患者：两行居中文字 ----------
+        // 位置按效果图量的：两行都水平居中于卡片，第一行中心 y≈23、第二行 y≈53
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 12
+            visible: !root.hasPatient
+            text: qsTr("未选择患者")
+            color: Design.textPrimary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleMedium
+            font.pixelSize: 20
+        }
+
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 45
+            visible: !root.hasPatient
+            text: qsTr("点击选择/登记")
+            color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 15
         }
 
         MouseArea {
@@ -418,27 +470,16 @@ Item {
 
     // 设计稿这里是静态样式，但幅值直接影响波形怎么读，做成可点击循环 ——
     // 不新增控件，只多一个点击区域
-    ToolField {
-        id: rangeField
+    // 量程。用下拉列表选，不再点一下切到下一档 —— 六档要连点好几次才轮到想要的
+    ChoiceField {
         x: 734
         y: 79
         width: 116
-        value: Acq.yRangeUV > 0 ? "±" + Acq.yRangeUV + "μV" : qsTr("自动量程")
+        choices: ["自动", "±50μV", "±100μV", "±200μV", "±400μV", "±1000μV"]
+        currentIndex: Math.max(0, rangeValues.indexOf(Acq.yRangeUV))
+        onActivated: (index) => Acq.yRangeUV = rangeValues[index]
 
-        readonly property var choices: [0, 50, 100, 200, 400, 1000]
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-                var list = rangeField.choices
-                var index = list.indexOf(Acq.yRangeUV)
-                Acq.yRangeUV = list[(index + 1) % list.length]
-            }
-            ToolTip.visible: containsMouse
-            ToolTip.text: qsTr("点击切换量程")
-            ToolTip.delay: 400
-        }
+        readonly property var rangeValues: [0, 50, 100, 200, 400, 1000]
     }
 
     Text {
@@ -453,29 +494,15 @@ Item {
 
     // 设计稿这一格的值写的是「50μV/div」，与后面的括号说明「走纸速度 15mm/s」
     // 以及它自己「时基」的标题都对不上 —— 幅值已经有一格了，这里按语义显示时窗
-    ToolField {
-        id: windowField
+    ChoiceField {
         x: 917
         y: 79
         width: 104
-        value: Acq.timeWindow + qsTr("秒/屏")
-        showArrow: true
-        arrowX: 85
+        choices: ["0.5 秒/屏", "1 秒/屏", "2 秒/屏", "5 秒/屏", "10 秒/屏"]
+        currentIndex: Math.max(0, windowValues.indexOf(Acq.timeWindow))
+        onActivated: (index) => Acq.timeWindow = windowValues[index]
 
-        readonly property var choices: [0.5, 1, 2, 5, 10]
-
-        MouseArea {
-            anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
-            onClicked: {
-                var list = windowField.choices
-                var index = list.indexOf(Acq.timeWindow)
-                Acq.timeWindow = list[(index + 1) % list.length]
-            }
-            ToolTip.visible: containsMouse
-            ToolTip.text: qsTr("点击切换显示时窗")
-            ToolTip.delay: 400
-        }
+        readonly property var windowValues: [0.5, 1, 2, 5, 10]
     }
 
     // 新版设计稿在时基后面加了一段括号说明（照抄）
@@ -565,7 +592,9 @@ Item {
     }
 
     // ---------- 开始 / 停止采集 ----------
-    // 设计稿只有「开始采集」这一态；采集中沿用原实现的语义，做成红色「停止采集」
+    // 采集中切成设计稿的「停止采集」态：橙色底 + 白色方块 + 停止采集。
+    // 效果图 E:/UI/效果/停止采集.png —— 底色是设计系统的橙（不是红），
+    // 图标是圆角方块（不是播放三角）
     Rectangle {
         id: startButton
         x: 107
@@ -573,16 +602,33 @@ Item {
         width: 331
         height: 64
         radius: 18
-        color: root.collecting ? (startMouse.pressed ? "#bd4d45" : Design.bad)
+        color: root.collecting ? (startMouse.pressed ? "#e8954f" : Design.stopButton)
                                : (startMouse.pressed ? "#64879f" : Design.primary)
+        // 未选患者时压暗：按钮点不动必须有视觉依据，否则用户只会觉得「点了没反应」
+        opacity: (!root.collecting && !root.hasPatient) ? 0.45 : 1.0
 
+        // 开始态：设计稿的播放三角（矢量原样用，只旋转 -90 让它朝右）
         Image {
             x: 103.75
             y: 22.19
             width: 16.13
             height: 14.5
             rotation: -90
+            visible: !root.collecting
             source: Design.assetRoot + "icons/icon-play.svg"
+        }
+
+        // 停止态：白色圆角方块。位置与尺寸按效果图量的（16×16、垂直居中、
+        // 与播放三角同一列）。用 Rectangle 画而不是再加一个 svg ——
+        // 一个方块不值得多一个资源文件
+        Rectangle {
+            x: 104
+            y: 24
+            width: 16
+            height: 16
+            radius: 4
+            visible: root.collecting
+            color: "#ffffff"
         }
 
         Text {
@@ -602,11 +648,18 @@ Item {
             cursorShape: Qt.PointingHandCursor
             onClicked: {
                 // 开始之前先走「开始采集前确认」，停止则直接停
-                if (root.collecting)
+                if (root.collecting) {
                     root.stopCollection()
-                else
+                } else if (root.hasPatient) {
                     root.precheckRequested()
+                }
+                // 没选患者时什么都不做：这一页采集的数据要挂到某位患者名下，
+                // 没有对象就开始采，数据落地后无从归属
             }
+
+            ToolTip.visible: containsMouse && !root.collecting && !root.hasPatient
+            ToolTip.text: qsTr("请先选择患者")
+            ToolTip.delay: 300
         }
     }
 
@@ -819,7 +872,8 @@ Item {
                 qsTr("时窗：") + Acq.timeWindow + qsTr("秒/屏"),
                 Acq.yRangeUV > 0 ? qsTr("幅值：±") + Acq.yRangeUV + "μV" : qsTr("幅值：自动"),
                 Acq.statsText,
-                qsTr("患者：") + root.patientName
+                // 未选患者时不能还挂着一个人名 —— 与左上角那张卡片保持一致
+                qsTr("患者：") + (root.hasPatient ? root.patientName : qsTr("未选择"))
             ]
 
             delegate: Text {
@@ -832,39 +886,6 @@ Item {
             }
         }
     }
-    }
-
-    // 工具栏里的下拉样控件（设计稿是静态样式，这里只是外观）
-    component ToolField: Rectangle {
-        id: toolField
-        property string value: ""
-        property bool showArrow: false
-        property real arrowX: 0
-        height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 9
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: toolField.value
-            color: "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
-
-        Image {
-            x: toolField.arrowX
-            anchors.verticalCenter: parent.verticalCenter
-            width: 7.47
-            height: 7
-            rotation: 90
-            source: Design.assetRoot + "icons/icon-arrow-down.svg"
-            visible: toolField.showArrow
-        }
     }
 
     // 工具栏右侧的圆角按钮（冻结 / 截图 / 清空）

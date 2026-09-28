@@ -16,17 +16,60 @@ Item {
     signal dismissed()      // 关闭 / 取消
     signal accepted()       // 保存
 
+    // 应用数据库。由外层注入（Main.qml），保存时往 patients 表写一条
+    property var database
+    // 保存失败的原因。设计稿没有错误栏，出错时显示在表单与按钮之间那条空白里
+    property string errorText
+    // 保存成功后的病历号，外层拿它去选中这位患者
+    property string savedPatientNo
+
     // 表单字段（施工图里的 矩形 21~27 + 标签 + 提示/取值）。
     // 所有坐标都是画板绝对坐标：标签 y = 字段 y + 8，文字 y = 字段 y + 11，都是施工图里的值。
+    //
+    // 下标即字段顺序，save() 按这个顺序取值：
+    //   0 病历号 1 姓名 2 性别 3 年龄 4 科室 5 诊断 6 备注
+    // 带 choices 的是下拉（点击循环取值），其余是可输入的文本框
     readonly property var formFields: [
-        { label: qsTr("病历号"), labelX: 683, fieldX: 746,  fieldY: 418, fieldW: 204, text: qsTr("留空自动生成"), placeholder: true },
-        { label: qsTr("姓名*"),  labelX: 978, fieldX: 1029, fieldY: 418, fieldW: 204, text: qsTr("患者姓名"),     placeholder: true },
-        { label: qsTr("性别"),   labelX: 683, fieldX: 746,  fieldY: 483, fieldW: 204, text: qsTr("男"),           placeholder: false, arrow: true },
-        { label: qsTr("年龄"),   labelX: 978, fieldX: 1029, fieldY: 483, fieldW: 204, text: qsTr("如：李四"),     placeholder: true },
-        { label: qsTr("科室"),   labelX: 683, fieldX: 746,  fieldY: 548, fieldW: 204, text: qsTr("神经内科"),     placeholder: false, arrow: true },
-        { label: qsTr("诊断"),   labelX: 978, fieldX: 1029, fieldY: 548, fieldW: 204, text: qsTr("如：癫痫"),     placeholder: true },
-        { label: qsTr("备注"),   labelX: 683, fieldX: 746,  fieldY: 613, fieldW: 487, text: qsTr("选填"),         placeholder: true }
+        { label: qsTr("病历号"), labelX: 683, fieldX: 746,  fieldY: 418, fieldW: 204, placeholder: qsTr("留空自动生成") },
+        { label: qsTr("姓名*"),  labelX: 978, fieldX: 1029, fieldY: 418, fieldW: 204, placeholder: qsTr("患者姓名") },
+        { label: qsTr("性别"),   labelX: 683, fieldX: 746,  fieldY: 483, fieldW: 204, choices: [qsTr("男"), qsTr("女")] },
+        // 施工图这一格写的提示是「如：李四」—— 那是姓名不是年龄，明显是导出时抄错了。
+        // 按语义改成年龄的例子
+        { label: qsTr("年龄"),   labelX: 978, fieldX: 1029, fieldY: 483, fieldW: 204, placeholder: qsTr("如：45"), numeric: true },
+        { label: qsTr("科室"),   labelX: 683, fieldX: 746,  fieldY: 548, fieldW: 204,
+          choices: [qsTr("神经内科"), qsTr("神经外科"), qsTr("康复科"), qsTr("其他")] },
+        { label: qsTr("诊断"),   labelX: 978, fieldX: 1029, fieldY: 548, fieldW: 204, placeholder: qsTr("如：癫痫") },
+        { label: qsTr("备注"),   labelX: 683, fieldX: 746,  fieldY: 613, fieldW: 487, placeholder: qsTr("选填") }
     ]
+
+    // 按字段下标取控件当前值
+    function fieldValue(index) {
+        var item = fieldRepeater.itemAt(index)
+        return item !== null && item !== undefined ? item.value : ""
+    }
+
+    // 保存到数据库。失败时把原因留在界面上 —— 「点了没反应」是表单最糟的反馈
+    function save() {
+        errorText = ""
+        if (!database) {
+            errorText = qsTr("数据库不可用，无法保存")
+            return
+        }
+
+        var age = Number(fieldValue(3))
+        if (isNaN(age))
+            age = 0
+
+        var result = database.addPatient(fieldValue(0), fieldValue(1), fieldValue(2), age,
+                                         fieldValue(4), fieldValue(5), fieldValue(6))
+        if (!result.success) {
+            errorText = result.message
+            return
+        }
+
+        savedPatientNo = result.no
+        accepted()
+    }
 
     DialogFrame {
         title: qsTr("新增患者")
@@ -47,14 +90,20 @@ Item {
         }
 
         // ---------- 表单 ----------
-        // 字段只做外形还原（施工图画的是一排空输入框），所以用 Text 静态画出提示/取值，
-        // 没有接 TextInput；要能输入的话由调用方在这里换成输入控件。
         Repeater {
+            id: fieldRepeater
             model: root.formFields
 
             delegate: Item {
                 required property var modelData
 
+                // 下拉字段：只读，点一下切到下一个选项
+                readonly property bool isChoice: modelData.choices !== undefined
+                // 控件当前值。save() 通过 Repeater.itemAt(index).value 取值，
+                // 这样控件本身是什么不影响取值口
+                property alias value: field.text
+
+                // 下拉字段的底与箭头由 ChoiceField 自己画，这里不重复
                 Rectangle {
                     x: modelData.fieldX
                     y: modelData.fieldY
@@ -62,6 +111,7 @@ Item {
                     height: 43
                     radius: 12
                     color: Design.primarySoft
+                    visible: !parent.isChoice
                 }
 
                 Text {
@@ -74,30 +124,84 @@ Item {
                     font.pixelSize: 18
                 }
 
+                // 下拉：点开一个列表来选
+
+                ChoiceField {
+                    id: choiceControl
+                    x: modelData.fieldX
+                    y: modelData.fieldY
+                    width: modelData.fieldW
+                    height: 43
+                    visible: parent.isChoice
+                    choices: parent.isChoice ? modelData.choices : []
+                    // 值也要能从这里取到（save() 走 Repeater.itemAt(i).value）
+                    onActivated: (index) => parent.choiceValue = modelData.choices[index]
+                    Component.onCompleted: {
+                        // 下拉给个初值，否则框里是空的、看着像没填
+                        if (parent.isChoice)
+                            parent.choiceValue = modelData.choices[0]
+                    }
+                }
+
+                TextInput {
+                    id: field
+                    x: modelData.fieldX + 13
+                    y: modelData.fieldY + 11
+                    width: modelData.fieldW - 26
+                    height: 22
+                    visible: !parent.isChoice
+                    color: "#3b3b3b"
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
+                    font.pixelSize: 16
+                    selectionColor: Design.primary
+                    selectedTextColor: "#ffffff"
+                    clip: true
+                    selectByMouse: true
+                    // 年龄只收整数。上限给 150 —— 不设上限的话 99999 也能存进库
+                    validator: modelData.numeric === true ? ageValidator : null
+
+                    IntValidator {
+                        id: ageValidator
+                        bottom: 0
+                        top: 150
+                    }
+                }
+
+                // 占位文字。#3b3b3b 30%（和患者管理页搜索框同一套）
                 Text {
                     x: modelData.fieldX + 13
                     y: modelData.fieldY + 11
-                    text: modelData.text
-                    // 占位文字是 #3b3b3b 30%（和患者管理页搜索框同一套），已选的取值是实色
-                    color: modelData.placeholder ? Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.30) : "#3b3b3b"
+                    height: 22
+                    verticalAlignment: Text.AlignVCenter
+                    visible: field.text.length === 0
+                    text: modelData.placeholder !== undefined ? modelData.placeholder : ""
+                    color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.30)
                     font.family: Design.fontFamily
                     font.styleName: Design.styleRegular
                     font.pixelSize: 16
                 }
 
-                // 下拉箭头（施工图 路径 @935,499 10×8 rot=90，性别/科室两个字段各一个）。
-                // 施工图节点带 rot=90，Figma 插件给出的 x 是旋转前的左上角，渲染图实测箭头
-                // 落在 925~935（= 935 − 宽 10），这里按渲染图取 925；导出的 svg 本身就是
-                // 设计稿里那个朝向，不用再转。
-                Image {
-                    x: 925
-                    y: modelData.fieldY + 16
-                    width: 10
-                    height: 8
-                    visible: modelData.arrow !== undefined
-                    source: Design.assetRoot + "icons/icon-arrow-down.svg"
-                }
+
             }
+        }
+
+        // ---------- 保存失败的原因 ----------
+        // 设计稿没有错误栏；出错时显示在表单与按钮之间那条空白里。
+        // 表单最糟的反馈就是「点了没反应」，所以原因必须落到界面上
+        Text {
+            x: 683
+            y: 658
+            width: 500
+            height: 22
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            visible: root.errorText.length > 0
+            text: root.errorText
+            color: Design.bad
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 14
         }
 
         // 直线 48：底部按钮上方的渐隐分隔线
@@ -158,7 +262,8 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.accepted()
+                // 真的写库；成功才 accepted()
+                onClicked: root.save()
             }
         }
 

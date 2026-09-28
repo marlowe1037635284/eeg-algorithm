@@ -15,6 +15,9 @@ Item {
 
     property string pageTitle: ""
     property string currentNav: ""
+    // 底栏右侧显示的指标项。各页按自己知道的信息传，不传就是不显示 ——
+    // 这些值没有一个能在 AppShell 这一层拿到，写死就只能是假的
+    property var statusItems: []
     // 顶栏右上角的当前用户（登录后由 Main 传进来）
     property string userName: qsTr("管理员")
     property string userRole: qsTr("管理员")
@@ -262,25 +265,28 @@ Item {
         font.pixelSize: 14
     }
 
-    Repeater {
-        model: [
-            { x: 1283, text: qsTr("采样率：256Hz") },
-            { x: 1390, text: qsTr("时基：2s/div") },
-            { x: 1483, text: qsTr("幅值：100μV/div") },
-            { x: 1602, text: qsTr("数据点：1,024") },
-            { x: 1703, text: qsTr("电极：10/16良好") },
-            { x: 1821, text: qsTr("患者：张文强") }
-        ]
+    // 底栏右侧那排指标。原来全是写死的（256Hz、数据点 1,024、电极 10/16 良好、
+    // 患者「张文强」——连名字都是「张文涛」的错字），与页面上的实际值互相矛盾。
+    //
+    // 现在改成由各页把自己的那几项传进来（`statusItems`）：采集相关的那几项只有
+    // 采集页知道，别的页没有这些概念，硬凑一串数字只是假数据。传空数组就不显示。
+    Row {
+        anchors.right: parent.right
+        anchors.rightMargin: 27
+        y: 1052
+        spacing: 22
 
-        delegate: Text {
-            required property var modelData
-            x: modelData.x
-            y: 1052
-            text: modelData.text
-            color: "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
+        Repeater {
+            model: shell.statusItems
+
+            delegate: Text {
+                required property string modelData
+                text: modelData
+                color: "#3b3b3b"
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+            }
         }
     }
 }

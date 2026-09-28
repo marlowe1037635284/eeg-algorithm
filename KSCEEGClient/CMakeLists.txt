@@ -45,9 +45,10 @@ option(KSCEEG_CONSOLE "构建为控制台程序以便查看 Python 日志与自�
 
 qt_add_executable(appKSCEEGClient
     src/main.cpp
-    # 账号库用 Qt Sql 直接读写一个真正的 SQLite 文件（不用 QML 的 LocalStorage）
-    src/authdatabase.cpp
-    src/authdatabase.h
+    # 账号 / 偏好 / 患者都用 Qt Sql 直接读写一个真正的 SQLite 文件
+    # （不用 QML 的 LocalStorage，它把文件藏在 AppData 哈希目录里）
+    src/appdatabase.cpp
+    src/appdatabase.h
     # 嵌入式 Python 解释器门面（算法线程在后续步骤加进来）
     src/pythonengine.h
     src/pythonengine.cpp
@@ -83,10 +84,12 @@ qt_add_qml_module(appKSCEEGClient
         qml/Main.qml
         qml/components/AppNavRail.qml
         qml/components/AppShell.qml
+        qml/components/ChoiceField.qml
         qml/components/DialogFrame.qml
         qml/components/PanelDivider.qml
         qml/components/SoftBlob.qml
         qml/components/TableRowButton.qml
+        qml/dialogs/ConfirmDialog.qml
         qml/dialogs/EditPatientDialog.qml
         qml/dialogs/FilterDialog.qml
         qml/dialogs/NewPatientDialog.qml
@@ -151,7 +154,7 @@ set_target_properties(appKSCEEGClient PROPERTIES
     WIN32_EXECUTABLE $<NOT:$<BOOL:${KSCEEG_CONSOLE}>>
 )
 
-# C++ 源码在 src/ 下，QML 类型注册生成的头文件里是 #include "authdatabase.h"，
+# C++ 源码在 src/ 下，QML 类型注册生成的头文件里是 #include "appdatabase.h"，
 # 得把 src 加进包含路径
 target_include_directories(appKSCEEGClient
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src

@@ -38,11 +38,8 @@ Window {
     property bool asrOn: false
     property string referenceMethod: "common_average"
 
-    readonly property var referenceChoices: [
-        { value: "off", label: qsTr("不重参考") },
-        { value: "common_average", label: qsTr("全脑平均") },
-        { value: "bilateral_mastoids", label: qsTr("双侧乳突") }
-    ]
+    readonly property var referenceValues: ["off", "common_average", "bilateral_mastoids"]
+    readonly property var referenceLabels: [qsTr("不重参考"), qsTr("全脑平均"), qsTr("双侧乳突")]
 
     // 采样率决定 Nyquist，进而在输入阶段就挡住必然被算法拒绝的值。
     // 让用户先填 900 Hz 再被拒，不如当场夹住
@@ -351,55 +348,18 @@ Window {
                     font.pixelSize: 16
                 }
 
-                Rectangle {
-                    id: referenceBox
+                // 下拉：点开列表来选。原来是点一下切到下一个 ——
+                // 三项还行，再多就得连点好几下才能轮到想要的
+                ChoiceField {
                     x: 216
                     width: 150
                     height: 30
                     anchors.verticalCenter: parent.verticalCenter
-                    radius: 8
-                    color: referenceMouse.containsMouse
-                           ? Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.18)
-                           : Design.primarySoft
-                    border.width: 1
-                    border.color: Design.panelBorder
-
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: 10
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: {
-                            for (var i = 0; i < root.referenceChoices.length; ++i) {
-                                if (root.referenceChoices[i].value === root.referenceMethod)
-                                    return root.referenceChoices[i].label
-                            }
-                            return root.referenceMethod
-                        }
-                        color: Design.textPrimary
-                        font.family: Design.fontFamily
-                        font.styleName: Design.styleRegular
-                        font.pixelSize: 14
-                    }
-
-                    MouseArea {
-                        id: referenceMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            var list = root.referenceChoices
-                            var index = 0
-                            for (var i = 0; i < list.length; ++i) {
-                                if (list[i].value === root.referenceMethod)
-                                    index = i
-                            }
-                            root.referenceMethod = list[(index + 1) % list.length].value
-                        }
-                    }
-
-                    ToolTip.visible: referenceMouse.containsMouse
-                    ToolTip.text: qsTr("点击切换重参考方式")
-                    ToolTip.delay: 300
+                    pixelSize: 14
+                    fieldRadius: 8
+                    choices: root.referenceLabels
+                    currentIndex: Math.max(0, root.referenceValues.indexOf(root.referenceMethod))
+                    onActivated: (index) => root.referenceMethod = root.referenceValues[index]
                 }
 
                 Text {

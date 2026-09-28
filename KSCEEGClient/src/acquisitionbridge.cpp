@@ -297,8 +297,6 @@ AcquisitionBridge::AcquisitionBridge(PythonEngine *engine, QObject *parent)
     m_demo_timer.setInterval(kDisplayIntervalMs);
 
     // 算法线程的信号一律队列投递（发信方在工作线程）
-    QObject::connect(&m_worker, &PythonWorker::block_processed, this,
-                     &AcquisitionBridge::on_block_processed, Qt::QueuedConnection);
     QObject::connect(&m_worker, &PythonWorker::session_opened, this,
                      &AcquisitionBridge::on_session_opened, Qt::QueuedConnection);
     QObject::connect(&m_worker, &PythonWorker::session_closed, this,
@@ -362,13 +360,11 @@ bool AcquisitionBridge::deliver(const SignalChunk &chunk)
     m_raw_buffer.append(chunk.samples.constData(), chunk.samples_per_channel, chunk.channels,
                         chunk.first_timestamp_ns, period_ns);
 
-    // 算法不可用时，显示回退到原始数据。这条旁路的价值在于：Python 挂了、
-    // 会话进了 ERROR，界面上的波形照常在动，用户能立刻区分「设备还在采、
-    // 算法出问题」和「整个软件死了」
-    if (m_use_raw_fallback.load(std::memory_order_relaxed))
-    {
-        append_to_display(chunk);
-    }
+    // 波形**固定**显示原始采集值（见 kDisplayRawSignal 的说明）。
+    //
+    // 顺带带来一个好处：算法没起来、会话进了 ERROR 时波形照常在动，
+    // 用户能直接区分「设备还在采、算法出问题」和「整个软件死了」
+    append_to_display(chunk);
 
     return m_worker.deliver(chunk);
 }
@@ -545,7 +541,6 @@ bool AcquisitionBridge::start_collection(const QString &directory)
             QStringLiteral("%1_%2.eegbin").arg(stamp).arg(suffix));
     }
 
-    m_use_raw_fallback.store(true, std::memory_order_relaxed);
     m_collect_timer.start();
     m_events.clear();
     emit eventsChanged();
@@ -590,7 +585,6 @@ void AcquisitionBridge::start_demo_source()
     // 走真实路径：先建会话，再灌数据
     push_session_config();
 
-    m_use_raw_fallback.store(true, std::memory_order_relaxed);
     m_collect_timer.start();
     m_events.clear();
     emit eventsChanged();
@@ -704,7 +698,7 @@ void AcquisitionBridge::reset_channels(int channels)
 {
     m_channel_count = std::clamp(channels, 1, eeg_montage::kChannelCount);
 
-    const int wanted = m_sample_rate * kMaxWindowSeconds;
+    const int wanted = std::clamp(m_sample_rate * kMaxWindowSeconds, 1, kMaxSamplesPerChannel);
 
     {
         // 容量、缓冲、写头三者必须在**同一把锁内**一起更新。
@@ -715,12 +709,19 @@ void AcquisitionBridge::reset_channels(int channels)
         // 当前调用路径不会真的撞上（open_port 会先等采集线程退出），
         // 但这个不变式很脆，不该靠调用顺序来保证
         const QMutexLocker locker(&m_display_mutex);
-        m_display_capacity = std::clamp(wanted, 1, kMaxSamplesPerChannel);
-        m_display_data.assign(static_cast<qsizetype>(m_display_capacity)
-                                  * eeg_montage::kChannelCount,
-                              0.0f);
-        m_display_head = 0;
-        m_display_filled = 0;
+        if (m_display_capacity != wanted || m_display_data.isEmpty())
+        {
+            // 只有容量真的变了（换采样率、重开串口）才重建。
+            //
+            // 切显示通道数**不重建**：原始数据流没有变，清空只会让画面白掉一截，
+            // 而用户看到的「切档位后波形不对」里有一半就是这个
+            m_display_capacity = wanted;
+            m_display_data.assign(static_cast<qsizetype>(m_display_capacity)
+                                      * eeg_montage::kChannelCount,
+                                  0.0f);
+            m_display_head = 0;
+            m_display_filled = 0;
+        }
     }
 
     // 显隐掩码只在通道数真的变了时重建，重叠部分原样保留
@@ -736,9 +737,15 @@ void AcquisitionBridge::reset_channels(int channels)
     }
 
     emit channelCountChanged();
+
+    // 同理：泳道条数变了要立刻重画，不然空图状态下切档位看不出任何变化
+    m_rendered_generation = -1;
     render_wave();
 }
 
+// 把一块样本写进显示缓冲。
+//
+// 写进来的**只有原始采集值**（见 deliver() 的说明）：算法处理后的值不参与波形显示
 void AcquisitionBridge::append_to_display(const SignalChunk &chunk)
 {
     if (chunk.channels <= 0 || chunk.samples_per_channel <= 0 || chunk.samples.isEmpty())
@@ -952,6 +959,26 @@ void AcquisitionBridge::render_wave_image(const QVector<float> &window, int samp
 
         // 每列取该列的最小/最大值，两点连成一段 —— 点远多于像素列时
         // 才能保住肉眼要看的尖峰，否则正弦会被抽成锯齿
+        // 显示用的去直流：减去本窗口内该通道的均值。
+        //
+        // 这不是「后处理」——它是示波器上的 AC 耦合：每帧现算，**没有跨帧状态**，
+        // 所以不会像算法侧那个因果高通一样在启动时产生几秒的瞬变。
+        //
+        // 为什么必须有它：电极的半电池电位是几百 mV 量级，脑电只有几十 µV。
+        // 不减掉直流，接得不好的那几路会顶到格子上沿连成一条平线（实测悬空电极
+        // 在 533000 µV），整屏 16 路里只有接好的那一路看得出东西
+        double offset = 0.0;
+        if (m_dc_removal)
+        {
+            double sum = 0.0;
+            for (int i = 0; i < samples_per_channel; ++i)
+            {
+                sum += window.at(static_cast<qsizetype>(i) * eeg_montage::kChannelCount
+                                 + source_channel);
+            }
+            offset = sum / samples_per_channel;
+        }
+
         // 一次分配、按下标写入。这份缓冲是成员而不是每帧新建：
         // 16 路 × 两千多个点，每帧重新分配一次是白白的开销
         const float *samples = window.constData();
@@ -972,6 +999,8 @@ void AcquisitionBridge::render_wave_image(const QVector<float> &window, int samp
                 minimum = std::min(minimum, value);
                 maximum = std::max(maximum, value);
             }
+            minimum -= static_cast<float>(offset);
+            maximum -= static_cast<float>(offset);
             if (minimum > maximum)
             {
                 minimum = 0.0f;
@@ -1028,10 +1057,18 @@ void AcquisitionBridge::set_wave_view_size(int width, int height)
     {
         return;
     }
-    const QMutexLocker locker(&m_wave_mutex);
-    m_wave_view_size = size;
-    // 尺寸变了，下一帧重建图像。这里不主动画：等下一个数据节拍，
-    // 免得窗口拖动时每移动一像素就画一次整幅波形
+    {
+        const QMutexLocker locker(&m_wave_mutex);
+        m_wave_view_size = size;
+    }
+
+    // 尺寸一变就立刻重画一次。
+    //
+    // 不能等下一个数据节拍：刚进采集页、或采集还没开始时缓冲里没有数据，
+    // 「显示缓冲变了才重画」那条路永远不触发 —— 结果是整片波形区一片空白，
+    // 连泳道和网格都没有。空图也要把网格画出来，那是这一页的底
+    m_rendered_generation = -1;
+    render_wave();
 }
 
 QImage AcquisitionBridge::current_wave_image() const
@@ -1063,13 +1100,13 @@ void AcquisitionBridge::set_channel_count(int count)
     {
         return;
     }
+    // 只改显示，**不动算法会话**：算法侧始终拿全部 16 路（协议就只给 16 路），
+    // 这个档位纯粹决定画几条泳道。
+    //
+    // 早先这里会重建会话，那是个 bug：重建会把滤波状态清零，而因果 0.5Hz 高通
+    // 从零状态消掉重参考带进来的直流要四五秒 —— 每次切档位都会换来一段
+    // 从十几万 µV 衰减下来的巨大瞬变，波形、地形图、频谱一起受影响
     reset_channels(clamped);
-    if (m_collecting)
-    {
-        // 通道子集变了，算法会话的滚动缓存要跟着重建 —— 用重建会话来表达，
-        // 因为会话的通道数在创建时就固定了
-        push_session_config();
-    }
     emit logMessage(tr("显示通道数改为 %1").arg(clamped));
 }
 
@@ -1125,6 +1162,18 @@ void AcquisitionBridge::set_y_range_uv(int range_uv)
     }
     m_y_range_uv = range_uv;
     emit yRangeChanged();
+}
+
+void AcquisitionBridge::set_dc_removal(bool enabled)
+{
+    if (enabled == m_dc_removal)
+    {
+        return;
+    }
+    m_dc_removal = enabled;
+    // 下一帧就会按新设置重画，不用额外通知：波形每 33ms 重画一次，
+    // 而 dcRemovalChanged 只用于让界面上的开关回读状态
+    emit dcRemovalChanged();
 }
 
 QStringList AcquisitionBridge::channel_names() const
@@ -1402,13 +1451,6 @@ void AcquisitionBridge::tick_spectrum()
 
 // ==================== 算法线程的信号 ====================
 
-void AcquisitionBridge::on_block_processed(const SignalChunk &chunk)
-{
-    // 算法能出结果就说明它活着，显示切回处理后的数据
-    m_use_raw_fallback.store(false, std::memory_order_relaxed);
-    append_to_display(chunk);
-}
-
 void AcquisitionBridge::on_session_opened(int config_version)
 {
     Q_UNUSED(config_version);
@@ -1424,7 +1466,6 @@ void AcquisitionBridge::on_session_opened(int config_version)
 
 void AcquisitionBridge::on_session_closed()
 {
-    m_use_raw_fallback.store(true, std::memory_order_relaxed);
     m_session_state = QStringLiteral("closed");
     m_can_reset = false;
     m_warmup_text.clear();
@@ -1572,8 +1613,7 @@ void AcquisitionBridge::on_session_state_changed(const QString &state)
     if (state == QLatin1String("error"))
     {
         // 会话坏了就切回原始波形：至少让用户看到设备还在采
-        m_use_raw_fallback.store(true, std::memory_order_relaxed);
-    }
+        }
     emit sessionStateChanged();
 }
 
@@ -1641,8 +1681,7 @@ void AcquisitionBridge::on_collecting_changed(bool collecting)
     m_collecting = collecting;
     if (collecting)
     {
-        m_use_raw_fallback.store(true, std::memory_order_relaxed);
-    }
+        }
     emit collectingChanged();
 }
 
@@ -1661,8 +1700,7 @@ void AcquisitionBridge::on_recording_changed(bool recording, const QString &file
     {
         emit logMessage(tr("已停止写入文件"));
     }
-    // recordingPath 的 NOTIFY 挂在 collectingChanged 上（它没有单独的变更信号）
-    emit collectingChanged();
+    emit recordingPathChanged();
 }
 
 // ==================== 事件 ====================
@@ -1721,6 +1759,22 @@ double AcquisitionBridge::elapsed_seconds() const
 double AcquisitionBridge::raw_buffer_seconds() const
 {
     return m_raw_buffer.available_seconds();
+}
+
+int AcquisitionBridge::acquired_channel_count() const
+{
+    return eeg_montage::kChannelCount;
+}
+
+QVariantMap AcquisitionBridge::collection_summary() const
+{
+    QVariantMap summary;
+    summary[QStringLiteral("durationSeconds")] =
+        m_collect_timer.isValid() ? static_cast<int>(m_collect_timer.elapsed() / 1000) : 0;
+    summary[QStringLiteral("eventCount")] = m_events.size();
+    // 演示数据源不落盘，这里会是空串 —— 采集记录里那一列就留空
+    summary[QStringLiteral("filePath")] = m_recording_path;
+    return summary;
 }
 
 // ==================== 图像 provider ====================
@@ -1792,7 +1846,6 @@ void AcquisitionBridge::reset_port_flags()
 
     m_port_open = false;
     m_collecting = false;
-    m_use_raw_fallback.store(true, std::memory_order_relaxed);
 
     if (was_open)
     {

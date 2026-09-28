@@ -28,6 +28,9 @@ QtObject {
     readonly property color brand: "#ff8d1a"         // 品牌橙：Logo、登录页标题
     readonly property color primarySoft: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.10)   // 按钮/输入框底
     readonly property color sliderThumb: "#fea85d"   // 通道滑块当前档位
+    // 「停止采集」按钮的底色。设计稿里它和滑块高亮、警告色是同一个橙，
+    // 但语义完全不同，单独给个名字 —— 免得以后调滑块配色时把按钮一起改掉
+    readonly property color stopButton: "#fea85d"
 
     // ---------- 面板与文字 ----------
     readonly property color panelFill: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.35)     // 面板底

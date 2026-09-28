@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import KSCEEGClient
 
 // 「历史记录」页。设计稿画板 1920×1080，外壳复用 AppShell。
@@ -29,22 +30,55 @@ Item {
         return Design.offline
     }
 
-    // 设计稿只画了 3 行示意，页脚写的是「共 6 条记录（当前显示 6 条）」，
-    // 所以按页脚补足 6 行——前 3 行照抄设计稿（设计稿里 ID/患者/时间三行相同，
-    // 是 Figma 复制出来的占位数据，这里同样保留），后 3 行按同样的字段编合理数据。
-    readonly property var records: [
-        { no: "R-0013", patient: "刘娜", time: "2026-9-22 16:44:12", duration: "00:00:26", channels: "16", rate: "256 Hz", events: "0", quality: "16/16 良好", level: "良好" },
-        { no: "R-0013", patient: "刘娜", time: "2026-9-22 16:44:12", duration: "00:00:26", channels: "16", rate: "256 Hz", events: "0", quality: "16/16 良好", level: "良好" },
-        { no: "R-0013", patient: "刘娜", time: "2026-9-22 16:44:12", duration: "00:00:26", channels: "16", rate: "256 Hz", events: "0", quality: "8/16 不良", level: "不良" },
-        { no: "R-0012", patient: "王芳", time: "2026-9-20 09:12:35", duration: "00:01:04", channels: "16", rate: "256 Hz", events: "2", quality: "16/16 良好", level: "良好" },
-        { no: "R-0011", patient: "赵强", time: "2026-9-18 14:03:57", duration: "00:00:48", channels: "16", rate: "256 Hz", events: "1", quality: "15/16 良好", level: "良好" },
-        { no: "R-0010", patient: "孙倩", time: "2026-9-15 11:27:09", duration: "00:02:12", channels: "16", rate: "256 Hz", events: "3", quality: "13/16 不良", level: "不良" }
-    ]
+    // 应用数据库，由外层注入
+    property var database
+    // 按患者过滤。空串表示不过滤 —— 患者管理页点「记录」进来时会带上这位患者的病历号
+    property string patientFilter: ""
+    // 过滤时显示的患者名（库里查一次就够，不放在 records 的绑定里）
+    property string patientFilterName: ""
+
+    property int revision: 0
+    function reload() { revision++ }
+
+    readonly property var records: {
+        revision   // 绑定依赖
+        return database ? database.sessions(patientFilter) : []
+    }
+
+    // 清掉过滤，回到全部记录
+    function clearPatientFilter() {
+        patientFilter = ""
+        patientFilterName = ""
+        reload()
+    }
+
+    // 外层带着病历号进来时调它：把患者名一并从库里补上，界面上要显示是哪一位
+    function applyPatientFilter(patientNo) {
+        patientFilter = patientNo
+        patientFilterName = ""
+        if (patientNo.length > 0 && database) {
+            var rows = database.patients()
+            for (var i = 0; i < rows.length; ++i) {
+                if (rows[i].no === patientNo) {
+                    patientFilterName = rows[i].name
+                    break
+                }
+            }
+        }
+        reload()
+    }
 
     AppShell {
         anchors.fill: parent
         pageTitle: qsTr("历史采集记录")
         currentNav: qsTr("历史记录")
+        statusItems: {
+            var items = [qsTr("记录：") + root.records.length + qsTr(" 条")]
+            if (root.patientFilter.length > 0)
+                items.push(qsTr("筛选：") + (root.patientFilterName.length > 0
+                                             ? root.patientFilterName : root.patientFilter))
+            return items
+        }
         userName: root.userName
         userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
@@ -174,6 +208,20 @@ Item {
             color: Qt.rgba(0.4, 0.4, 0.4, 0.15)
         }
 
+        // ---------- 空态 ----------
+        Text {
+            x: 71
+            y: 200
+            visible: root.records.length === 0
+            text: root.patientFilter.length > 0
+                  ? qsTr("这位患者还没有采集记录")
+                  : qsTr("还没有采集记录，去采集工作台开始一次采集")
+            color: Design.textMuted
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
+        }
+
         // ---------- 分页 ----------
         Text {
             x: 19
@@ -269,10 +317,15 @@ Item {
         Text {
             x: 10
             y: 0
+            width: parent.width - 30
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: qsTr("全部患者")
-            color: "#3b3b3b"
+            elide: Text.ElideRight
+            // 有过滤时显示这位患者，否则是「全部患者」。设计稿只有后者的样子
+            text: root.patientFilter.length > 0
+                  ? (root.patientFilterName.length > 0 ? root.patientFilterName : root.patientFilter)
+                  : qsTr("全部患者")
+            color: root.patientFilter.length > 0 ? Design.primary : "#3b3b3b"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 16
@@ -285,6 +338,18 @@ Item {
             height: 7
             rotation: 90
             source: Design.assetRoot + "icons/icon-arrow-down.svg"
+            visible: root.patientFilter.length === 0
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            enabled: root.patientFilter.length > 0
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.clearPatientFilter()
+
+            ToolTip.visible: containsMouse
+            ToolTip.text: qsTr("点一下回到全部患者")
+            ToolTip.delay: 300
         }
     }
 

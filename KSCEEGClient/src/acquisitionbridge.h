@@ -29,11 +29,13 @@ class PythonEngine;
 // 追加到显示缓冲（加锁），然后把块转交给算法线程。所有 Q_PROPERTY 与信号都只在
 // GUI 线程上产生。
 //
-// 数据通路（见 plan 的架构图）：
-//   采集线程 ──deliver()──▶ 本对象 ──┬──▶ PythonWorker（有界队列，不可丢）
-//                                   └──▶ 显示缓冲（可丢，覆盖式）
-//   算法线程 ──block_processed──▶ 本对象把处理后的样本写进显示缓冲
+// 数据通路：
+//   采集线程 ──deliver()──▶ 本对象 ──┬──▶ 显示缓冲（波形：原始值）
+//                                   └──▶ PythonWorker（有界队列，不可丢）
 //   算法线程 ──topography_ready / spectrum_ready / status_updated──▶ 本对象 → QML
+//
+// **波形显示的是原始采集值，算法处理后的值只喂地形图与频谱**（原因见 .cpp 里
+// deliver() 的说明）
 class AcquisitionBridge : public QObject, public ChunkSink
 {
     Q_OBJECT
@@ -47,11 +49,15 @@ class AcquisitionBridge : public QObject, public ChunkSink
     Q_PROPERTY(QString statsText READ stats_text NOTIFY statsChanged)
     Q_PROPERTY(qint64 receivedFrames READ received_frames NOTIFY statsChanged)
     Q_PROPERTY(qint64 droppedBytes READ dropped_bytes NOTIFY statsChanged)
-    Q_PROPERTY(QString recordingPath READ recording_path NOTIFY collectingChanged)
+    // **不能**挂到 collectingChanged 上：两个属性独立变化，共用一个 NOTIFY 会让
+    // 「刚开始录制」那一下被当成「采集状态变了」。而采集线程是先发 recording_changed(true)
+    // 再发 collecting_changed(true)，于是 C++ 侧 m_collecting 还是 false 时就发出了
+    // collectingChanged —— 订阅方会以为采集停了
+    Q_PROPERTY(QString recordingPath READ recording_path NOTIFY recordingPathChanged)
 
     // ---- 波形 ----
-    // 界面上的 4/8/16 档位。它只影响**显示与算法会话的通道子集**，
-    // 串口上永远是 16 路（协议决定，见 serialprotocol.h）
+    // 界面上的 4/8/16 档位。**纯显示**：它决定画几条泳道，串口与算法侧永远是
+    // 全部 16 路（协议就只给 16 路，见 serialprotocol.h）。切档位不会碰算法会话
     Q_PROPERTY(int channelCount READ channel_count WRITE set_channel_count
                    NOTIFY channelCountChanged)
     Q_PROPERTY(QStringList channelNames READ channel_names NOTIFY channelCountChanged)
@@ -64,6 +70,8 @@ class AcquisitionBridge : public QObject, public ChunkSink
                    NOTIFY timeWindowChanged)
     // 每路纵轴半量程（µV），0 表示按窗口内峰值自动
     Q_PROPERTY(int yRangeUV READ y_range_uv WRITE set_y_range_uv NOTIFY yRangeChanged)
+    // 显示时是否去掉直流（每帧减去本窗口均值）。关掉看到的就是最原始的采集值
+    Q_PROPERTY(bool dcRemoval READ dc_removal WRITE set_dc_removal NOTIFY dcRemovalChanged)
 
     // ---- 滤波与后处理（弹窗绑这些属性）----
     Q_PROPERTY(bool highPassEnabled READ high_pass_enabled WRITE set_high_pass_enabled
@@ -168,6 +176,14 @@ public:
     // 界面可以拿它显示进度；自检也靠它确认这条通路真的在进数据
     Q_INVOKABLE double raw_buffer_seconds() const;
 
+    // 设备实际采到的通道数。它与界面上的通道档位无关 ——
+    // 档位是显示子集，协议上永远是 16 路，落盘与统计要按这个数记
+    Q_INVOKABLE int acquired_channel_count() const;
+
+    // 本次采集的小结，停止时写进采集记录：
+    //   { durationSeconds, eventCount, filePath }
+    Q_INVOKABLE QVariantMap collection_summary() const;
+
     // 取当前波形图。Qt 不保证 image provider 的调用线程，所以加锁并返回深拷贝
     QImage current_wave_image() const;
     // 同上，取当前地形图
@@ -195,6 +211,7 @@ public:
     int wave_revision() const { return m_wave_revision; }
     double time_window() const { return m_time_window; }
     int y_range_uv() const { return m_y_range_uv; }
+    bool dc_removal() const { return m_dc_removal; }
 
     bool high_pass_enabled() const { return m_processing.high_pass_enabled; }
     double high_pass_low_hz() const { return m_processing.high_pass_low_hz; }
@@ -235,6 +252,7 @@ public slots:
     void set_channel_count(int count);
     void set_time_window(double seconds);
     void set_y_range_uv(int range_uv);
+    void set_dc_removal(bool enabled);
     void set_high_pass_enabled(bool enabled);
     void set_high_pass_low_hz(double hz);
     void set_low_pass_enabled(bool enabled);
@@ -251,6 +269,7 @@ signals:
     void availablePortsChanged();
     void portStateChanged();
     void collectingChanged();
+    void recordingPathChanged();
     void statusTextChanged();
     void errorTextChanged();
     void statsChanged();
@@ -259,6 +278,7 @@ signals:
     void waveRevisionChanged();
     void timeWindowChanged();
     void yRangeChanged();
+    void dcRemovalChanged();
     void processingChanged();
     void sessionStateChanged();
     void topoRevisionChanged();
@@ -279,7 +299,6 @@ private:
     void on_failed(const QString &message);
     void on_collecting_changed(bool collecting);
     void on_recording_changed(bool recording, const QString &file_path);
-    void on_block_processed(const SignalChunk &chunk);
     void on_session_opened(int config_version);
     void on_session_closed();
     void on_config_applied(const ConfigUpdateInfo &info);
@@ -345,6 +364,12 @@ private:
     int m_wave_revision = 0;
     double m_time_window = 2.0;
     int m_y_range_uv = 100;
+    // 显示去直流，**默认关**：要看的就是采集到的最原始的值。
+    //
+    // 代价是明知且接受的：电极的半电池电位在几百 mV 量级，而脑电只有几十 µV，
+    // 所以接得不好的通道会顶出量程、在格子上沿连成一条平线。想看出那些通道
+    // 的真实交流成分（悬空电极会显示成削顶的 50Hz 工频）就把它打开
+    bool m_dc_removal = false;
 
     // 波形图。与实际显示区一一对应（QML 报物理像素，贴回去正好 1:1）。
     // image provider 的调用线程由 Qt 决定，所以加锁并交出深拷贝
@@ -364,10 +389,6 @@ private:
     qint64 m_demo_sequence_id = 0;
     qint64 m_demo_timestamp_ns = 0;
     void tick_demo_source();
-
-    // 采集线程读、GUI 线程写，所以用原子量而不是普通成员：
-    // 普通 bool 在这里是实打实的数据竞争
-    std::atomic<bool> m_use_raw_fallback{true};
 
     // 地形图。image provider 的调用线程由 Qt 决定，加锁并返回深拷贝
     QImage m_topo_image;

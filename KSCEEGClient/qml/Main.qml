@@ -35,11 +35,45 @@ ApplicationWindow {
     // 弹「采集记录预览」时要点开的那条记录号
     property string pendingRecordNo: ""
 
+    // 工作台当前选中的患者病历号。它属于「本次会话」而不是患者表里的字段，
+    // 所以放在这里由各页面共用（患者管理页拿它标出「当前」那一行）
+    property string currentPatientNo: ""
+    // 新增患者是从哪进来的："workbench" 表示选患者弹窗里点的登记，
+    // 存完之后要把新患者选上并回工作台；"patients" 表示患者管理页点的，存完只要刷新列表
+    property string newPatientOrigin: ""
+
+    // 弹「编辑患者」「删除确认」时针对的那一行
+    property var pendingPatientRow: null
+    // 本次采集属于哪位患者（用来在停止时把采集记录补全）。空串表示没有进行中的会话
+    property string openSessionPatient: ""
+    // 从患者管理页点「记录」进来时带的历史记录页过滤条件
+    property string historyPatientFilter: ""
+
     readonly property string defaultUserName: qsTr("管理员")
     readonly property string defaultUserRole: qsTr("管理员")
 
-    AuthDatabase {
-        id: authDatabase
+    // 应用数据库：账号、偏好、患者共用同一个实例。
+    //
+    // 做成 Main 里的一个对象再显式传给需要的页面/弹窗，而不是让各处自己去开
+    // 一个连接：SQLite 同文件多连接要自己处理锁，而且「文件放哪」的逻辑会散开
+    AppDatabase {
+        id: appDatabase
+    }
+
+    // 采集停止时把这次记录补全（时长、事件数、落盘路径）。
+    //
+    // 挂在 collectingChanged 上而不是工作台的停止按钮上：拔线、掉电时线程会自己
+    // 结束并发出同一个信号，那种情况同样要把记录收尾
+    Connections {
+        target: Acq
+        function onCollectingChanged() {
+            if (Acq.collecting || window.openSessionPatient.length === 0)
+                return
+            var summary = Acq.collection_summary()
+            appDatabase.finishCollection(window.openSessionPatient, summary.durationSeconds,
+                                         summary.eventCount, summary.filePath)
+            window.openSessionPatient = ""
+        }
     }
 
     // 滤波与后处理。独立的窗口而不是画布内弹窗：它要放 5 行参数 + 4 个输入框
@@ -60,7 +94,7 @@ ApplicationWindow {
 
             onLoginRequested: function(account, password, rememberPassword) {
                 errorMessage = ""
-                var result = authDatabase.authenticateOrRegister(account, password)
+                var result = appDatabase.authenticateOrRegister(account, password)
                 if (!result.success) {
                     errorMessage = qsTr("密码不正确，请重新输入")
                     clearPassword()
@@ -72,7 +106,7 @@ ApplicationWindow {
                 window.currentUserRole = result.role
                 window.loggedIn = true
                 window.enterWorkbench()
-                authDatabase.saveLoginRecord(account, password, rememberPassword)
+                appDatabase.saveLoginRecord(account, password, rememberPassword)
             }
         }
 
@@ -96,8 +130,11 @@ ApplicationWindow {
 
     // 导航项 → 页面标识
     function navigateTo(label) {
-        if (label === qsTr("采集工作台"))
+        if (label === qsTr("采集工作台")) {
             currentPage = "workbench"
+            // 等 Loader 把新页面实例化出来再回填患者卡片
+            Qt.callLater(window.applyCurrentPatientToWorkbench)
+        }
         else if (label === qsTr("患者管理"))
             currentPage = "patient"
         else if (label === qsTr("历史记录"))
@@ -126,6 +163,7 @@ ApplicationWindow {
         case "editPatient":   return editPatientComponent
         case "recordPreview": return recordPreviewComponent
         case "newTag":        return newTagComponent
+        case "confirmDelete": return confirmDeleteComponent
         default:              return null
         }
     }
@@ -135,12 +173,28 @@ ApplicationWindow {
         return pageLoader.item
     }
 
+    // 按病历号在库里找一行患者。编辑 / 删除 / 刷新之后都要用最新的那一份，
+    // 所以每次都重新查，不缓存
+    function findPatientRow(patientNo) {
+        if (!patientNo)
+            return null
+        var rows = appDatabase.patients()
+        for (var i = 0; i < rows.length; ++i) {
+            if (rows[i].no === patientNo)
+                return rows[i]
+        }
+        return null
+    }
+
     function enterWorkbench() {
         currentPage = "workbench"
         activeDialog = ""
         var page = currentPageItem()
         if (page && page.resetSession)
             page.resetSession()
+        // 会话里已经选过患者的话（比如从患者管理页设的），卡片直接显示他。
+        // 延到下一轮事件循环：此刻 Loader 可能还没把工作台实例化出来
+        Qt.callLater(window.applyCurrentPatientToWorkbench)
     }
 
     function closeDialog() {
@@ -152,8 +206,22 @@ ApplicationWindow {
         activeDialog = "recordPreview"
     }
 
-    function handleLogout() {
+    // 选择/登记患者之后，把工作台的卡片也切成这一位
+    function applyCurrentPatientToWorkbench() {
         var page = currentPageItem()
+        if (page && page.setPatient) {
+            var row = findPatientRow(currentPatientNo)
+            if (row)
+                page.setPatient(row)
+        }
+    }
+
+    function handleLogout() {
+        currentPatientNo = ""
+        historyPatientFilter = ""
+        openSessionPatient = ""
+        pendingPatientRow = null
+        var page = window.currentPageItem()
         if (page && page.stopCollection)
             page.stopCollection()
         activeDialog = ""
@@ -188,11 +256,38 @@ ApplicationWindow {
         PatientManagementPage {
             userName: window.currentUserName.length > 0 ? window.currentUserName : window.defaultUserName
             userRole: window.currentUserRole.length > 0 ? window.currentUserRole : window.defaultUserRole
+            database: appDatabase
+            currentPatientNo: window.currentPatientNo
+
+            // 每次进这一页都重新读一遍库：在别处新增/删除过患者之后，
+            // 页面重建时拿到的必须是新数据
+            Component.onCompleted: reload()
 
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.handleLogout()
-            onNewPatientRequested: window.activeDialog = "newPatient"
-            onEditPatientRequested: (recordNo) => window.activeDialog = "editPatient"
+            onNewPatientRequested: {
+                window.newPatientOrigin = "patients"
+                window.activeDialog = "newPatient"
+            }
+            onPatientActivated: (patientNo) => {
+                window.currentPatientNo = patientNo
+                // 工作台可能还没建（它由 Loader 按需实例化），所以这里只改会话状态；
+                // 进工作台时 resetSession 会清掉，需要重选 —— 但 currentPatientNo
+                // 是会话级的，工作台卡片由用户自己再点一次选择，语义上更清楚
+            }
+            onOpenRecordsRequested: (patientNo) => {
+                window.currentPatientNo = patientNo
+                window.historyPatientFilter = patientNo
+                window.navigateTo(qsTr("历史记录"))
+            }
+            onEditPatientRequested: (recordNo) => {
+                window.pendingPatientRow = window.findPatientRow(recordNo)
+                window.activeDialog = "editPatient"
+            }
+            onDeletePatientRequested: (patientNo) => {
+                window.pendingPatientRow = window.findPatientRow(patientNo)
+                window.activeDialog = "confirmDelete"
+            }
         }
     }
 
@@ -202,8 +297,17 @@ ApplicationWindow {
         HistoryPage {
             userName: window.currentUserName.length > 0 ? window.currentUserName : window.defaultUserName
             userRole: window.currentUserRole.length > 0 ? window.currentUserRole : window.defaultUserRole
+            database: appDatabase
 
-            onNavRequested: (label) => window.navigateTo(label)
+            // 每次重建这一页都按当前的过滤条件读一遍库
+            Component.onCompleted: applyPatientFilter(window.historyPatientFilter)
+
+            onNavRequested: (label) => {
+                // 从导航栏离开这一页时把过滤清掉，下次点「历史记录」看到的应该是全部
+                if (label !== qsTr("历史记录"))
+                    window.historyPatientFilter = ""
+                window.navigateTo(label)
+            }
             onLogoutRequested: window.handleLogout()
             onRecordPreviewRequested: (recordNo) => window.openRecordPreview(recordNo)
         }
@@ -240,11 +344,28 @@ ApplicationWindow {
         id: precheckComponent
 
         PrecheckDialog {
+            // 患者从工作台当前状态读，弹窗自己不存一份
+            readonly property var page: window.currentPageItem()
+            hasPatient: page !== null && page.hasPatient === true
+            patientName: hasPatient ? page.patientName : ""
+            patientGenderAge: hasPatient ? page.patientGenderAge : ""
+            patientMeta: hasPatient ? page.patientMeta : ""
+
             onDismissed: window.closeDialog()
             onAccepted: {
                 window.closeDialog()
                 var page = window.currentPageItem()
-                if (page && page.startCollection)
+                if (!page)
+                    return
+                // 先开一条采集记录再开采集：患者管理页的「采集次数 / 最近采集」
+                // 两列和历史记录页都是从 recording_sessions 来的
+                if (page.patientNo && page.patientNo.length > 0) {
+                    appDatabase.recordCollection(page.patientNo, Acq.acquired_channel_count(),
+                                                 Acq.sample_rate())
+                    // 记下这次会话属于谁，停止时用它补全记录
+                    window.openSessionPatient = page.patientNo
+                }
+                if (page.startCollection)
                     page.startCollection()
             }
         }
@@ -254,8 +375,28 @@ ApplicationWindow {
         id: selectPatientComponent
 
         SelectPatientDialog {
+            database: appDatabase
+            Component.onCompleted: reload()
+
             onDismissed: window.closeDialog()
-            onAccepted: window.closeDialog()
+
+            onNewPatientRequested: {
+                window.newPatientOrigin = "workbench"
+                window.closeDialog()
+                window.activeDialog = "newPatient"
+            }
+
+            onAccepted: {
+                window.closeDialog()
+                var rows = archiveRows
+                if (selectedIndex < 0 || selectedIndex >= rows.length)
+                    return
+                window.currentPatientNo = rows[selectedIndex].no
+                // 工作台左上角的卡片从「未选择患者」切成患者信息
+                var page = window.currentPageItem()
+                if (page && page.setPatient)
+                    page.setPatient(rows[selectedIndex])
+            }
         }
     }
 
@@ -263,8 +404,33 @@ ApplicationWindow {
         id: newPatientComponent
 
         NewPatientDialog {
+            database: appDatabase
             onDismissed: window.closeDialog()
-            onAccepted: window.closeDialog()
+            onAccepted: {
+                var no = savedPatientNo
+                window.closeDialog()
+
+                if (window.newPatientOrigin === "patients") {
+                    // 从患者管理页进来的：刷新列表就行
+                    var patientPage = window.currentPageItem()
+                    if (patientPage && patientPage.reload)
+                        patientPage.reload()
+                    return
+                }
+
+                // 从选患者弹窗进来的：把刚登记的这位选上，直接回工作台
+                window.newPatientOrigin = ""
+                var rows = appDatabase.patients()
+                for (var i = 0; i < rows.length; ++i) {
+                    if (rows[i].no === no) {
+                        window.currentPatientNo = no
+                        var page = window.currentPageItem()
+                        if (page && page.setPatient)
+                            page.setPatient(rows[i])
+                        return
+                    }
+                }
+            }
         }
     }
 
@@ -272,8 +438,26 @@ ApplicationWindow {
         id: editPatientComponent
 
         EditPatientDialog {
+            database: appDatabase
+            Component.onCompleted: {
+                if (window.pendingPatientRow)
+                    load(window.pendingPatientRow)
+            }
             onDismissed: window.closeDialog()
-            onAccepted: window.closeDialog()
+            onAccepted: {
+                window.closeDialog()
+                // 改了姓名/科室的话，工作台与患者页上显示的那一份要跟着更新
+                var page = window.currentPageItem()
+                if (page && page.reload)
+                    page.reload()
+                if (window.pendingPatientRow
+                        && window.pendingPatientRow.no === window.currentPatientNo) {
+                    var refreshed = window.findPatientRow(window.currentPatientRowNo)
+                    if (refreshed)
+                        window.currentPatientRowNo = refreshed.no
+                }
+                window.pendingPatientRow = null
+            }
         }
     }
 
@@ -284,6 +468,34 @@ ApplicationWindow {
             recordNo: window.pendingRecordNo.length > 0 ? window.pendingRecordNo : "R-0011"
             onDismissed: window.closeDialog()
             onAccepted: window.closeDialog()
+        }
+    }
+
+    Component {
+        id: confirmDeleteComponent
+
+        ConfirmDialog {
+            title: qsTr("删除患者")
+            confirmText: qsTr("删除")
+            danger: true
+            message: window.pendingPatientRow
+                     ? qsTr("确定要删除「%1」吗？该患者的档案与全部采集记录都会被删除，且无法恢复。")
+                           .arg(window.pendingPatientRow.name)
+                     : ""
+            onDismissed: window.closeDialog()
+            onAccepted: {
+                window.closeDialog()
+                if (!window.pendingPatientRow)
+                    return
+                var no = window.pendingPatientRow.no
+                appDatabase.removePatient(no)
+                window.pendingPatientRow = null
+                if (window.currentPatientNo === no)
+                    window.currentPatientNo = ""
+                var page = window.currentPageItem()
+                if (page && page.reload)
+                    page.reload()
+            }
         }
     }
 
@@ -303,7 +515,7 @@ ApplicationWindow {
         //
         // 从没登录过时按设计稿的样子：输入框留空显示占位提示、「记住密码」勾上；
         // 登录过之后：手机号总是回填，密码只有勾了「记住密码」才回填。
-        var last = authDatabase.lastLogin()
+        var last = appDatabase.lastLogin()
         loginPage.rememberChecked = last.hasRecord ? last.remember : true
         loginPage.accountText = last.phone
         loginPage.passwordText = (last.remember && last.password.length > 0) ? last.password : ""

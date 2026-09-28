@@ -19,6 +19,9 @@ Rectangle {
     color: danger ? Design.badSoft : Design.primarySoft
     border.width: 1
     border.color: danger ? Design.bad : Design.panelBorder
+    // 禁用时压暗。Item 的 enabled 会传播给子项，所以里面的 MouseArea 自动不吃点击，
+    // 不必再单独绑一次
+    opacity: enabled ? 1.0 : 0.4
 
     Text {
         anchors.centerIn: parent

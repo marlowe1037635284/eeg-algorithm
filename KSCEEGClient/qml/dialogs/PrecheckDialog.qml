@@ -12,6 +12,14 @@ Item {
     signal dismissed()      // 关闭 / 取消
     signal accepted()       // 确认
 
+    // 待确认的患者。由外层从工作台当前状态带进来，**不在这里写死**：
+    // 这一屏的副标题就是「确认对象与关键采集参数，防止数据关联错误」，
+    // 对象都还没选就挂着一个写死的人名，正是它最不该犯的错
+    property bool hasPatient: false
+    property string patientName: ""
+    property string patientGenderAge: ""
+    property string patientMeta: ""
+
     DialogFrame {
         title: qsTr("开始采集前确认")
         cardX: 657
@@ -50,10 +58,12 @@ Item {
         }
 
         Text {
+            id: patientNameText
             x: 704
             y: 415
-            text: qsTr("张文涛")
-            color: "#000000"
+            text: root.hasPatient ? root.patientName : qsTr("未选择患者")
+            // 空态用次要色：它不是一个名字，只是一个「还没有」的状态
+            color: root.hasPatient ? "#000000" : Design.textSecondary
             font.family: Design.fontFamily
             font.styleName: Design.styleMedium
             font.pixelSize: 20
@@ -63,7 +73,8 @@ Item {
         Text {
             x: 775
             y: 421
-            text: qsTr("男  45岁")
+            visible: root.hasPatient
+            text: root.patientGenderAge
             color: Design.textSecondary
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -73,8 +84,23 @@ Item {
         Text {
             x: 1032
             y: 421
-            text: qsTr("P-0001·神经内科·记录1次")
+            visible: root.hasPatient
+            text: root.patientMeta
             color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
+        }
+
+        // 没有患者时，紧挨姓名右侧说清该怎么办 —— 比只留一个「未选择患者」有用。
+        // 位置挂在姓名的实际宽度之后，不能写死 x：「未选择患者」比设计稿的
+        // 「张文涛」宽，写死 775 会两个文本叠在一起
+        Text {
+            x: patientNameText.x + patientNameText.width + 16
+            y: 421
+            visible: !root.hasPatient
+            text: qsTr("请先返回工作台选择或登记患者")
+            color: Design.bad
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 16

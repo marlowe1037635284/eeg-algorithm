@@ -4,25 +4,42 @@ import KSCEEGClient
 // 「实时波形」面板。
 // 设计稿里位于画板 (450,150)，尺寸 1109×884；本文件内的坐标都相对面板左上角，
 // 换算关系是「设计坐标 - (450,150)」。
+//
+// 波形数据来自 C++ 的 Acq（AcquisitionBridge）：每列取该列的最小/最大值
+// 做包络抽稀，比逐点连线更能反映真实幅度 —— 10 秒时窗下每列要压掉十几个点，
+// 只取一个点会把峰削平。
 Item {
     id: root
 
     property bool collecting: false
     property bool frozen: false
-    property real waveformPhase: 0
+    property int channelCount: 16
     property string eventTime: "02:16"
 
     // 波形绘制区。设计稿里网格线从 (501,227) 起、宽 1037；
     // 通道中心从 242 开始每 106px 一个，正好落在每两条网格线之间。
+    //
+    // 那是**8 通道**的排法（106 = 770/8 向下取整附近）。设计稿的通道档位选的
+    // 却是 16，两者对不上，所以这里按实际通道数算：770/16 得 48px 一条，
+    // 首道中心落在半个行高上，保证 16 条泳道均匀铺满且不越界
     readonly property int plotX: 51                 // 501 - 450
     readonly property int plotY: 77                 // 227 - 150
     readonly property int plotWidth: 1037
     readonly property int plotHeight: 770
-    readonly property int laneStep: 106             // 相邻通道中心间距
-    readonly property int firstLaneCenter: 15       // 第一个通道中心，相对绘制区顶部
+    readonly property int laneStep: Math.floor(plotHeight / Math.max(1, channelCount))
+    readonly property int firstLaneCenter: Math.floor(laneStep / 2)
 
-    // 相位变化时重绘（动画由 WorkbenchPage 的定时器推进）
-    onWaveformPhaseChanged: plot.requestPaint()
+    // 有新数据且没冻结时才重绘。冻结是「画面停住」而不是「停止采集」，
+    // 数据照常进缓冲，解冻后立刻接上
+    Connections {
+        target: Acq
+        function onWaveRevisionChanged() {
+            if (!root.frozen)
+                plot.requestPaint()
+        }
+    }
+    onFrozenChanged: plot.requestPaint()
+    onChannelCountChanged: plot.requestPaint()
 
     Rectangle {
         anchors.fill: parent
@@ -43,13 +60,13 @@ Item {
         font.pixelSize: 18
     }
 
-    // 设计稿这里写的是「16通道·1000HZ」，但同页底部状态栏和其它画板都是 256Hz，
-    // 按语义统一成 256Hz。
+    // 设计稿这里写的就是「16通道·1000HZ」（与设备一致），而底部状态栏写 256Hz ——
+    // 两处对不上，按实际采样率显示，取 Acq 的真实值
     Text {
         anchors.right: parent.right
         anchors.rightMargin: 21
         y: 16
-        text: qsTr("16通道·256HZ")
+        text: root.channelCount + qsTr("通道·") + Acq.sample_rate() + "HZ"
         color: Design.textSecondary
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -115,12 +132,16 @@ Item {
             var h = height
             var step = root.laneStep
             var first = root.firstLaneCenter
+            var lanes = Math.max(1, root.channelCount)
 
-            // 横向网格：从第一个通道中心起，每半个通道一条
+            // 横向网格：从第一个通道中心起，每半个通道一条。
+            // 条数跟着通道数走，固定成 15 条的话 16 通道时下半屏就没线了
             ctx.strokeStyle = "rgba(0, 0, 0, 0.14)"
             ctx.lineWidth = 1
-            for (var k = 0; k <= 14; ++k) {
-                var gy = Math.round(first + 53 * k) + 0.5
+            for (var k = 0; k <= lanes * 2; ++k) {
+                var gy = Math.round(first + (step / 2) * k) + 0.5
+                if (gy > h)
+                    break
                 ctx.beginPath()
                 ctx.moveTo(0, gy)
                 ctx.lineTo(w, gy)
@@ -136,34 +157,64 @@ Item {
                 ctx.stroke()
             }
 
-            // 事件竖线：紫线是眼动事件，蓝线是睁眼事件
-            ctx.strokeStyle = "#7c3aed"
-            ctx.beginPath()
-            ctx.moveTo(72.5, 0)
-            ctx.lineTo(72.5, h - 1)
-            ctx.stroke()
+            // 事件竖线。原来这里是两条写死坐标的线（紫线 72.5、蓝线 170.5），
+            // 与事件面板那份假数据互不相干。现在两处共用 Acq.events：
+            // 标记一次事件，列表里多一行、波形上多一条线，位置按采集偏移算。
+            //
+            // 位置随窗口滑动：采集时刻 t 的事件，在当前窗口里离右端
+            // (now - t) 秒；超出窗口就不画
+            var now = Acq.elapsed_seconds()
+            var windowSeconds = Math.max(0.1, Acq.timeWindow)
+            var events = Acq.events
+            for (var e = 0; e < events.length; ++e) {
+                var event = events[e]
+                var age = now - event.offsetSeconds
+                if (age < 0 || age > windowSeconds)
+                    continue
 
-            ctx.strokeStyle = Design.primary
-            ctx.beginPath()
-            ctx.moveTo(170.5, 0)
-            ctx.lineTo(170.5, h - 1)
-            ctx.stroke()
-
-            // 8 条通道波形。振幅控制在设计稿给的 ±10px 内。
-            for (var c = 0; c < Design.channelNames.length; ++c) {
-                var center = first + step * c
-                var phase = root.waveformPhase + c * 1.7
-                ctx.strokeStyle = Design.channelColors[c]
+                var eventX = w * (1 - age / windowSeconds)
+                ctx.strokeStyle = event.dotColor
                 ctx.lineWidth = 1
                 ctx.beginPath()
-                for (var x = 0; x <= w; x += 2) {
-                    var t = x * 0.045 + phase
-                    var burst = Math.sin(t * 2.8 + c * 0.7) * 5.0
-                    var alpha = Math.sin(t * 0.82 + c) * 3.2
-                    var spike = Math.pow(Math.max(0, Math.sin(t * 0.23 + c * 0.42)), 14) * (c % 3 === 0 ? 12 : 6)
-                    var noise = Math.sin(x * 0.39 + c * 2.2) * 1.6
-                    var y = center + burst + alpha + noise - spike
-                    if (x === 0)
+                ctx.moveTo(Math.round(eventX) + 0.5, 0)
+                ctx.lineTo(Math.round(eventX) + 0.5, h - 1)
+                ctx.stroke()
+
+                // 线顶端的标签块。宽度按字数估，够用即可 —— 画布上量文字宽度
+                // 要额外一次 measureText，而这里只有几个字
+                var chipWidth = 15 + event.label.length * 12
+                ctx.fillStyle = event.dotColor
+                ctx.fillRect(eventX - chipWidth / 2, 2, chipWidth, 17)
+                ctx.fillStyle = "#ffffff"
+                ctx.font = "12px sans-serif"
+                ctx.textAlign = "center"
+                ctx.textBaseline = "middle"
+                ctx.fillText(event.label, eventX, 11)
+            }
+            ctx.textAlign = "start"
+            ctx.textBaseline = "alphabetic"
+
+            // 各通道波形。数据来自 Acq.lane_samples()：每列依次给出该列的
+            // 最小值与最大值，顺次连线就得到包络正确的折线
+            var colors = Acq.channelColors
+            // 每个通道自己的量程。自动量程下各通道独立算，所以通道之间不能直接比大小
+            var maxHalf = step / 2 - 3
+            for (var c = 0; c < lanes; ++c) {
+                if (!Acq.is_channel_visible(c))
+                    continue
+
+                var center = first + step * c
+                var half = Math.max(2, maxHalf)
+                var scale = half / Math.max(1e-6, Acq.lane_range_uv(c))
+                var data = Acq.lane_samples(c, Math.round(w))
+
+                ctx.strokeStyle = colors[c % colors.length]
+                ctx.lineWidth = 1
+                ctx.beginPath()
+                for (var i = 0; i < data.length; ++i) {
+                    var x = Math.floor(i / 2)
+                    var y = center - data[i] * scale
+                    if (i === 0)
                         ctx.moveTo(x, y)
                     else
                         ctx.lineTo(x, y)
@@ -174,18 +225,22 @@ Item {
     }
 
     // ---------- 通道名 ----------
+    // 名字与配色都从 Acq 取 —— 通道档位切到 8 时挑的是 Fp1 Fp2 F3 F4 C3 C4 P3 P4
+    // 这几个有代表性的位置，而不是简单取前 8 路（那样会得到 Fp1 Fp2 F7 F3 …）
     Repeater {
-        model: Design.channelNames
+        model: Acq.channelNames
 
         delegate: Text {
             required property int index
             required property string modelData
             x: 21
-            y: 81 + 106 * index
+            // 与波形同一个中心：绘制区顶部 + 该通道的中心，文字再上移半行高居中。
+            // 不能沿用设计稿写死的 81 + 106*index：那个步长只对 8 通道成立
+            y: root.plotY + root.firstLaneCenter + root.laneStep * index - 11
             height: 22
             verticalAlignment: Text.AlignVCenter
             text: modelData
-            color: Design.channelColors[index]
+            color: Acq.channelColors[index % Acq.channelColors.length]
             font.family: Design.fontFamily
             font.styleName: Design.styleMedium
             font.pixelSize: 16
@@ -196,7 +251,7 @@ Item {
     Text {
         x: 1047
         y: 61
-        text: qsTr("±100μV")
+        text: Acq.yRangeUV > 0 ? "±" + Acq.yRangeUV + "μV" : qsTr("自动量程")
         color: Qt.rgba(0, 0, 0, 0.4)
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -204,41 +259,10 @@ Item {
     }
 
     // ---------- 事件标签（波形顶部的小色块）----------
-    Rectangle {
-        x: 103
-        y: 55
-        width: 40
-        height: 17
-        radius: 6
-        color: "#7c3aed"
-
-        Text {
-            anchors.centerIn: parent
-            text: qsTr("眼动")
-            color: "#ffffff"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 12
-        }
-    }
-
-    Rectangle {
-        x: 201
-        y: 55
-        width: 40
-        height: 17
-        radius: 6
-        color: Design.primary
-
-        Text {
-            anchors.centerIn: parent
-            text: qsTr("睁眼")
-            color: "#ffffff"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 12
-        }
-    }
+    // 原来这里是两个写死的色块（「眼动」紫、「睁眼」蓝），指向两条同样写死的竖线。
+    // 现在改成画在 Canvas 里：标签跟着真实事件走，位置随显示窗口滑动，
+    // 划出窗口就一起消失。写死的色块做不到这件事
+    // （见上面 onPaint 里画事件竖线那一段）
 
     // ---------- 时间轴 ----------
     Repeater {

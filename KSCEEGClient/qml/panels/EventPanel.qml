@@ -6,39 +6,26 @@ import KSCEEGClient
 Item {
     id: root
 
-    property alias eventCount: eventModel.count
+    // 事件源在 C++ 侧（Acq.events）。原来这里有一份写死的 ListModel，
+    // 六条事件的时间全是 16:13:05、偏移全是 +3s；而波形面板上那两条事件竖线
+    // 又完全是另一套硬编码坐标 —— 两处互不相干。现在两边共用 Acq.events，
+    // 标记一次事件会在列表和波形上同时出现
+    readonly property var eventModel: Acq.events
+    property int eventCount: Acq.eventCount
 
     // 事件列表可视 3 行，超出部分滚轮滚动（设计稿画了 3 行 + 一根滚动条）
     property real eventScroll: 0
     readonly property int eventRowHeight: 44
     readonly property int eventViewHeight: 132
-    readonly property real eventMaxScroll: Math.max(0, eventModel.count * eventRowHeight - eventViewHeight)
+    readonly property real eventMaxScroll: Math.max(0, eventCount * eventRowHeight - eventViewHeight)
 
     function clearEvents() {
-        eventModel.clear()
+        Acq.clear_events()
     }
 
-    function addEvent(label, timeText) {
-        eventModel.append({
-            "time": timeText,
-            "offset": "+3s",
-            "label": label,
-            "dotColor": "#7c3aed"
-        })
-    }
-
-    ListModel {
-        id: eventModel
-
-        // 设计稿的条数徽标是 6，列表区只放得下 3 条，其余靠裁剪切掉
-        Component.onCompleted: {
-            append({ "time": "16:13:05", "offset": "+3s", "label": "闭眼", "dotColor": "#7c3aed" })
-            append({ "time": "16:13:05", "offset": "+3s", "label": "闭眼", "dotColor": "#7c3aed" })
-            append({ "time": "16:13:05", "offset": "+3s", "label": "睁眼", "dotColor": "#7092ab" })
-            append({ "time": "16:13:05", "offset": "+3s", "label": "睁眼", "dotColor": "#7092ab" })
-            append({ "time": "16:13:05", "offset": "+3s", "label": "闭眼", "dotColor": "#7c3aed" })
-            append({ "time": "16:13:05", "offset": "+3s", "label": "睁眼", "dotColor": "#7092ab" })
-        }
+    // 时间戳交给 C++ 取（它才有采集计时与墙钟），这里只传标签
+    function addEvent(label) {
+        Acq.add_event(label)
     }
 
     Rectangle {
@@ -70,7 +57,7 @@ Item {
 
         Text {
             anchors.centerIn: parent
-            text: eventModel.count
+            text: root.eventCount
             color: Design.textMuted
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -165,7 +152,7 @@ Item {
             id: markMouse
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.addEvent("手动", "16:13:05")
+            onClicked: root.addEvent(qsTr("手动"))
         }
     }
 
@@ -184,7 +171,7 @@ Item {
             model: eventModel
 
             delegate: Item {
-                required property var model
+                required property var modelData
                 required property int index
 
                 readonly property int rowY: root.eventRowHeight * index - root.eventScroll
@@ -192,7 +179,7 @@ Item {
                 PanelDivider {
                     y: rowY + 36
                     width: 298
-                    visible: index < eventModel.count - 1
+                    visible: index < root.eventCount - 1
                 }
 
                 Rectangle {
@@ -201,7 +188,7 @@ Item {
                     width: 12
                     height: 12
                     radius: 6
-                    color: model.dotColor
+                    color: modelData.dotColor
                 }
 
                 Text {
@@ -209,7 +196,7 @@ Item {
                     y: rowY + 3
                     height: 22
                     verticalAlignment: Text.AlignVCenter
-                    text: model.time
+                    text: modelData.wallClock
                     color: "#333333"
                     font.family: Design.fontFamily
                     font.styleName: Design.styleMedium
@@ -221,7 +208,7 @@ Item {
                     y: rowY + 5
                     height: 22
                     verticalAlignment: Text.AlignVCenter
-                    text: model.offset
+                    text: modelData.offset
                     color: Design.textSecondary
                     font.family: Design.fontFamily
                     font.styleName: Design.styleRegular
@@ -233,7 +220,7 @@ Item {
                     y: rowY + 3
                     height: 22
                     verticalAlignment: Text.AlignVCenter
-                    text: model.label
+                    text: modelData.label
                     color: Design.textSecondary
                     font.family: Design.fontFamily
                     font.styleName: Design.styleRegular
@@ -281,7 +268,7 @@ Item {
                         id: deleteMouse
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: eventModel.remove(index)
+                        onClicked: Acq.remove_event(index)
                     }
                 }
             }

@@ -42,6 +42,12 @@ ApplicationWindow {
         id: authDatabase
     }
 
+    // 滤波与后处理。独立的窗口而不是画布内弹窗：它要放 5 行参数 + 4 个输入框
+    // + 两个按钮，按设计稿那套绝对坐标写法会挤在一起，用布局器更稳
+    FilterDialog {
+        id: filterDialog
+    }
+
     DesignCanvas {
         anchors.fill: parent
 
@@ -170,6 +176,9 @@ ApplicationWindow {
             // 点「开始采集」先弹确认框，确认后才真正开始
             onPrecheckRequested: window.activeDialog = "precheck"
             onSelectPatientRequested: window.activeDialog = "selectPatient"
+            // 滤波弹窗是独立的 Window（那一屏元素太多，靠画布绝对坐标摆不下），
+            // 不走 dialogLoader 那套
+            onFilterRequested: filterDialog.visible = true
         }
     }
 

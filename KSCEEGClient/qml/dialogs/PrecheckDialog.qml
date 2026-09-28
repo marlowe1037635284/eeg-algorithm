@@ -81,13 +81,21 @@ Item {
         }
 
         // ---------- 采集参数（3 列 × 2 行小块）----------
+        // 值全部改成读真实状态。原来这几个都是写死的（采样率 256Hz、电极 14/16 良好），
+        // 而工作台实际跑的是 1000Hz —— 确认框是用户点「开始采集」前最后看到的一屏，
+        // 上面写着与实际不符的数字比不显示更糟
         Repeater {
             model: [
-                { x: 682,  y: 473, label: qsTr("设备"),     value: qsTr("Neurolink  16") },
-                { x: 869,  y: 473, label: qsTr("连接"),     value: qsTr("稳定"), valueColor: Design.good },
-                { x: 1056, y: 473, label: qsTr("通道"),     value: qsTr("16通道") },
-                { x: 682,  y: 559, label: qsTr("采样率"),   value: qsTr("256Hz") },
-                { x: 869,  y: 559, label: qsTr("电极质量"), value: qsTr("14/16 良好") },
+                { x: 682,  y: 473, label: qsTr("设备"),   value: qsTr("Neurolink  16") },
+                { x: 869,  y: 473, label: qsTr("连接"),
+                  value: Acq.portOpen ? qsTr("已连接") : qsTr("未连接"),
+                  valueColor: Acq.portOpen ? Design.good : Design.bad },
+                { x: 1056, y: 473, label: qsTr("通道"),   value: Acq.channelCount + qsTr("通道") },
+                { x: 682,  y: 559, label: qsTr("采样率"), value: Acq.sample_rate() + "Hz" },
+                // 电极质量**没有数据源**：协议一次只给 4 路不带电极名的阻抗值
+                //（见 serialprotocol.h），推不出「N/16 良好」。与其编一个数字，
+                // 不如写明拿不到
+                { x: 869,  y: 559, label: qsTr("电极质量"), value: qsTr("—") },
                 { x: 1056, y: 559, label: qsTr("原始数据"), value: qsTr("不过滤保存") }
             ]
 

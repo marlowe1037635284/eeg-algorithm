@@ -20,6 +20,8 @@ Item {
     signal navRequested(string label)
     // 点患者卡片 → 弹「选择/登记患者」
     signal selectPatientRequested()
+    // 点工具栏「滤波与后处理」→ 弹滤波配置
+    signal filterRequested()
 
     property string userName: "管理员"
     property string userRole: "管理员"
@@ -27,12 +29,13 @@ Item {
     property string patientGenderAge: "男  45岁"
     property string patientMeta: "P-0001·神经内科·记录1次"
 
-    property bool collecting: false
+    // collecting 直接绑到 Acq：真正的开关是 C++ 侧的采集线程，
+    // QML 再存一份的话两者迟早不同步（拔线时线程自己就退了）
+    readonly property bool collecting: Acq.collecting
+    // 冻结是**显示**上的暂停：数据照常采集与进缓冲，只是画面停住
     property bool frozen: false
     property int elapsedSeconds: 0
-    property real waveformPhase: 0
     property string selectedNav: qsTr("采集工作台")
-    property int channelCount: 16
 
     readonly property string elapsedText: {
         var hours = Math.floor(elapsedSeconds / 3600)
@@ -45,24 +48,23 @@ Item {
 
 
     function resetSession() {
-        collecting = false
         frozen = false
         elapsedSeconds = 0
-        waveformPhase = 0
         selectedNav = qsTr("采集工作台")
     }
 
     function stopCollection() {
-        collecting = false
         frozen = false
+        Acq.stop_collection()
     }
 
-    // 采集前确认通过后由外层调用
+    // 采集前确认通过后由外层调用。
+    // 「开始采集」在 C++ 侧做三件事：建在线算法会话、开串口、按时间戳建文件落盘
     function startCollection() {
-        collecting = true
         frozen = false
         if (elapsedSeconds === 0)
-            waveformPhase = 0
+            Acq.clear_events()
+        Acq.start_collection("")
     }
 
     // 「截图」：把当前界面存成 PNG 放到系统图片目录下，失败就静默跳过
@@ -80,13 +82,8 @@ Item {
     onClearRequested: eventPanel.clearEvents()
     onSnapshotRequested: saveSnapshot()
 
-    Timer {
-        interval: 80
-        repeat: true
-        running: root.collecting && !root.frozen && root.visible
-        onTriggered: root.waveformPhase += 0.12
-    }
-
+    // 波形不再由定时器推进：数据由 C++ 侧的采集线程经算法处理后推过来，
+    // WaveformPanel 收到 Acq.waveRevision 变化才重绘。这里只留计时
     Timer {
         interval: 1000
         repeat: true
@@ -157,7 +154,7 @@ Item {
             width: 8
             height: 8
             radius: 4
-            color: Design.good
+            color: Acq.portOpen ? Design.good : Design.offline
         }
 
         Text {
@@ -165,7 +162,7 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: qsTr("Neurolink-6016 已连接")
+            text: Acq.portOpen ? qsTr("Neurolink-6016 已连接") : qsTr("Neurolink-6016 未连接")
             color: "#4f4f4f"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -173,7 +170,10 @@ Item {
         }
     }
 
-    // 电极贴合胶囊
+    // 电极贴合胶囊。
+    // 注意这一项**没有数据源**：串口协议一次只给 4 路不带电极名的阻抗值
+    // （见 serialprotocol.h 的 parse_impedance_kohm），没法推出「16 个电极各有
+    // 多好」。所以它保持设计稿的静态显示，不做假数据绑定
     Rectangle {
         x: 1612
         y: 12
@@ -359,7 +359,7 @@ Item {
 
         // 当前档位的高亮块（设计稿里是橙色圆角块，位置对准选中的数字）
         Image {
-            x: root.channelCount === 4 ? 5 : root.channelCount === 8 ? 48 : 91
+            x: Acq.channelCount === 4 ? 5 : Acq.channelCount === 8 ? 48 : 91
             y: 4
             width: 43
             height: 36
@@ -383,7 +383,7 @@ Item {
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.value
-                color: root.channelCount === modelData.value ? "#ffffff" : Design.textMuted
+                color: Acq.channelCount === modelData.value ? "#ffffff" : Design.textMuted
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 18
@@ -392,7 +392,7 @@ Item {
                     anchors.fill: parent
                     anchors.margins: -8
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.channelCount = modelData.value
+                    onClicked: Acq.channelCount = modelData.value
                 }
             }
         }
@@ -416,11 +416,29 @@ Item {
         font.pixelSize: 18
     }
 
+    // 设计稿这里是静态样式，但幅值直接影响波形怎么读，做成可点击循环 ——
+    // 不新增控件，只多一个点击区域
     ToolField {
+        id: rangeField
         x: 734
         y: 79
         width: 116
-        value: "100μV/div"
+        value: Acq.yRangeUV > 0 ? "±" + Acq.yRangeUV + "μV" : qsTr("自动量程")
+
+        readonly property var choices: [0, 50, 100, 200, 400, 1000]
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                var list = rangeField.choices
+                var index = list.indexOf(Acq.yRangeUV)
+                Acq.yRangeUV = list[(index + 1) % list.length]
+            }
+            ToolTip.visible: containsMouse
+            ToolTip.text: qsTr("点击切换量程")
+            ToolTip.delay: 400
+        }
     }
 
     Text {
@@ -433,13 +451,31 @@ Item {
         font.pixelSize: 18
     }
 
+    // 设计稿这一格的值写的是「50μV/div」，与后面的括号说明「走纸速度 15mm/s」
+    // 以及它自己「时基」的标题都对不上 —— 幅值已经有一格了，这里按语义显示时窗
     ToolField {
+        id: windowField
         x: 917
         y: 79
         width: 104
-        value: "50μV/div"
+        value: Acq.timeWindow + qsTr("秒/屏")
         showArrow: true
         arrowX: 85
+
+        readonly property var choices: [0.5, 1, 2, 5, 10]
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: {
+                var list = windowField.choices
+                var index = list.indexOf(Acq.timeWindow)
+                Acq.timeWindow = list[(index + 1) % list.length]
+            }
+            ToolTip.visible: containsMouse
+            ToolTip.text: qsTr("点击切换显示时窗")
+            ToolTip.delay: 400
+        }
     }
 
     // 新版设计稿在时基后面加了一段括号说明（照抄）
@@ -461,14 +497,15 @@ Item {
         color: Design.primary
     }
 
-    // 滤波与后处理
+    // 滤波与后处理。设计稿里它只是个色块，这里接上弹窗
     Rectangle {
         x: 1224
         y: 79
         width: 137
         height: 43
         radius: 12
-        color: Design.primarySoft
+        color: filterMouse.containsMouse ? Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.18)
+                                         : Design.primarySoft
 
         Text {
             x: 16
@@ -480,6 +517,18 @@ Item {
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 18
+        }
+
+        MouseArea {
+            id: filterMouse
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.filterRequested()
+
+            ToolTip.visible: containsMouse
+            ToolTip.text: qsTr("高通 / 低通 / 陷波 / ASR / 重参考")
+            ToolTip.delay: 400
         }
     }
 
@@ -569,7 +618,7 @@ Item {
         height: 884
         collecting: root.collecting
         frozen: root.frozen
-        waveformPhase: root.waveformPhase
+        channelCount: Acq.channelCount
     }
 
     ElectrodePanel {
@@ -601,7 +650,93 @@ Item {
         height: 280
         collecting: root.collecting
         frozen: root.frozen
-        waveformPhase: root.waveformPhase
+    }
+
+    // ---------- 错误条 ----------
+    // 设计稿没有这一条。加它是必需的：算法调用失败、串口打不开这类问题
+    // 在原来那份静态界面上根本无处显示，用户只会看到「点了没反应」。
+    // 只在出错时出现，且做成一条细带，尽量不干扰设计稿的排布
+    Rectangle {
+        x: 450
+        y: Acq.errorText.length > 0 ? 1000 : 1046
+        width: 1109
+        height: Acq.errorText.length > 0 ? 40 : 0
+        radius: 10
+        visible: Acq.errorText.length > 0
+        color: "#f7e7e7"
+        border.width: 1
+        border.color: "#e0b4b4"
+        clip: true
+
+        Text {
+            x: 14
+            y: 0
+            width: parent.width - 120
+            height: parent.height
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            text: Acq.errorText
+            color: "#8a3b3b"
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 14
+        }
+
+        // 会话进了 ERROR 之后，复位是唯一的恢复入口（接口规定此时只允许
+        // reset / get_status / close）。所以错误条上直接给按钮，
+        // 不让用户去别处找
+        Rectangle {
+            x: parent.width - 196
+            y: 6
+            width: 90
+            height: 28
+            radius: 10
+            visible: Acq.canReset
+            color: resetMouse.pressed ? "#64879f" : Design.primary
+
+            Text {
+                anchors.centerIn: parent
+                text: qsTr("重置会话")
+                color: "#ffffff"
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+            }
+
+            MouseArea {
+                id: resetMouse
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: Acq.reset_session()
+            }
+        }
+
+        Rectangle {
+            x: parent.width - 96
+            y: 6
+            width: 82
+            height: 28
+            radius: 10
+            color: closeErrorMouse.pressed ? "transparent" : Qt.rgba(0, 0, 0, 0.04)
+            border.width: 1
+            border.color: Design.pillBorder
+
+            Text {
+                anchors.centerIn: parent
+                text: qsTr("关闭")
+                color: "#4f4f4f"
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+            }
+
+            MouseArea {
+                id: closeErrorMouse
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: Acq.clear_error()
+            }
+        }
     }
 
     // ---------- 底部状态栏 ----------
@@ -630,10 +765,23 @@ Item {
         color: root.collecting ? Design.good : Design.offline
     }
 
+    // 状态栏第一段：采集状态 + 串口/算法给的状态文本。
+    // 原来的「采集进行中/已停止」只有两种状态，看不出「串口开着但没采」
+    // 和「算法在预热」这些中间态
+    // 放在「记录时长」之后、右侧那排指标之前的那段空白里（设计稿这里是空的），
+    // 不和任何已有元素重叠
     Text {
-        x: 140
+        x: 430
         y: 1052
-        text: root.collecting ? qsTr("采集进行中") : qsTr("采集已停止")
+        width: 690
+        elide: Text.ElideRight
+        text: {
+            if (Acq.errorText.length > 0)
+                return qsTr("异常：") + Acq.errorText
+            if (Acq.warmupText.length > 0)
+                return Acq.warmupText
+            return Acq.statusText
+        }
         color: "#3b3b3b"
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -651,13 +799,17 @@ Item {
         font.pixelSize: 14
     }
 
+    // 底栏这几项原来全是写死的（采样率 256Hz、数据点 1,024、电极 10/16 良好…），
+    // 与面板上的实际值互相矛盾。全部换成真实值；「电极良好数」没有数据源
+    // （协议只有 4 路无名字的阻抗，见 serialprotocol.h），所以整条去掉
     Repeater {
         model: [
-            { x: 1134, text: qsTr("采样率：256Hz") },
-            { x: 1241, text: qsTr("时基：50μV/div(走纸速度：15mm/s)") },
-            { x: 1483, text: qsTr("幅值：100μV/div") },
-            { x: 1602, text: qsTr("数据点：1,024") },
-            { x: 1703, text: qsTr("电极：10/16良好") },
+            { x: 1134, text: qsTr("采样率：") + Acq.sample_rate() + "Hz" },
+            { x: 1241, text: qsTr("时窗：") + Acq.timeWindow + qsTr("秒/屏") },
+            { x: 1483, text: Acq.yRangeUV > 0 ? qsTr("幅值：±") + Acq.yRangeUV + "μV"
+                                              : qsTr("幅值：自动") },
+            { x: 1602, text: qsTr("数据点：") + Acq.receivedFrames },
+            { x: 1703, text: Acq.statsText },
             { x: 1821, text: qsTr("患者：") + root.patientName }
         ]
 

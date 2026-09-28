@@ -33,32 +33,33 @@ Item {
         { x: 179, y: 126 }
     ]
 
-    // 色标条：16 段，取自设计稿
-    readonly property var colorBar: [
-        "#1a2b72", "#243e9b", "#2b53bc", "#2b72c6", "#2d8fd0", "#29a4bd", "#22baab", "#45c288",
-        "#6ac663", "#96c74a", "#c0c443", "#e2bc3c", "#eba23d", "#f1883c", "#e5643d", "#d9403c"
-    ]
-
-    // 色标下方的频段选择块。第一块默认选中（主色淡底 + 主色描边），点其它块可切换。
-    // boxX/letterX/rangeX 都是设计稿里的 x 坐标（已减去面板原点）。
+    // 色标条**不再自己抄一份色值**，而是取 Acq.topoPalette —— 与 C++ 画热力图
+    // 用的是同一张表。设计稿那 16 段色值和实际渲染用的色标是两套，抄任何一套
+    // 都会与图对不上，而色标是按图读值的唯一依据。
+    // 频段选择块：range 原本五块全写成 "0.5-4"（占位），换成真实边界；
+    // band 字段与 C++ 的 band_from_name 认的取值一一对应，写错那边会直接忽略
     readonly property var bandSelectors: [
-        { letter: "δ", range: "0.5-4", boxX: 26,  letterX: 45,  rangeX: 33 },
-        { letter: "θ", range: "0.5-4", boxX: 84,  letterX: 103, rangeX: 91 },
-        { letter: "α", range: "0.5-4", boxX: 142, letterX: 161, rangeX: 149 },
-        { letter: "β", range: "0.5-4", boxX: 199, letterX: 218, rangeX: 206 },
-        { letter: "γ", range: "0.5-4", boxX: 258, letterX: 278, rangeX: 265 }
+        { band: "delta", letter: "δ", range: "0.5-4", boxX: 26,  letterX: 45,  rangeX: 33 },
+        { band: "theta", letter: "θ", range: "4-8",   boxX: 84,  letterX: 103, rangeX: 91 },
+        { band: "alpha", letter: "α", range: "8-13",  boxX: 142, letterX: 161, rangeX: 149 },
+        { band: "beta",  letter: "β", range: "13-30", boxX: 199, letterX: 218, rangeX: 206 },
+        { band: "gamma", letter: "γ", range: "30-45", boxX: 258, letterX: 278, rangeX: 265 }
     ]
 
-    // 当前选中的频段（地形图按这个频段着色）
-    property int selectedBand: 0
-
-    readonly property var metrics: [
-        { label: "峰值电极", value: "01" },
-        { label: "峰值功率(μV²/Hz)", value: "56.5" },
-        { label: "全脑均值(μV²/Hz)", value: "22.9" },
-        { label: "枕/额比", value: "8.2" },
-        { label: "时窗", value: "1.0s·50%重叠" }
-    ]
+    // 四项统计由 C++ 侧算好并格式化（topoStats 固定四项），这边不做二次加工。
+    // 取不到时统一显示短横，免得界面上出现 "undefined"
+    readonly property var metrics: {
+        var stats = Acq.topoStats
+        if (!stats || stats.length !== 4)
+            stats = ["—", "—", "—", "—"]
+        return [
+            { label: qsTr("峰值电极"), value: stats[0] },
+            { label: qsTr("峰值功率(μV²/Hz)"), value: stats[1] },
+            { label: qsTr("全脑均值(μV²/Hz)"), value: stats[2] },
+            { label: qsTr("枕/额比"), value: stats[3] },
+            { label: qsTr("时窗"), value: "2.0s" }
+        ]
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -92,6 +93,22 @@ Item {
         height: 223
         source: Design.assetRoot + "icons/topo-circle.svg"
         fillMode: Image.Stretch
+    }
+
+    // 热力图。**必须夹在底盘与白环/电极点之间**：盖在底盘之上才有底色可叠，
+    // 压在电极点之下才不会把导联名挡住。
+    // 图由 C++ 画好（头型掩膜外是透明的），这里只管贴；
+    // revision 变化只是用来制造新 URL，否则 Image 会按 URL 缓存，图永远不更新
+    Image {
+        x: 54
+        y: 61
+        width: 224
+        height: 223
+        fillMode: Image.Stretch
+        cache: false
+        asynchronous: false
+        smooth: true
+        source: "image://topography/render/" + Acq.topoRevision
     }
 
     // 关注点白环（画在圆点下面）
@@ -178,12 +195,14 @@ Item {
         font.pixelSize: 14
     }
 
+    // 色值一律从 Acq.topoPalette 取 —— 与 C++ 画热力图是同一份表。
+    // 设计稿那张 16 段色标和实际渲染用的色标是两套色值，抄任何一套都会与图对不上
     Row {
         x: 30
         y: 308
 
         Repeater {
-            model: root.colorBar
+            model: Acq.topoPalette
 
             delegate: Rectangle {
                 required property string modelData
@@ -194,6 +213,8 @@ Item {
         }
     }
 
+    // 刻度。右端**不能写死**：图是按每帧峰值归一化配色的，写死的话
+    // 数字和实际配色对不上，读出来的值就是错的
     Text {
         x: 27
         y: 324
@@ -207,7 +228,7 @@ Item {
     Text {
         x: 159
         y: 324
-        text: "30"
+        text: (Acq.topoScaleMax / 2).toFixed(1)
         color: Design.textSecondary
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -217,7 +238,7 @@ Item {
     Text {
         x: 294
         y: 324
-        text: "60"
+        text: Acq.topoScaleMax.toFixed(1)
         color: Design.textSecondary
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -232,7 +253,9 @@ Item {
             required property var modelData
             required property int index
 
-            readonly property bool active: root.selectedBand === index
+            // 绑到 C++ 的 topoBand 而不是自己存一份选中态：切换频段后由
+            // C++ 侧确认的结果说了算，两边不会各说各话
+            readonly property bool active: Acq.topoBand === modelData.band
 
             Rectangle {
                 x: modelData.boxX
@@ -280,7 +303,7 @@ Item {
                 height: 51
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.selectedBand = index
+                onClicked: Acq.topoBand = modelData.band
 
                 ToolTip.visible: containsMouse
                 ToolTip.text: qsTr("%1 频段（%2 Hz）").arg(modelData.letter).arg(modelData.range)

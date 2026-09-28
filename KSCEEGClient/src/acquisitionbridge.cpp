@@ -1,0 +1,1902 @@
+#include "acquisitionbridge.h"
+
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDebug>
+#include <QDir>
+#include <QEventLoop>
+#include <QFileInfo>
+#include <QMutexLocker>
+#include <QThread>
+#include <QSerialPortInfo>
+#include <QStandardPaths>
+#include <QtMath>
+
+#include <cstring>
+#include <functional>
+#include <limits>
+
+#include "eegmontage.h"
+#include "pythonengine.h"
+#include "serialprotocol.h"
+#include "topomapimageprovider.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace
+{
+
+// 显示缓冲的时长上限。按最长可选时窗（10 秒）留一倍余量
+constexpr int kMaxWindowSeconds = 30;
+// 单个通道最多存多少样本，兜住极端采样率下的内存
+constexpr int kMaxSamplesPerChannel = 200000;
+
+// 波形重绘周期（约 30 FPS）。与算法投递节拍一致
+constexpr int kDisplayIntervalMs = 33;
+// 地形图与频谱的刷新周期
+constexpr int kTopographyIntervalMs = 1200;
+constexpr int kSpectrumIntervalMs = 1200;
+
+// 地形图出图的边长。网格只有 64×64，画到 256 已经足够，
+// 再大只是白白多传几次纹理
+constexpr int kTopographyImageSize = 256;
+
+// 落盘目录：%LOCALAPPDATA%\EEG-KSC\records
+QString default_record_directory()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    if (base.isEmpty())
+    {
+        base = QDir::tempPath() + QStringLiteral("/EEG-KSC");
+    }
+    return QDir::fromNativeSeparators(base) + QStringLiteral("/records");
+}
+
+// 七个等距停靠点。QML 的色标条用的是同一份（见 topoPalette），
+// 两边手工各抄一份色值迟早会对不上，而色标是按图读值的唯一依据
+const QStringList &topography_palette()
+{
+    static const QStringList palette = {
+        QStringLiteral("#173778"), QStringLiteral("#1b6ca8"), QStringLiteral("#2fb4a8"),
+        QStringLiteral("#7ec850"), QStringLiteral("#f2d024"), QStringLiteral("#f28c28"),
+        QStringLiteral("#cd2d2d"),
+    };
+    return palette;
+}
+
+// 把 7 个停靠点插值展开成 256 项查表，只建一次。
+//
+// 为什么不在逐像素时现算：一帧 256×256 就是 6.5 万次调用、每次两次
+// QColor(QString)（要从十六进制字符串解析颜色），合计十余万次字符串解析，
+// 全部发生在 GUI 线程上且占着 m_topo_mutex —— 每 1.2 秒卡一下，
+// 而 provider 可能正在另一个线程等这把锁。
+// QML 的色标条仍然读同一份 topoPalette，两边口径不变
+const QVector<QRgb> &palette_lut()
+{
+    static const QVector<QRgb> lut = []() {
+        const QStringList &palette = topography_palette();
+        const int last = palette.size() - 1;
+
+        QVector<QRgb> table(256);
+        for (int i = 0; i < table.size(); ++i)
+        {
+            const double scaled = static_cast<double>(i) / 255.0 * last;
+            const int low = std::min(static_cast<int>(scaled), last - 1);
+            const double fraction = scaled - low;
+
+            const QColor low_color(palette.at(low));
+            const QColor high_color(palette.at(low + 1));
+            table[i] = qRgb(
+                static_cast<int>(low_color.red()
+                                 + (high_color.red() - low_color.red()) * fraction),
+                static_cast<int>(low_color.green()
+                                 + (high_color.green() - low_color.green()) * fraction),
+                static_cast<int>(low_color.blue()
+                                 + (high_color.blue() - low_color.blue()) * fraction));
+        }
+        return table;
+    }();
+    return lut;
+}
+
+// 0~1 的归一化值 → 颜色
+QRgb palette_color(double normalized)
+{
+    const int index = static_cast<int>(std::clamp(normalized, 0.0, 1.0) * 255.0 + 0.5);
+    return palette_lut().at(std::clamp(index, 0, 255));
+}
+
+// 把地形图网格画成一张方形图。
+//
+// 头型掩膜之外画成**透明**：算法会把掩膜外的值置 0，而 0 在掩膜内也是合法功率，
+// 只看数值分不出来。不透明的话热力图会是一个方块，盖掉设计稿的头型底图。
+//
+// 缩放按**掩膜圆的实际半径**来，而不是把整个网格铺满。
+//
+// 必须这么做：算法算出的头部半径是「最远电极距离 × 1.15」，而电极坐标是按最大
+// 绝对值归一化的（见算法侧 topography_core.py）。本项目的蒙太奇算下来半径约
+// 1.20，**大于网格半宽 1** —— 直接把网格铺满整张图的话，头型会被图片四条边裁掉，
+// 画出来是一个四角略圆的方块，叠在设计稿的圆形底图上就是个方形色块。
+//
+// 半径直接从掩膜取：掩膜是圆，网格里离中心最远的那个掩膜内点到中心的距离
+// 就是半径（网格四角在半径之外，所以这个最大值不会被边界截断）
+QImage render_topography(const TopographyFrame &frame, int size)
+{
+    QImage image(size, size, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::transparent);
+
+    if (frame.grid_width <= 0 || frame.grid_height <= 0 || frame.grid_values.isEmpty())
+    {
+        return image;
+    }
+
+    // 网格坐标 → 归一化坐标：网格边缘对应 ±1（与算法侧 np.linspace(-1,1,W) 一致）
+    const int last_x = std::max(1, frame.grid_width - 1);
+    const int last_y = std::max(1, frame.grid_height - 1);
+
+    double radius = 1.0;
+    if (frame.head_mask.size() == frame.grid_width * frame.grid_height)
+    {
+        bool found = false;
+        for (int gy = 0; gy < frame.grid_height; ++gy)
+        {
+            const double ny = static_cast<double>(gy) / last_y * 2.0 - 1.0;
+            for (int gx = 0; gx < frame.grid_width; ++gx)
+            {
+                if (!frame.head_mask.at(gy * frame.grid_width + gx))
+                {
+                    continue;
+                }
+                const double nx = static_cast<double>(gx) / last_x * 2.0 - 1.0;
+                const double distance = std::sqrt(nx * nx + ny * ny);
+                radius = found ? std::max(radius, distance) : distance;
+                found = true;
+            }
+        }
+        if (!found)
+        {
+            return image;   // 掩膜全空：插值还没产出有效结果
+        }
+    }
+
+    const double scale_max = frame.scale_max > 0.0 ? frame.scale_max : 1.0;
+    const double half = static_cast<double>(size - 1) / 2.0;
+
+    for (int y = 0; y < size; ++y)
+    {
+        // 输出像素 → 归一化坐标（把 ±radius 铺到 ±half）→ 网格下标
+        const double ny = (static_cast<double>(y) - half) / half * radius;
+        const int grid_y = std::clamp(
+            static_cast<int>(std::lround((ny + 1.0) / 2.0 * last_y)), 0, frame.grid_height - 1);
+
+        QRgb *line = reinterpret_cast<QRgb *>(image.scanLine(y));
+        for (int x = 0; x < size; ++x)
+        {
+            const double nx = (static_cast<double>(x) - half) / half * radius;
+            const int grid_x = std::clamp(
+                static_cast<int>(std::lround((nx + 1.0) / 2.0 * last_x)), 0, frame.grid_width - 1);
+            const int index = grid_y * frame.grid_width + grid_x;
+
+            if (index < frame.head_mask.size() && !frame.head_mask.at(index))
+            {
+                continue;   // 头外：保持透明
+            }
+            if (index >= frame.grid_values.size())
+            {
+                continue;
+            }
+            line[x] = palette_color(frame.grid_values.at(index) / scale_max);
+        }
+    }
+    return image;
+}
+
+// 频段名 → (preset, 低, 高)。写错的话算法会直接拒绝，界面上则表现为「点了没反应」
+bool band_from_name(const QString &band, QString *preset, double *low_hz, double *high_hz)
+{
+    if (band == QLatin1String("delta"))
+    {
+        *preset = QStringLiteral("delta");
+        *low_hz = 0.5;
+        *high_hz = 4.0;
+    }
+    else if (band == QLatin1String("theta"))
+    {
+        *preset = QStringLiteral("theta");
+        *low_hz = 4.0;
+        *high_hz = 8.0;
+    }
+    else if (band == QLatin1String("alpha"))
+    {
+        *preset = QStringLiteral("alpha");
+        *low_hz = 8.0;
+        *high_hz = 13.0;
+    }
+    else if (band == QLatin1String("beta"))
+    {
+        *preset = QStringLiteral("beta");
+        *low_hz = 13.0;
+        *high_hz = 30.0;
+    }
+    else if (band == QLatin1String("gamma"))
+    {
+        *preset = QStringLiteral("gamma");
+        *low_hz = 30.0;
+        *high_hz = 45.0;
+    }
+    else
+    {
+        return false;
+    }
+    return true;
+}
+
+} // namespace
+
+QStringList AcquisitionBridge::topo_palette()
+{
+    return topography_palette();
+}
+
+// ==================== 构造与析构 ====================
+
+AcquisitionBridge::AcquisitionBridge(PythonEngine *engine, QObject *parent)
+    : QObject(parent)
+    , m_engine(engine)
+{
+    qRegisterMetaType<SignalChunk>("SignalChunk");
+    qRegisterMetaType<GapRange>("GapRange");
+
+    reset_channels(m_channel_count);
+
+    // 算法线程与采集线程的创建顺序不重要，但**析构顺序很重要**：
+    // 两者都必须在解释器 finalize 之前停干净（见 main.cpp）
+    //
+    // 解释器没起来时**不能**启动算法线程：线程体第一件事就是取 GIL，
+    // 而没有活解释器时那是致命错误。原来的写法会在这里把「Python 没接对、
+    // 界面照常起来」变成「启动即崩」
+    if (m_engine != nullptr && m_engine->is_running())
+    {
+        // ASR 参考要用原始数据拟合，数据源就是这个环形缓冲。
+        // 它由采集线程写、算法线程读，自身带锁（见 RawRingBuffer）
+        m_worker.set_raw_source(&m_raw_buffer);
+        m_worker.start();
+    }
+
+    QObject::connect(&m_display_timer, &QTimer::timeout, this, &AcquisitionBridge::render_wave);
+    m_display_timer.setInterval(kDisplayIntervalMs);
+    m_display_timer.start();
+
+    QObject::connect(&m_topo_timer, &QTimer::timeout, this, &AcquisitionBridge::tick_topography);
+    m_topo_timer.setInterval(kTopographyIntervalMs);
+    m_topo_timer.start();
+
+    QObject::connect(&m_spectrum_timer, &QTimer::timeout, this, &AcquisitionBridge::tick_spectrum);
+    m_spectrum_timer.setInterval(kSpectrumIntervalMs);
+    m_spectrum_timer.start();
+
+    QObject::connect(&m_demo_timer, &QTimer::timeout, this,
+                     &AcquisitionBridge::tick_demo_source);
+    m_demo_timer.setInterval(kDisplayIntervalMs);
+
+    // 算法线程的信号一律队列投递（发信方在工作线程）
+    QObject::connect(&m_worker, &PythonWorker::block_processed, this,
+                     &AcquisitionBridge::on_block_processed, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::session_opened, this,
+                     &AcquisitionBridge::on_session_opened, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::session_closed, this,
+                     &AcquisitionBridge::on_session_closed, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::config_applied, this,
+                     &AcquisitionBridge::on_config_applied, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::topography_ready, this,
+                     &AcquisitionBridge::on_topography_ready, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::spectrum_ready, this,
+                     &AcquisitionBridge::on_spectrum_ready, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::status_updated, this,
+                     &AcquisitionBridge::on_status_updated, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::algorithm_failed, this,
+                     &AcquisitionBridge::on_algorithm_failed, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::session_state_changed, this,
+                     &AcquisitionBridge::on_session_state_changed, Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::notice, this, &AcquisitionBridge::on_notice,
+                     Qt::QueuedConnection);
+    QObject::connect(&m_worker, &PythonWorker::log_event, this, &AcquisitionBridge::on_log_event,
+                     Qt::QueuedConnection);
+
+    // 日志同时进控制台。只 emit 的话，在没有界面日志区的场合（自检、--demo、
+    // 用户报问题时的复现）就什么都收不到，等于没有日志；而这一类问题
+    //（数据到底有没有进来、会话有没有建起来）恰恰只能靠日志判断
+    QObject::connect(this, &AcquisitionBridge::logMessage, this,
+                     [](const QString &message) { qInfo().noquote() << "[acq]" << message; });
+
+    refresh_ports();
+    refresh_stats_text();
+}
+
+AcquisitionBridge::~AcquisitionBridge()
+{
+    // 顺序不能动：
+    //   1) 先关串口并等采集线程退出 —— 否则它可能在本对象析构之后还调 deliver()
+    //   2) 再停算法线程。它持有跨调用的 py::object，必须 wait() 回来
+    //   3) 最后才轮得到解释器（由 main 负责）
+    close_port();
+
+    m_worker.request_stop();
+    if (!m_worker.wait(15000))
+    {
+        // 超时说明某个 Python 调用卡住了。这里**不能** terminate()（会让解释器
+        // 内部状态停在半路，随后 finalize 必崩），也不能放着不管 ——
+        // 算法线程若还活着，它会继续读 m_raw_buffer，而成员马上要开始析构。
+        // 把话说清楚：接下来要么是 QThread 基类的 qFatal 收场，要么是
+        // 访问已析构的缓冲，两种都是明确的失败，不要再往上加一层掩盖
+        qWarning() << "[acquisition] 算法线程未能在超时内退出，"
+                      "退出过程可能不正常（多半是某个 Python 调用卡住）";
+    }
+}
+
+// ==================== ChunkSink：运行在采集线程上 ====================
+
+bool AcquisitionBridge::deliver(const SignalChunk &chunk)
+{
+    // 原始数据先留一份给 ASR：它要的是**未经任何处理**的数据。
+    // 放在这里而不是等算法回传，是因为算法返回的是处理后的值，
+    // 而参考矩阵必须用原始数据拟合
+    const qint64 period_ns = 1000000000LL / std::max(1, m_sample_rate);
+    m_raw_buffer.append(chunk.samples.constData(), chunk.samples_per_channel, chunk.channels,
+                        chunk.first_timestamp_ns, period_ns);
+
+    // 算法不可用时，显示回退到原始数据。这条旁路的价值在于：Python 挂了、
+    // 会话进了 ERROR，界面上的波形照常在动，用户能立刻区分「设备还在采、
+    // 算法出问题」和「整个软件死了」
+    if (m_use_raw_fallback.load(std::memory_order_relaxed))
+    {
+        append_to_display(chunk);
+    }
+
+    return m_worker.deliver(chunk);
+}
+
+bool AcquisitionBridge::deliver_gap(const GapRange &gap)
+{
+    return m_worker.deliver_gap(gap);
+}
+
+// ==================== 串口 ====================
+
+void AcquisitionBridge::refresh_ports()
+{
+    QStringList ports;
+    const QList<QSerialPortInfo> infos = QSerialPortInfo::availablePorts();
+    for (const QSerialPortInfo &info : infos)
+    {
+        ports.append(info.portName());
+    }
+    if (ports != m_available_ports)
+    {
+        m_available_ports = ports;
+        emit availablePortsChanged();
+    }
+}
+
+bool AcquisitionBridge::collector_active() const
+{
+    // 判据必须是线程状态而不是指针是否为空：线程会因为拔线、掉电自己结束，
+    // 那时 m_collector 非空却已不再消费命令队列
+    return m_collector != nullptr && m_collector->isRunning();
+}
+
+bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int sample_rate)
+{
+    if (port_name.trimmed().isEmpty())
+    {
+        set_error(tr("请先选择或输入串口名"));
+        return false;
+    }
+
+    // 换参数就重开：先把上一份收干净，免得两个采集线程同时占着串口
+    close_port();
+
+    m_sample_rate = std::clamp(sample_rate, 1, 100000);
+
+    SerialCollector::Config config;
+    config.port_name = port_name.trimmed();
+    config.baud_rate = std::clamp(baud_rate, 300, 4000000);
+    // 串口上永远是设备的 16 路；界面上的 4/8/16 只是显示与算法的通道子集
+    config.channel_count = serial_protocol::kChannelCount;
+    config.sample_rate = m_sample_rate;
+
+    m_raw_buffer.reset(config.channel_count, m_sample_rate, kMaxWindowSeconds * 6);
+    reset_channels(m_channel_count);
+
+    m_collector = new SerialCollector(this);
+    m_collector->set_config(config);
+    // 本对象就是数据块的消费者：deliver() 里再转交给算法线程
+    m_collector->set_sink(this);
+    m_collector->set_raw_buffer(&m_raw_buffer);
+
+    // 采集线程的信号一律队列投递（发信方在工作线程）
+    QObject::connect(m_collector, &SerialCollector::port_opened, this,
+                     &AcquisitionBridge::on_port_opened, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::port_open_failed, this,
+                     &AcquisitionBridge::on_port_open_failed, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::port_closed, this,
+                     &AcquisitionBridge::on_port_closed, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::stats_changed, this,
+                     &AcquisitionBridge::on_stats_changed, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::status_message, this,
+                     &AcquisitionBridge::on_status_message, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::failed, this, &AcquisitionBridge::on_failed,
+                     Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::collecting_changed, this,
+                     &AcquisitionBridge::on_collecting_changed, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::recording_changed, this,
+                     &AcquisitionBridge::on_recording_changed, Qt::QueuedConnection);
+
+    set_status(tr("正在打开 %1…").arg(config.port_name));
+    m_collector->start();
+    return true;
+}
+
+void AcquisitionBridge::close_port()
+{
+    if (m_collector == nullptr)
+    {
+        reset_port_flags();
+        return;
+    }
+
+    m_collector->request_stop();
+    if (!m_collector->wait(5000))
+    {
+        // 采集线程里没有跨调用的外部资源（串口与文件都是 run() 的栈上对象），
+        // 所以这里敢强制终止 —— 丢一段录像好过整个程序退不出去。
+        // 算法线程绝不能用这一招（它持有 Python 会话对象，杀掉后 finalize 必崩）。
+        //
+        // 注意这条路径**不只在退出时走**：用户换串口也会经过这里（open_port 会
+        // 先 close_port）。被强杀的线程不会执行 QSerialPort 的析构，串口句柄
+        // 会一直留到进程退出，Windows 下同一个口下次就打不开了。
+        // 代价可以接受（超时本身已经是异常情况），但要知道它比「丢一段录像」更重
+        qWarning() << "[acquisition] 采集线程未能在超时内退出，强制终止；"
+                      "串口句柄可能要到进程退出才会释放";
+        m_collector->terminate();
+        m_collector->wait(1000);
+    }
+
+    // deleteLater 而不是直接 delete：现在可能还在处理本线程的队列信号，
+    // 当场析构会让那些信号打到已释放的对象上
+    m_collector->deleteLater();
+    m_collector = nullptr;
+
+    reset_port_flags();
+}
+
+// ==================== 采集 ====================
+
+bool AcquisitionBridge::start_collection(const QString &directory)
+{
+    // 演示模式下已经在灌数据了，不需要串口也不需要落盘
+    if (m_demo_enabled)
+    {
+        return true;
+    }
+
+    // 串口没开就自动打开。
+    //
+    // 设计稿上**没有串口选择控件** —— 它的前提是「设备已连接」（顶栏那个
+    // 「Neurolink-6016 已连接」的胶囊）。所以这里按这个前提办事：自动打开
+    // 枚举到的那个口。参考实现的约定是取最后一个（真机通常枚举成编号最大的
+    // 那个 COM 口）。
+    //
+    // 需要手动指定端口时用 Acq.open_port()（接口留着，只是设计稿没给它位置）
+    if (!collector_active())
+    {
+        refresh_ports();
+        if (m_available_ports.isEmpty())
+        {
+            set_error(tr("没有找到可用的串口，请检查设备连接与驱动"));
+            return false;
+        }
+
+        const QString port_name = m_available_ports.last();
+        emit logMessage(tr("串口未打开，自动使用 %1").arg(port_name));
+        if (!open_port(port_name, 921600, m_sample_rate))
+        {
+            return false;
+        }
+        // open_port 只表示「已发起」，串口在工作线程里异步打开。
+        // 下面的 post_start 会排在队列里，等端口就绪后由采集循环取走执行
+    }
+
+    // 算法会话：串口已经打开时也可以先建会话再采集，这样第一块数据就能被处理。
+    // 会话建立是异步的，界面靠 sessionState 变化得知结果
+    push_session_config();
+
+    // 落盘：默认自动写文件，格式用二进制 —— 体积小、无格式化开销，
+    // 而且文件头自带元信息，回放时不用另找参数
+    SerialCollector::StartRequest request;
+    request.format = SerialCollector::SaveFormat::Binary;
+    request.channel_names = eeg_montage::channel_names();
+
+    QString folder = directory.trimmed().isEmpty() ? default_record_directory()
+                                                   : directory.trimmed();
+    const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
+    request.save_path = QDir(folder).filePath(stamp + QStringLiteral(".eegbin"));
+    // 同一秒内重复开始会撞名，加后缀而不是覆盖 —— 覆盖会静默丢掉上一段
+    for (int suffix = 1; QFileInfo::exists(request.save_path) && suffix < 1000; ++suffix)
+    {
+        request.save_path = QDir(folder).filePath(
+            QStringLiteral("%1_%2.eegbin").arg(stamp).arg(suffix));
+    }
+
+    m_use_raw_fallback.store(true, std::memory_order_relaxed);
+    m_collect_timer.start();
+    m_events.clear();
+    emit eventsChanged();
+
+    m_collector->post_start(request);
+    return true;
+}
+
+void AcquisitionBridge::stop_collection()
+{
+    if (m_demo_enabled)
+    {
+        stop_demo_source();
+        return;
+    }
+    if (collector_active())
+    {
+        m_collector->post_stop();
+    }
+    m_worker.post_close_session();
+}
+
+void AcquisitionBridge::reset_session()
+{
+    m_worker.post_reset();
+}
+
+// ==================== 演示数据源 ====================
+
+void AcquisitionBridge::start_demo_source()
+{
+    if (m_demo_enabled)
+    {
+        return;
+    }
+    m_demo_enabled = true;
+
+    m_sample_rate = 1000;
+    reset_channels(m_channel_count);
+    m_raw_buffer.reset(eeg_montage::kChannelCount, m_sample_rate, kMaxWindowSeconds * 6);
+
+    // 走真实路径：先建会话，再灌数据
+    push_session_config();
+
+    m_use_raw_fallback.store(true, std::memory_order_relaxed);
+    m_collect_timer.start();
+    m_events.clear();
+    emit eventsChanged();
+
+    m_demo_sequence_id = 0;
+    m_demo_timestamp_ns = 1000000000LL;   // 从 1 秒处起步，避开 0 这个哨兵值
+    m_demo_timer.start();
+
+    m_collecting = true;
+    m_recording_path = tr("（演示数据源，不落盘）");
+    emit demoSourceChanged();
+    emit collectingChanged();
+    emit logMessage(tr("已切到演示数据源：合成 10 Hz α 波 + 50 Hz 工频，"
+                       "不接设备、不落盘"));
+}
+
+void AcquisitionBridge::stop_demo_source()
+{
+    if (!m_demo_enabled)
+    {
+        return;
+    }
+    m_demo_enabled = false;
+    m_demo_timer.stop();
+    m_collecting = false;
+    m_recording_path.clear();
+    m_worker.post_close_session();
+
+    emit demoSourceChanged();
+    emit collectingChanged();
+    emit logMessage(tr("演示数据源已停止"));
+}
+
+void AcquisitionBridge::tick_demo_source()
+{
+    // 每拍 33 个样本（33ms @ 1000Hz），与真实采集的分块节拍一致
+    constexpr int kFrames = 33;
+    constexpr double kPi = 3.14159265358979323846;
+
+    SignalChunk chunk;
+    chunk.channels = eeg_montage::kChannelCount;
+    chunk.samples_per_channel = kFrames;
+    chunk.first_sequence_id = m_demo_sequence_id;
+    chunk.first_timestamp_ns = m_demo_timestamp_ns;
+    chunk.samples.resize(static_cast<qsizetype>(chunk.channels) * kFrames);
+
+    for (int ch = 0; ch < chunk.channels; ++ch)
+    {
+        // 每通道幅度与相位都不同：相位铺满 0~π，重参考（默认全脑平均）之后
+        // 才留得下残差。16 个通道喂同一条波形的话会被重参考减成 0
+        const double amplitude = 12.0 + static_cast<double>(ch) * 1.5;
+        const double phase = kPi * static_cast<double>(ch) / chunk.channels;
+        for (int i = 0; i < kFrames; ++i)
+        {
+            const double t = static_cast<double>(m_demo_sequence_id + i) / 1000.0;
+            chunk.samples[static_cast<qsizetype>(i) * chunk.channels + ch] =
+                static_cast<float>(amplitude * std::sin(2.0 * kPi * 10.0 * t + phase)
+                                   + 4.0 * std::sin(2.0 * kPi * 50.0 * t + phase)
+                                   + 1.5 * std::sin(2.0 * kPi * 0.3 * t));
+        }
+    }
+
+    m_demo_sequence_id += kFrames;
+    m_demo_timestamp_ns += kFrames * 1000000;
+
+    // 必须是 queue 投递而不是直接调：deliver() 在真实链路里跑在采集线程上，
+    // 这里直接调会让「采集线程」变成 GUI 线程，掩盖掉跨线程的问题。
+    // 用一个 0 延时的单次投递模拟那一次跨线程交接
+    QMetaObject::invokeMethod(
+        this,
+        [this, chunk]() {
+            if (!m_demo_enabled)
+            {
+                return;
+            }
+            const bool accepted = deliver(chunk);
+            if (!accepted)
+            {
+                // 队列满（算法跟不上）：与真实链路一样记成数据缺口，
+                // 不能悄悄丢 —— 下次 push_block 的序列号就接不上了
+                GapRange gap;
+                gap.first_missing_sequence_id = chunk.first_sequence_id;
+                gap.last_missing_sequence_id =
+                    chunk.first_sequence_id + chunk.samples_per_channel - 1;
+                gap.start_timestamp_ns = chunk.first_timestamp_ns;
+                gap.end_timestamp_ns = chunk.first_timestamp_ns;
+                gap.reason = QStringLiteral("demo_backpressure");
+                deliver_gap(gap);
+            }
+        },
+        Qt::QueuedConnection);
+}
+
+void AcquisitionBridge::clear_error()
+{
+    if (m_error_text.isEmpty() && m_error_code.isEmpty())
+    {
+        return;
+    }
+    m_error_text.clear();
+    m_error_code.clear();
+    m_error_message.clear();
+    m_can_reset = false;
+    emit errorTextChanged();
+    emit sessionStateChanged();
+}
+
+// ==================== 波形 ====================
+
+void AcquisitionBridge::reset_channels(int channels)
+{
+    m_channel_count = std::clamp(channels, 1, eeg_montage::kChannelCount);
+
+    const int wanted = m_sample_rate * kMaxWindowSeconds;
+
+    {
+        // 容量、缓冲、写头三者必须在**同一把锁内**一起更新。
+        //
+        // 容量是采集线程 append_to_display() 用来算写指针的（head % capacity）：
+        // 若在锁外先改容量、再进锁重建缓冲，中间那个窗口里采集线程会拿新容量
+        // 去索引旧缓冲（那是按旧容量分配的），直接越界写。
+        // 当前调用路径不会真的撞上（open_port 会先等采集线程退出），
+        // 但这个不变式很脆，不该靠调用顺序来保证
+        const QMutexLocker locker(&m_display_mutex);
+        m_display_capacity = std::clamp(wanted, 1, kMaxSamplesPerChannel);
+        m_display_data.assign(static_cast<qsizetype>(m_display_capacity)
+                                  * eeg_montage::kChannelCount,
+                              0.0f);
+        m_display_head = 0;
+        m_display_filled = 0;
+    }
+
+    // 显隐掩码只在通道数真的变了时重建，重叠部分原样保留
+    if (m_channel_visible.size() != m_channel_count)
+    {
+        QVector<bool> rebuilt(m_channel_count, true);
+        for (int i = 0; i < std::min(m_channel_visible.size(), rebuilt.size()); ++i)
+        {
+            rebuilt[i] = m_channel_visible.at(i);
+        }
+        m_channel_visible = rebuilt;
+        emit channelVisibilityChanged();
+    }
+
+    emit channelCountChanged();
+    render_wave();
+}
+
+void AcquisitionBridge::append_to_display(const SignalChunk &chunk)
+{
+    if (chunk.channels <= 0 || chunk.samples_per_channel <= 0 || chunk.samples.isEmpty())
+    {
+        return;
+    }
+
+    const QMutexLocker locker(&m_display_mutex);
+    if (m_display_data.isEmpty() || chunk.channels != eeg_montage::kChannelCount)
+    {
+        // 通道数与缓冲约定不符：重建交给 GUI 线程做，这里直接丢。
+        // 在这个线程里做分配（可能是几十毫秒）会把采集卡住
+        return;
+    }
+
+    for (int i = 0; i < chunk.samples_per_channel; ++i)
+    {
+        std::memcpy(m_display_data.data()
+                        + static_cast<qsizetype>(m_display_head) * eeg_montage::kChannelCount,
+                    chunk.samples.constData()
+                        + static_cast<qsizetype>(i) * eeg_montage::kChannelCount,
+                    static_cast<size_t>(eeg_montage::kChannelCount) * sizeof(float));
+        m_display_head = (m_display_head + 1) % m_display_capacity;
+        if (m_display_filled < m_display_capacity)
+        {
+            ++m_display_filled;
+        }
+    }
+    // 记一次「有新数据了」。GUI 线程的定时器靠它决定要不要重绘
+    m_display_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+void AcquisitionBridge::render_wave()
+{
+    // 只在显示缓冲真的变了时才自增。
+    //
+    // 不能无条件每 33ms 自增一次：串口没开、或采集已停时数据根本不进来，
+    // 那样 QML 会老老实实每秒重绘 30 次同样的内容 —— 16 个通道、每通道
+    // 两千多个点的 Canvas 重绘，白烧 CPU 还会让界面在空闲时也发热
+    const qint64 generation = m_display_generation.load(std::memory_order_relaxed);
+    if (generation == m_rendered_generation)
+    {
+        return;
+    }
+    m_rendered_generation = generation;
+
+    ++m_wave_revision;
+    emit waveRevisionChanged();
+}
+
+QVariantList AcquisitionBridge::lane_samples(int channel, int columns) const
+{
+    QVariantList result;
+    // 夹一下上限：columns 由 QML 传进来，极大值时 columns * 2 是有符号溢出（UB），
+    // 而 reserve 抛出的 bad_alloc 会穿过 QML 边界把进程带崩
+    columns = std::clamp(columns, 0, 8192);
+    if (columns == 0)
+    {
+        return result;
+    }
+
+    const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
+    if (channel < 0 || channel >= indices.size())
+    {
+        return result;
+    }
+    // 显示通道号 → 设备通道号。8 档挑的是 Fp1 Fp2 F3 F4 C3 C4 P3 P4 而不是前 8 路，
+    // 这样界面上的通道名与设计稿一致（见 eeg_montage::display_channel_indices）
+    const int source_channel = indices.at(channel);
+
+    const QMutexLocker locker(&m_display_mutex);
+    const int wanted = std::min(m_display_filled,
+                               static_cast<int>(m_time_window * m_sample_rate));
+    if (wanted <= 0)
+    {
+        return result;
+    }
+
+    int start = (m_display_head - wanted) % m_display_capacity;
+    if (start < 0)
+    {
+        start += m_display_capacity;
+    }
+
+    result.reserve(columns * 2);
+    for (int column = 0; column < columns; ++column)
+    {
+        // 每一列覆盖的样本区间。用整数除法，最后一列兜住余数
+        const int begin = static_cast<int>(static_cast<qint64>(column) * wanted / columns);
+        const int end = std::max(begin + 1,
+                                 static_cast<int>(static_cast<qint64>(column + 1) * wanted / columns));
+
+        float minimum = std::numeric_limits<float>::max();
+        float maximum = std::numeric_limits<float>::lowest();
+        for (int i = begin; i < end && i < wanted; ++i)
+        {
+            const int slot = (start + i) % m_display_capacity;
+            const float value =
+                m_display_data.at(static_cast<qsizetype>(slot) * eeg_montage::kChannelCount
+                                  + source_channel);
+            minimum = std::min(minimum, value);
+            maximum = std::max(maximum, value);
+        }
+        if (minimum > maximum)
+        {
+            minimum = 0.0f;
+            maximum = 0.0f;
+        }
+        // 每列给出最小与最大两个点，Canvas 顺次连线就得到包络正确的折线：
+        // 只给一个点的话，10 秒时窗下每列要压掉十几个样本，峰会被削平
+        result.append(static_cast<double>(minimum));
+        result.append(static_cast<double>(maximum));
+    }
+    return result;
+}
+
+double AcquisitionBridge::lane_range_uv(int channel) const
+{
+    if (m_y_range_uv > 0)
+    {
+        return m_y_range_uv;
+    }
+
+    // 自动量程：取窗口内绝对值峰值，向上取到一个整齐档位。
+    // 每个通道各自算，所以自动量程下通道之间不能直接比大小
+    const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
+    if (channel < 0 || channel >= indices.size())
+    {
+        return 100.0;
+    }
+    const int source_channel = indices.at(channel);
+
+    const QMutexLocker locker(&m_display_mutex);
+    const int wanted = std::min(m_display_filled,
+                               static_cast<int>(m_time_window * m_sample_rate));
+    if (wanted <= 0)
+    {
+        return 100.0;
+    }
+
+    int start = (m_display_head - wanted) % m_display_capacity;
+    if (start < 0)
+    {
+        start += m_display_capacity;
+    }
+
+    float peak = 0.0f;
+    for (int i = 0; i < wanted; ++i)
+    {
+        const int slot = (start + i) % m_display_capacity;
+        peak = std::max(peak, std::fabs(m_display_data.at(
+                                  static_cast<qsizetype>(slot) * eeg_montage::kChannelCount
+                                  + source_channel)));
+    }
+
+    static const double steps[] = {10.0, 25.0, 50.0, 100.0, 200.0, 500.0,
+                                   1000.0, 2000.0, 5000.0, 10000.0};
+    for (const double step : steps)
+    {
+        if (peak <= step)
+        {
+            return step;
+        }
+    }
+    return 10000.0;
+}
+
+void AcquisitionBridge::set_channel_count(int count)
+{
+    const int clamped = std::clamp(count, 1, eeg_montage::kChannelCount);
+    if (clamped == m_channel_count)
+    {
+        return;
+    }
+    reset_channels(clamped);
+    if (m_collecting)
+    {
+        // 通道子集变了，算法会话的滚动缓存要跟着重建 —— 用重建会话来表达，
+        // 因为会话的通道数在创建时就固定了
+        push_session_config();
+    }
+    emit logMessage(tr("显示通道数改为 %1").arg(clamped));
+}
+
+bool AcquisitionBridge::is_channel_visible(int channel) const
+{
+    return channel >= 0 && channel < m_channel_visible.size() && m_channel_visible.at(channel);
+}
+
+void AcquisitionBridge::set_channel_visible(int channel, bool visible)
+{
+    if (channel < 0 || channel >= m_channel_visible.size()
+        || m_channel_visible.at(channel) == visible)
+    {
+        return;
+    }
+    m_channel_visible[channel] = visible;
+    emit channelVisibilityChanged();
+}
+
+void AcquisitionBridge::set_all_channels_visible(bool visible)
+{
+    bool changed = false;
+    for (int i = 0; i < m_channel_visible.size(); ++i)
+    {
+        if (m_channel_visible.at(i) != visible)
+        {
+            m_channel_visible[i] = visible;
+            changed = true;
+        }
+    }
+    if (changed)
+    {
+        emit channelVisibilityChanged();
+    }
+}
+
+void AcquisitionBridge::set_time_window(double seconds)
+{
+    const double clamped = std::clamp(seconds, 0.1, 10.0);
+    if (qFuzzyCompare(clamped, m_time_window))
+    {
+        return;
+    }
+    m_time_window = clamped;
+    emit timeWindowChanged();
+}
+
+void AcquisitionBridge::set_y_range_uv(int range_uv)
+{
+    if (range_uv == m_y_range_uv)
+    {
+        return;
+    }
+    m_y_range_uv = range_uv;
+    emit yRangeChanged();
+}
+
+QStringList AcquisitionBridge::channel_names() const
+{
+    QStringList names;
+    const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
+    for (const int index : indices)
+    {
+        names.append(eeg_montage::channel_name(index));
+    }
+    return names;
+}
+
+QStringList AcquisitionBridge::channel_colors() const
+{
+    // 与设计稿 8 个通道的配色一致；16 通道时后 8 个沿用同一张表循环取色
+    static const QStringList palette = {
+        QStringLiteral("#0e9fbf"), QStringLiteral("#36a772"), QStringLiteral("#daa82a"),
+        QStringLiteral("#e07a2e"), QStringLiteral("#d675a4"), QStringLiteral("#876ee3"),
+        QStringLiteral("#299fbb"), QStringLiteral("#6baa40"),
+    };
+    QStringList colors;
+    const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
+    for (int i = 0; i < indices.size(); ++i)
+    {
+        colors.append(palette.at(i % palette.size()));
+    }
+    return colors;
+}
+
+QVariantList AcquisitionBridge::channel_visible_mask() const
+{
+    QVariantList mask;
+    mask.reserve(m_channel_visible.size());
+    for (const bool visible : m_channel_visible)
+    {
+        mask.append(visible);
+    }
+    return mask;
+}
+
+// ==================== 滤波与后处理 ====================
+
+void AcquisitionBridge::push_processing_config()
+{
+    ProcessingParams params = m_processing;
+    // ASR 的开关不在 ProcessingParams 里单独存一份：它是界面意图，
+    // 能不能真正打开由算法线程按「参考是否建好」决定（见 pythonworker.cpp）
+    params.asr_enabled = m_asr_enabled;
+    m_worker.post_processing_config(params);
+}
+
+void AcquisitionBridge::push_session_config()
+{
+    SessionConfig config;
+    config.sample_rate_hz = m_sample_rate;
+    // 滚动缓存必须不小于界面可选的最大查询窗口（时基最大 10 秒）。
+    // 留一倍余量：缓存刚被清空时界面还能靠它更快恢复出图
+    config.rolling_window_s = 20.0;
+    config.reference_method = m_reference_method;
+    config.processing = m_processing;
+    config.processing.asr_enabled = m_asr_enabled;
+    m_worker.post_session_config(config);
+}
+
+void AcquisitionBridge::set_high_pass_enabled(bool enabled)
+{
+    if (enabled == m_processing.high_pass_enabled)
+    {
+        return;
+    }
+    m_processing.high_pass_enabled = enabled;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_high_pass_low_hz(double hz)
+{
+    if (qFuzzyCompare(hz, m_processing.high_pass_low_hz))
+    {
+        return;
+    }
+    m_processing.high_pass_low_hz = hz;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_low_pass_enabled(bool enabled)
+{
+    if (enabled == m_processing.low_pass_enabled)
+    {
+        return;
+    }
+    m_processing.low_pass_enabled = enabled;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_low_pass_high_hz(double hz)
+{
+    if (qFuzzyCompare(hz, m_processing.low_pass_high_hz))
+    {
+        return;
+    }
+    m_processing.low_pass_high_hz = hz;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_notch_enabled(bool enabled)
+{
+    if (enabled == m_processing.notch_enabled)
+    {
+        return;
+    }
+    m_processing.notch_enabled = enabled;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_notch_low_hz(double hz)
+{
+    if (qFuzzyCompare(hz, m_processing.notch_low_hz))
+    {
+        return;
+    }
+    m_processing.notch_low_hz = hz;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_notch_high_hz(double hz)
+{
+    if (qFuzzyCompare(hz, m_processing.notch_high_hz))
+    {
+        return;
+    }
+    m_processing.notch_high_hz = hz;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_asr_enabled(bool enabled)
+{
+    if (enabled == m_asr_enabled)
+    {
+        return;
+    }
+    m_asr_enabled = enabled;
+    emit processingChanged();
+    push_processing_config();
+}
+
+void AcquisitionBridge::set_reference_method(const QString &method)
+{
+    if (method == m_reference_method)
+    {
+        return;
+    }
+    m_reference_method = method;
+    emit processingChanged();
+
+    // 重参考方式没法用 update_processing_config 改（接口的 OnlineProcessingConfig
+    // 里没有它），只能重建会话。会话重建会让算法重新预热、滚动缓存清零 ——
+    // 与改一次滤波参数的代价相同，所以对用户是可以预期的
+    if (m_collecting)
+    {
+        push_session_config();
+        emit logMessage(tr("重参考方式已改为 %1，正在重建在线会话").arg(method));
+    }
+}
+
+// ==================== 查询 ====================
+
+void AcquisitionBridge::set_topo_band(const QString &band)
+{
+    QString preset;
+    double low_hz = 0.0;
+    double high_hz = 0.0;
+    if (!band_from_name(band, &preset, &low_hz, &high_hz))
+    {
+        // 认不出的名字直接忽略：界面写错时保持原样，总比发一个必然被拒的查询好
+        return;
+    }
+    if (band == m_topo_band)
+    {
+        return;
+    }
+    m_topo_band = band;
+    emit topoBandChanged();
+    m_topo_status_text = tr("正在切换频段…");
+    emit topoRevisionChanged();
+    // 立刻查一次，不用等下一个 1.2 秒的节拍
+    tick_topography();
+}
+
+void AcquisitionBridge::set_spectrum_channel(const QString &channel)
+{
+    if (channel.isEmpty() || channel == m_spectrum_channel)
+    {
+        return;
+    }
+    m_spectrum_channel = channel;
+    emit spectrumChannelChanged();
+    tick_spectrum();
+}
+
+void AcquisitionBridge::tick_topography()
+{
+    if (!m_collecting || m_session_state.isEmpty() || m_session_state == QLatin1String("error")
+        || m_session_state == QLatin1String("closed"))
+    {
+        return;
+    }
+
+    constexpr double kWindowS = 2.0;
+    // 先看滚动缓存够不够，不够就干脆不发查询。
+    // 比发出去再 catch INSUFFICIENT_WINDOW_DATA 干净：省一次 Python 调用，
+    // 也省掉「什么算正常异常」这种要靠文档维护的判断
+    if (m_rolling_buffer_s < kWindowS) {
+        m_topo_status_text = tr("数据累积中 %1 / %2 秒")
+                                 .arg(m_rolling_buffer_s, 0, 'f', 1)
+                                 .arg(kWindowS, 0, 'f', 0);
+        emit topoRevisionChanged();
+        return;
+    }
+
+    QString preset;
+    double low_hz = 0.0;
+    double high_hz = 0.0;
+    if (!band_from_name(m_topo_band, &preset, &low_hz, &high_hz))
+    {
+        return;
+    }
+
+    TopographyRequest request;
+    request.request_id = ++m_topo_request_id;
+    request.band_preset = preset;
+    request.band_low_hz = low_hz;
+    request.band_high_hz = high_hz;
+    request.window_s = kWindowS;
+    request.grid_width = 64;
+    request.grid_height = 64;
+    m_worker.post_topography_request(request);
+}
+
+void AcquisitionBridge::tick_spectrum()
+{
+    if (!m_collecting || m_session_state.isEmpty() || m_session_state == QLatin1String("error")
+        || m_session_state == QLatin1String("closed"))
+    {
+        return;
+    }
+
+    constexpr double kWindowS = 2.0;
+    if (m_rolling_buffer_s < kWindowS)
+    {
+        m_spectrum_status_text = tr("数据累积中 %1 / %2 秒")
+                                     .arg(m_rolling_buffer_s, 0, 'f', 1)
+                                     .arg(kWindowS, 0, 'f', 0);
+        emit spectrumRevisionChanged();
+        return;
+    }
+
+    SpectrumRequest request;
+    request.request_id = ++m_spectrum_request_id;
+    request.channel_name = m_spectrum_channel;
+    // 曲线要看到整个有意义的频段，所以查询用 0.5–30 Hz 而不是某个窄带
+    request.band_preset = QStringLiteral("full_0_5_30");
+    request.band_low_hz = 0.5;
+    request.band_high_hz = 30.0;
+    request.window_s = kWindowS;
+    m_worker.post_spectrum_request(request);
+}
+
+// ==================== 算法线程的信号 ====================
+
+void AcquisitionBridge::on_block_processed(const SignalChunk &chunk)
+{
+    // 算法能出结果就说明它活着，显示切回处理后的数据
+    m_use_raw_fallback.store(false, std::memory_order_relaxed);
+    append_to_display(chunk);
+}
+
+void AcquisitionBridge::on_session_opened(int config_version)
+{
+    Q_UNUSED(config_version);
+    m_session_state = QStringLiteral("warming_up");
+    m_can_reset = false;
+    m_warmup_text = tr("会话已建立，正在预热");
+    m_rolling_buffer_s = 0.0;
+    m_error_code.clear();
+    m_error_message.clear();
+    emit sessionStateChanged();
+    emit logMessage(tr("在线算法会话已建立"));
+}
+
+void AcquisitionBridge::on_session_closed()
+{
+    m_use_raw_fallback.store(true, std::memory_order_relaxed);
+    m_session_state = QStringLiteral("closed");
+    m_can_reset = false;
+    m_warmup_text.clear();
+    m_rolling_buffer_s = 0.0;
+    emit sessionStateChanged();
+}
+
+void AcquisitionBridge::on_config_applied(const ConfigUpdateInfo &info)
+{
+    Q_UNUSED(info);
+    // 配置一变，算法就把滚动缓存清空了。图上要立刻显示「重新累积」，
+    // 否则用户会以为地形图卡住了
+    m_rolling_buffer_s = 0.0;
+    m_topo_status_text = tr("滤波参数已更新，数据重新累积中");
+    m_spectrum_status_text = m_topo_status_text;
+    emit topoRevisionChanged();
+    emit spectrumRevisionChanged();
+}
+
+void AcquisitionBridge::on_topography_ready(const TopographyFrame &frame)
+{
+    // 过期结果直接丢：request_id 只增不减，收到更小的说明是上一轮的尾巴
+    if (frame.request_id < m_topo_request_id)
+    {
+        return;
+    }
+
+    {
+        const QMutexLocker locker(&m_topo_mutex);
+        m_topo_image = render_topography(frame, kTopographyImageSize);
+    }
+
+    m_topo_scale_max = frame.scale_max;
+    m_topo_status_text.clear();
+    m_topo_stats = QStringList{
+        frame.peak_electrode.isEmpty() ? QStringLiteral("—") : frame.peak_electrode,
+        QString::number(frame.peak_power, 'f', 1),
+        QString::number(frame.mean_power, 'f', 1),
+        frame.frontal_occipital_ratio > 0.0
+            ? QString::number(frame.frontal_occipital_ratio, 'f', 1)
+            : QStringLiteral("—"),
+    };
+
+    ++m_topo_revision;
+    emit topoRevisionChanged();
+}
+
+void AcquisitionBridge::on_spectrum_ready(const SpectrumFrame &frame)
+{
+    if (frame.request_id < m_spectrum_request_id || frame.psd.isEmpty())
+    {
+        return;
+    }
+
+    // 曲线归一化成 0~1，QML 只负责按画布高度缩放。
+    //
+    // PSD 的频点是 3.9 Hz 一档（算法侧 nperseg 固定 256，见接口文档），
+    // 0.5–30 Hz 只有 7 个点，所以这条曲线天然是折线而不是平滑曲线 ——
+    // 这是算法侧分辨率决定的，不是显示做得粗糙
+    const float peak = *std::max_element(frame.psd.begin(), frame.psd.end());
+    const double denominator = peak > 0.0f ? static_cast<double>(peak) : 1.0;
+
+    QVariantList curve;
+    curve.reserve(frame.psd.size());
+    for (int i = 0; i < frame.psd.size(); ++i)
+    {
+        curve.append(static_cast<double>(frame.psd.at(i)) / denominator);
+    }
+    m_spectrum_curve = curve;
+
+    // 五个频段各自的功率。频点太稀，各频段内的点数差异很大（α 只有 1 个点），
+    // 所以这里显示的是「频段内 PSD 之和」，不除以点数 —— 除完会出现 0 或极大值
+    struct BandRange
+    {
+        const char *letter;
+        double low_hz;
+        double high_hz;
+    };
+    static const BandRange bands[] = {
+        {"δ", 0.5, 4.0}, {"θ", 4.0, 8.0}, {"α", 8.0, 13.0}, {"β", 13.0, 30.0},
+        {"γ", 30.0, 45.0},
+    };
+
+    QStringList values;
+    // 按两个数组里较短的那个遍历：copy_py_float_array 只校验一维与长度，
+    // 不保证两者等长，而 QVector::at 越界在 Debug 下是断言崩溃
+    const int point_count = std::min(frame.psd.size(), frame.frequencies_hz.size());
+    for (const BandRange &band : bands)
+    {
+        double sum = 0.0;
+        for (int i = 0; i < point_count; ++i)
+        {
+            const double frequency = frame.frequencies_hz.at(i);
+            if (frequency >= band.low_hz && frequency <= band.high_hz)
+            {
+                sum += frame.psd.at(i);
+            }
+        }
+        values.append(QStringLiteral("%1μV²").arg(sum, 0, 'f', 1));
+    }
+    m_spectrum_band_values = values;
+    m_spectrum_status_text.clear();
+
+    ++m_spectrum_revision;
+    emit spectrumRevisionChanged();
+}
+
+void AcquisitionBridge::on_status_updated(const SessionStatusSnapshot &status)
+{
+    m_rolling_buffer_s = status.rolling_buffer_duration_s;
+    m_processing_us = status.average_processing_time_us;
+    m_session_state = status.state;
+    m_can_reset = status.state == QLatin1String("error");
+    if (status.warmup_remaining_samples > 0)
+    {
+        m_warmup_text = tr("预热中，剩余 %1 个采样点").arg(status.warmup_remaining_samples);
+    }
+    else
+    {
+        m_warmup_text.clear();
+    }
+
+    emit sessionStateChanged();
+    refresh_stats_text();
+}
+
+void AcquisitionBridge::on_algorithm_failed(const AlgorithmErrorInfo &info)
+{
+    m_error_code = info.code;
+    m_error_message = info.message;
+    m_can_reset = true;
+
+    // 单独记一条到界面日志区：错误消息是多行的 traceback 时，
+    // 顶部的错误栏放不下
+    emit logMessage(QStringLiteral("[算法 %1] %2 %3")
+                        .arg(info.code, info.operation, info.message));
+    emit sessionStateChanged();
+    set_error(tr("算法调用失败（%1）：%2").arg(info.code, info.message));
+}
+
+void AcquisitionBridge::on_session_state_changed(const QString &state)
+{
+    m_session_state = state;
+    m_can_reset = state == QLatin1String("error");
+    if (state == QLatin1String("error"))
+    {
+        // 会话坏了就切回原始波形：至少让用户看到设备还在采
+        m_use_raw_fallback.store(true, std::memory_order_relaxed);
+    }
+    emit sessionStateChanged();
+}
+
+void AcquisitionBridge::on_notice(const QString &message)
+{
+    emit logMessage(message);
+}
+
+void AcquisitionBridge::on_log_event(const AlgorithmLogEvent &event)
+{
+    emit logMessage(QStringLiteral("[%1 %2] %3").arg(event.level, event.code, event.message));
+}
+
+// ==================== 串口线程的信号 ====================
+
+void AcquisitionBridge::on_port_opened(const QString &message)
+{
+    m_port_open = true;
+    set_status(message);
+    emit portStateChanged();
+    emit logMessage(message);
+}
+
+void AcquisitionBridge::on_port_open_failed(const QString &message)
+{
+    m_port_open = false;
+    emit portStateChanged();
+    set_error(message);
+}
+
+void AcquisitionBridge::on_port_closed(const QString &message)
+{
+    reset_port_flags();
+    set_status(message);
+    emit logMessage(message);
+}
+
+void AcquisitionBridge::on_stats_changed(qint64 received, qint64 saved, qint64 dropped,
+                                         qint64 frame_skips)
+{
+    m_received_frames = received;
+    m_dropped_bytes = dropped;
+    m_saved_frames_for_stats = saved;
+    m_frame_number_skips = frame_skips;
+    refresh_stats_text();
+    emit statsChanged();
+}
+
+void AcquisitionBridge::on_status_message(const QString &message)
+{
+    set_status(message);
+}
+
+void AcquisitionBridge::on_failed(const QString &message)
+{
+    set_error(message);
+}
+
+void AcquisitionBridge::on_collecting_changed(bool collecting)
+{
+    if (collecting == m_collecting)
+    {
+        return;
+    }
+    m_collecting = collecting;
+    if (collecting)
+    {
+        m_use_raw_fallback.store(true, std::memory_order_relaxed);
+    }
+    emit collectingChanged();
+}
+
+void AcquisitionBridge::on_recording_changed(bool recording, const QString &file_path)
+{
+    // 只记文件路径，**不动 m_collecting** —— 采集状态由 collecting_changed 单独驱动。
+    // 混在一起的话，落盘失败会让界面以为「没在采集」，从而关掉地形图与频谱的查询
+    const bool was_recording = !m_recording_path.isEmpty();
+    m_recording_path = recording ? file_path : QString();
+
+    if (recording)
+    {
+        emit logMessage(tr("数据保存到 %1").arg(file_path));
+    }
+    else if (was_recording)
+    {
+        emit logMessage(tr("已停止写入文件"));
+    }
+    // recordingPath 的 NOTIFY 挂在 collectingChanged 上（它没有单独的变更信号）
+    emit collectingChanged();
+}
+
+// ==================== 事件 ====================
+
+void AcquisitionBridge::add_event(const QString &label)
+{
+    const qint64 elapsed_ms = m_collect_timer.isValid() ? m_collect_timer.elapsed() : 0;
+    const qint64 total_seconds = elapsed_ms / 1000;
+
+    QVariantMap event;
+    event.insert(QStringLiteral("label"), label);
+    // 事件时刻用「采集开始以来的偏移 + 当时的墙钟」。两者都要：
+    // 偏移用来在波形上定位竖线，墙钟用来与外部记录对齐
+    event.insert(QStringLiteral("offset"),
+                 QStringLiteral("%1:%2")
+                     .arg(total_seconds / 60, 2, 10, QLatin1Char('0'))
+                     .arg(total_seconds % 60, 2, 10, QLatin1Char('0')));
+    event.insert(QStringLiteral("wallClock"),
+                 QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss")));
+    event.insert(QStringLiteral("offsetSeconds"), static_cast<double>(elapsed_ms) / 1000.0);
+    event.insert(QStringLiteral("dotColor"), QStringLiteral("#7c3aed"));
+
+    m_events.append(event);
+    emit eventsChanged();
+}
+
+void AcquisitionBridge::remove_event(int index)
+{
+    if (index < 0 || index >= m_events.size())
+    {
+        return;
+    }
+    m_events.removeAt(index);
+    emit eventsChanged();
+}
+
+void AcquisitionBridge::clear_events()
+{
+    if (m_events.isEmpty())
+    {
+        return;
+    }
+    m_events.clear();
+    emit eventsChanged();
+}
+
+double AcquisitionBridge::elapsed_seconds() const
+{
+    if (!m_collect_timer.isValid())
+    {
+        return 0.0;
+    }
+    return static_cast<double>(m_collect_timer.elapsed()) / 1000.0;
+}
+
+double AcquisitionBridge::raw_buffer_seconds() const
+{
+    return m_raw_buffer.available_seconds();
+}
+
+// ==================== 图像 provider ====================
+
+QImage AcquisitionBridge::current_topo_image() const
+{
+    const QMutexLocker locker(&m_topo_mutex);
+    if (m_topo_image.isNull())
+    {
+        // 还没出过图。**不能返回空 QImage**：那样 QML 的 Image 会打一条
+        // "Failed to get image from provider" 的警告，而这是正常状态
+        //（刚启动、或数据还在累积），不是错误。给一张全透明图，界面上
+        // 什么都不会画，也不会污染日志
+        QImage placeholder(kTopographyImageSize, kTopographyImageSize,
+                           QImage::Format_ARGB32_Premultiplied);
+        placeholder.fill(Qt::transparent);
+        return placeholder;
+    }
+    return m_topo_image.copy();
+}
+
+QQuickImageProvider *AcquisitionBridge::create_topo_image_provider()
+{
+    return new TopoMapImageProvider(const_cast<AcquisitionBridge *>(this));
+}
+
+// ==================== 内部 ====================
+
+void AcquisitionBridge::set_error(const QString &message)
+{
+    m_error_text = message;
+    emit errorTextChanged();
+    emit logMessage(message);
+    qWarning().noquote() << "[acquisition]" << message;
+}
+
+void AcquisitionBridge::set_status(const QString &message)
+{
+    m_status_text = message;
+    emit statusTextChanged();
+}
+
+void AcquisitionBridge::refresh_stats_text()
+{
+    m_stats_text = tr("已收 %1 帧 · 已存 %2 帧%3%4")
+                       .arg(m_received_frames)
+                       .arg(m_saved_frames_for_stats)
+                       .arg(m_dropped_bytes > 0
+                                ? tr(" · 丢弃 %1 字节").arg(m_dropped_bytes)
+                                : QString())
+                       // 设备帧号的跳变次数。与「丢弃字节数」一起看才能区分
+                       // 「设备漏发」和「我们配错了波特率」—— 后者会让丢弃字节
+                       // 持续增长而帧号照常连续。只在非 0 时显示，正常时是噪音
+                       .arg(m_frame_number_skips > 0
+                                ? tr(" · 设备跳帧 %1").arg(m_frame_number_skips)
+                                : QString());
+
+    m_processing_time_text = m_processing_us > 0.0
+                                 ? tr("算法 %1 ms/块").arg(m_processing_us / 1000.0, 0, 'f', 2)
+                                 : QString();
+
+    emit statsChanged();
+}
+
+void AcquisitionBridge::reset_port_flags()
+{
+    const bool was_open = m_port_open;
+    const bool was_collecting = m_collecting;
+
+    m_port_open = false;
+    m_collecting = false;
+    m_use_raw_fallback.store(true, std::memory_order_relaxed);
+
+    if (was_open)
+    {
+        emit portStateChanged();
+    }
+    if (was_collecting)
+    {
+        emit collectingChanged();
+    }
+}
+
+// ==================== 桥接层端到端自检 ====================
+
+namespace
+{
+
+int g_bridge_selfcheck_failures = 0;
+
+void check_bridge(bool condition, const QString &what)
+{
+    if (condition)
+    {
+        qInfo().noquote() << "  [通过]" << what;
+        return;
+    }
+    ++g_bridge_selfcheck_failures;
+    qWarning().noquote() << "  [失败]" << what;
+}
+
+// 等条件成立，期间持续转事件循环 —— 桥接层的结果全靠队列信号从算法线程
+// 投递过来，不转事件循环就永远收不到
+bool wait_bridge(const std::function<bool()> &condition, int timeout_ms)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < timeout_ms)
+    {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        if (condition())
+        {
+            return true;
+        }
+        QThread::msleep(5);
+    }
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return condition();
+}
+
+// 通道 c 在 columns 列抽稀后的值域宽度。全 0（没数据）与有波动要能分开 ——
+// 「数组非空」是不够的：缓冲没被填过时 lane_samples 也会返回一串 0
+double lane_span(const QVariantList &samples)
+{
+    if (samples.isEmpty())
+    {
+        return 0.0;
+    }
+    double minimum = std::numeric_limits<double>::max();
+    double maximum = std::numeric_limits<double>::lowest();
+    for (const QVariant &value : samples)
+    {
+        const double number = value.toDouble();
+        minimum = std::min(minimum, number);
+        maximum = std::max(maximum, number);
+    }
+    return maximum - minimum;
+}
+
+} // namespace
+
+int run_bridge_selfcheck(PythonEngine &engine)
+{
+    install_console_message_handler();
+
+    qInfo().noquote() << "== 桥接层端到端自检 ==";
+
+    if (!engine.is_running())
+    {
+        qWarning().noquote() << "  解释器未启动，跳过";
+        return 1;
+    }
+
+    {
+        AcquisitionBridge bridge(&engine);
+
+        // 收集日志：ASR 这类「不报错但要能看出有没有生效」的状态全靠它
+        QStringList message_log;
+        QObject::connect(&bridge, &AcquisitionBridge::logMessage, &bridge,
+                         [&message_log](const QString &message) { message_log.append(message); });
+
+        // ---- 没有可用串口时的错误路径 ----
+        //
+        // 注意这里**不能**无条件调 start_collection()：它的设计行为是
+        // 「串口没开就自动打开」（设计稿上没有串口选择控件），而在开发机上
+        // 往往真有 COM 口 —— 自检会去占住用户的设备。所以先看枚举结果，
+        // 只有在确认没有可用端口时才去验证拒绝路径
+        bridge.refresh_ports();
+        if (bridge.available_ports().isEmpty())
+        {
+            check_bridge(!bridge.start_collection(QString()),
+                         QStringLiteral("没有可用串口时开始采集被拒绝"));
+            check_bridge(!bridge.error_text().isEmpty(),
+                         QStringLiteral("拒绝时给出了可显示的错误：%1").arg(bridge.error_text()));
+            bridge.clear_error();
+            check_bridge(bridge.error_text().isEmpty(), QStringLiteral("错误可以被清掉"));
+        }
+        else
+        {
+            qInfo().noquote() << QStringLiteral(
+                                     "  跳过错误路径：本机存在可用串口（%1 个），"
+                                     "「自动打开串口」是设计行为，自检不实际占用设备")
+                                     .arg(bridge.available_ports().size());
+        }
+
+        // ---- 演示数据源 ----
+        bridge.start_demo_source();
+        check_bridge(bridge.demo_source() && bridge.collecting(),
+                     QStringLiteral("演示数据源已启动"));
+
+        const bool running =
+            wait_bridge([&] { return bridge.session_state() == QLatin1String("running"); }, 20000);
+        check_bridge(running, QStringLiteral("在线会话进入 running（实际 %1）")
+                                  .arg(bridge.session_state()));
+
+        // ---- 波形：数值必须真的有波动 ----
+        check_bridge(wait_bridge(
+                         [&] { return lane_span(bridge.lane_samples(0, 128)) > 1e-6; }, 20000),
+                     QStringLiteral("通道 0 的波形有真实波动（峰峰值 %1 µV）")
+                         .arg(lane_span(bridge.lane_samples(0, 128)), 0, 'f', 2));
+
+        // 通道档位：16 与 8 给出的通道名必须不同 —— 8 档挑的是
+        // Fp1 Fp2 F3 F4 C3 C4 P3 P4，而不是前 8 路
+        check_bridge(bridge.channel_names().size() == 16 && bridge.channel_names().first() == "Fp1",
+                     QStringLiteral("16 档给出 16 个通道名（首个 %1）")
+                         .arg(bridge.channel_names().value(0)));
+        bridge.set_channel_count(8);
+        check_bridge(bridge.channel_names().size() == 8 && bridge.channel_names().value(2) == "F3",
+                     QStringLiteral("8 档跳过了 F7/T3，第三个是 F3（实际 %1）")
+                         .arg(bridge.channel_names().value(2)));
+        bridge.set_channel_count(16);
+        check_bridge(bridge.channel_names().size() == 16, QStringLiteral("切回 16 档"));
+
+        // 通道显隐：藏掉一个之后取掩码要能看出变化
+        bridge.set_all_channels_visible(false);
+        bridge.set_channel_visible(3, true);
+        const QVariantList mask = bridge.channel_visible_mask();
+        check_bridge(mask.size() == 16 && mask.value(3).toBool()
+                         && !mask.value(4).toBool(),
+                     QStringLiteral("通道显隐掩码按设置变化"));
+        bridge.set_all_channels_visible(true);
+
+        // ---- 地形图：等滚动缓存积够，图必须是一张有内容的方图 ----
+        //
+        // 判据用 topoScaleMax 而不是「图不为空」：没出图时 provider 返回的是一张
+        // 透明占位图（那是为了防止 QML 报 "Failed to get image from provider"），
+        // 尺寸同样是 256×256 —— 拿尺寸当判据会恒真，后面几条检查就会在真图
+        // 到达之前跑，全部拿不到数据
+        const bool topo_ready =
+            wait_bridge([&] { return bridge.topo_scale_max() > 0.0; }, 30000);
+        check_bridge(topo_ready, QStringLiteral("地形图已出图（%1×%2）")
+                                     .arg(bridge.current_topo_image().width())
+                                     .arg(bridge.current_topo_image().height()));
+
+        // 四项统计必须算出来了，而不是一排短横
+        const QStringList stats = bridge.topo_stats();
+        check_bridge(stats.size() == 4 && stats.at(0) != QStringLiteral("—"),
+                     QStringLiteral("地形图四项统计：%1").arg(stats.join(QStringLiteral(" / "))));
+        check_bridge(bridge.topo_scale_max() > 0.0,
+                     QStringLiteral("配色上限非零（%1 µV²/Hz）")
+                         .arg(bridge.topo_scale_max(), 0, 'f', 3));
+
+        // 图里必须有非透明像素 —— 掩膜用错时整张图会是空的
+        const QImage topo_image = bridge.current_topo_image();
+        int opaque_pixels = 0;
+        for (int y = 0; y < topo_image.height(); y += 4)
+        {
+            for (int x = 0; x < topo_image.width(); x += 4)
+            {
+                if (qAlpha(topo_image.pixel(x, y)) > 0)
+                {
+                    ++opaque_pixels;
+                }
+            }
+        }
+        check_bridge(opaque_pixels > 100,
+                     QStringLiteral("地形图有 %1 个采样点落在头型掩膜内").arg(opaque_pixels));
+
+        // 头型必须是**圆的**。掩膜圆半径（约 1.20）大于网格半宽（1），
+        // 铺图时若不按半径缩放，四角会一起被填上，画出来是个方块 ——
+        // 叠在设计稿的圆形底图上会明显不对。四角透明 + 中心不透明就说明是圆的
+        const int last = topo_image.width() - 1;
+        const bool corners_transparent = qAlpha(topo_image.pixel(0, 0)) == 0
+                                         && qAlpha(topo_image.pixel(last, 0)) == 0
+                                         && qAlpha(topo_image.pixel(0, last)) == 0
+                                         && qAlpha(topo_image.pixel(last, last)) == 0;
+        const bool center_opaque = qAlpha(topo_image.pixel(last / 2, last / 2)) > 0;
+        check_bridge(corners_transparent && center_opaque,
+                     QStringLiteral("头型是圆形而不是方块（四角透明、中心不透明）"));
+
+        // ---- 频谱 ----
+        check_bridge(wait_bridge([&] { return !bridge.spectrum_curve().isEmpty(); }, 30000),
+                     QStringLiteral("频谱曲线已生成（%1 个频点）")
+                         .arg(bridge.spectrum_curve().size()));
+        check_bridge(bridge.spectrum_band_values().size() == 5,
+                     QStringLiteral("五个频段的数值：%1")
+                         .arg(bridge.spectrum_band_values().join(QStringLiteral(" / "))));
+
+        // ---- 滤波参数下发后仍有数据（不能把链路打断）----
+        bridge.set_low_pass_high_hz(45.0);
+        check_bridge(
+            wait_bridge([&] { return lane_span(bridge.lane_samples(0, 64)) > 1e-6; }, 20000),
+            QStringLiteral("改滤波参数后波形仍在更新"));
+
+        // ---- ASR 的数据来源必须真的接上 ----
+        //
+        // 这一条针对一个已经发生过的真实缺陷：算法线程持有的原始数据源指针
+        // 从头到尾只被赋过 nullptr，导致整段自动拟合一进判断就被跳过 ——
+        // 界面上勾选 ASR 会显示「需累计 60 秒」然后永远什么都不发生，
+        // 既不报错也不生效。所以这里断言两件事：缓冲真的在进数据、
+        // 勾上 ASR 之后确实有反馈
+        const bool raw_buffer_grows =
+            wait_bridge([&] { return bridge.raw_buffer_seconds() > 1.0; }, 20000);
+        check_bridge(raw_buffer_grows,
+                     QStringLiteral("原始数据缓冲在进数据（已攒 %1 秒，ASR 参考要用它）")
+                         .arg(bridge.raw_buffer_seconds(), 0, 'f', 1));
+
+        message_log.clear();
+        bridge.set_asr_enabled(true);
+        const bool asr_feedback =
+            wait_bridge([&] {
+                for (const QString &message : message_log) {
+                    if (message.contains(QStringLiteral("ASR")))
+                        return true;
+                }
+                return false;
+            }, 15000);
+        check_bridge(asr_feedback,
+                     QStringLiteral("勾选 ASR 后有明确反馈（而不是静默不生效）"));
+        bridge.set_asr_enabled(false);
+
+        // ---- 事件 ----
+        bridge.add_event(QStringLiteral("睁眼"));
+        bridge.add_event(QStringLiteral("闭眼"));
+        check_bridge(bridge.event_count() == 2,
+                     QStringLiteral("手动标记落了 %1 条事件").arg(bridge.event_count()));
+        const QVariantMap first_event = bridge.events().value(0).toMap();
+        check_bridge(first_event.contains(QStringLiteral("offsetSeconds"))
+                         && first_event.value(QStringLiteral("wallClock")).toString().length() == 8,
+                     QStringLiteral("事件带采集偏移 %1 与墙钟 %2")
+                         .arg(first_event.value(QStringLiteral("offset")).toString(),
+                              first_event.value(QStringLiteral("wallClock")).toString()));
+        bridge.clear_events();
+        check_bridge(bridge.event_count() == 0, QStringLiteral("事件可以清空"));
+
+        // ---- 停止 ----
+        bridge.stop_demo_source();
+        const bool stopped =
+            wait_bridge([&] { return !bridge.collecting(); }, 10000);
+        check_bridge(stopped, QStringLiteral("演示数据源已停止"));
+    }
+
+    // 走到这里 bridge 已析构：采集线程与算法线程都 wait() 回来了，
+    // py::object 也全部释放 —— 这正是调用方随后关解释器的前提
+    check_bridge(true, QStringLiteral("桥接层已析构，两个线程都已退出"));
+
+    if (g_bridge_selfcheck_failures == 0)
+    {
+        qInfo().noquote() << "== 桥接层自检全部通过 ==";
+        return 0;
+    }
+    qWarning().noquote()
+        << QStringLiteral("== 桥接层自检失败 %1 项 ==").arg(g_bridge_selfcheck_failures);
+    return 1;
+}

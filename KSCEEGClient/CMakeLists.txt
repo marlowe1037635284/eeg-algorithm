@@ -12,15 +12,63 @@ if (MSVC)
 endif()
 set(QT_QML_GENERATE_QMLLS_INI ON)
 
-find_package(Qt6 REQUIRED COMPONENTS Quick Sql)
+# SerialPort 用于采集页：串口收发全在 C++ 侧（SerialCollector）
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql SerialPort)
 
 qt_standard_project_setup(REQUIRES 6.5)
+
+# ==================== 嵌入的 Python 环境 ====================
+# 链接期只能指向**基础安装**：Windows 的 venv 里既没有 libs/ 也没有 python3xx.dll，
+# pybind11 的 Development.Embed 组件找不到它，这一点绕不开。
+# 但运行期整个是 venv：pythonengine.cpp 会把 PyConfig.executable 指向 venv 的
+# python.exe，由 CPython 的 site.py 自己认 pyvenv.cfg，于是 sys.prefix 就是 venv，
+# 基础安装与用户级的 site-packages 都不可见。
+set(Python_ROOT_DIR "C:/Program Files/Python311" CACHE PATH "Python 3.11 基础安装目录")
+set(Python_FIND_VIRTUALENV STANDARD)
+
+# 下面三个都是外部依赖路径，一律走「CACHE 变量 -> 编译期宏 -> 运行时环境变量」的
+# 三级覆盖，不在代码里写死，换机器/部署时不必重编译
+set(PYTHON_VENV_DIR "D:/myproject/eeg-algorithm/PythonScript/venv" CACHE PATH "Python 项目使用的 venv 目录")
+# 算法包是 src 布局（源码在 <PythonScript>/src/eeg_algorithm），而 venv 里并没有装
+# eeg_algorithm，所以要把 src 这一层加进 sys.path —— 不能只加项目根目录
+set(EEG_ALGO_SRC_DIR "D:/myproject/eeg-algorithm/PythonScript/src" CACHE PATH "eeg_algorithm 源码目录")
+set(EEG_BRIDGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python" CACHE PATH "宿主侧适配层 eeg_bridge.py 所在目录")
+
+# ==================== pybind11（源码方式引入） ====================
+set(PYBIND11_SOURCE_DIR "D:/work/learn/pybind11/pybind11-3.1.0" CACHE PATH "pybind11 源码目录")
+set(PYBIND11_FINDPYTHON ON)   # 让 pybind11 自己去 find_package(Python ... Development.Embed)
+add_subdirectory("${PYBIND11_SOURCE_DIR}" pybind11 EXCLUDE_FROM_ALL)
+
+# 默认构建为窗口程序；打开此项则构建为控制台程序，便于直接看到 Python 侧的输出，
+# 也是 --selfcheck 能看见结果的前提（窗口程序没有控制台，qInfo 会丢）
+option(KSCEEG_CONSOLE "构建为控制台程序以便查看 Python 日志与自检输出" OFF)
 
 qt_add_executable(appKSCEEGClient
     src/main.cpp
     # 账号库用 Qt Sql 直接读写一个真正的 SQLite 文件（不用 QML 的 LocalStorage）
     src/authdatabase.cpp
     src/authdatabase.h
+    # 嵌入式 Python 解释器门面（算法线程在后续步骤加进来）
+    src/pythonengine.h
+    src/pythonengine.cpp
+    src/pythontypes.h
+    # 采集与算法共用的数据结构与电极表
+    src/eegtypes.h
+    src/eegmontage.h
+    # 串口采集链路
+    src/serialprotocol.h
+    src/rawringbuffer.h
+    src/rawringbuffer.cpp
+    src/serialcollector.h
+    src/serialcollector.cpp
+    # 算法线程
+    src/pythonworker.h
+    src/pythonworker.cpp
+    # QML 门面与图像 provider
+    src/acquisitionbridge.h
+    src/acquisitionbridge.cpp
+    src/topomapimageprovider.h
+    src/topomapimageprovider.cpp
 )
 
 # Design.qml 是设计变量单例（画板尺寸、色板、字体名），需要在 QML 引擎里注册成 singleton，
@@ -40,6 +88,7 @@ qt_add_qml_module(appKSCEEGClient
         qml/components/SoftBlob.qml
         qml/components/TableRowButton.qml
         qml/dialogs/EditPatientDialog.qml
+        qml/dialogs/FilterDialog.qml
         qml/dialogs/NewPatientDialog.qml
         qml/dialogs/NewTagDialog.qml
         qml/dialogs/PrecheckDialog.qml
@@ -99,7 +148,7 @@ set_target_properties(appKSCEEGClient PROPERTIES
     MACOSX_BUNDLE_BUNDLE_VERSION ${PROJECT_VERSION}
     MACOSX_BUNDLE_SHORT_VERSION_STRING ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}
     MACOSX_BUNDLE TRUE
-    WIN32_EXECUTABLE TRUE
+    WIN32_EXECUTABLE $<NOT:$<BOOL:${KSCEEG_CONSOLE}>>
 )
 
 # C++ 源码在 src/ 下，QML 类型注册生成的头文件里是 #include "authdatabase.h"，
@@ -111,11 +160,27 @@ target_include_directories(appKSCEEGClient
 # 把源码目录告诉程序：账号库文件放在代码目录里，清理 build 目录不会丢
 target_compile_definitions(appKSCEEGClient
     PRIVATE KSCEEG_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    # Python 环境的三个路径：同样走「编译期宏 -> 运行时环境变量」的两级覆盖
+    PRIVATE PYTHON_ROOT_DIR="${Python_ROOT_DIR}"
+    PRIVATE PYTHON_VENV_DIR="${PYTHON_VENV_DIR}"
+    PRIVATE EEG_ALGO_SRC_DIR="${EEG_ALGO_SRC_DIR}"
+    PRIVATE EEG_BRIDGE_DIR="${EEG_BRIDGE_DIR}"
 )
 
 target_link_libraries(appKSCEEGClient
     PRIVATE Qt6::Quick
     PRIVATE Qt6::Sql
+    PRIVATE Qt6::SerialPort
+    PRIVATE pybind11::embed
+)
+
+# 嵌入 Python 需要 python311.dll 在 exe 同目录（或 PATH 上），否则启动即 0xC0000135。
+# 注意取自**基础安装**，不是 venv —— venv 里没有这个 dll
+add_custom_command(TARGET appKSCEEGClient POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${Python_ROOT_DIR}/python311.dll"
+            "$<TARGET_FILE_DIR:appKSCEEGClient>"
+    COMMENT "复制 python311.dll 到输出目录"
 )
 
 install(TARGETS appKSCEEGClient

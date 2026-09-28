@@ -9,27 +9,39 @@ Item {
 
     property bool collecting: false
     property bool frozen: false
-    property real waveformPhase: 0
-    property string channelName: "Fp1"
     property bool channelMenuOpen: false
     // 选中的频段（下面那排数值块），点一下切换
     property int selectedBand: 2
 
-    // 通道序号：切换通道时曲线形态也跟着变，不然点了没反馈
-    readonly property int channelIndex: Math.max(0, Design.channelNames.indexOf(channelName))
+    // 采集时重绘；冻结/停止时画面停住。数据仍在后台更新，
+    // 解冻后下一次 revision 变化会立刻接上
+    Connections {
+        target: Acq
+        function onSpectrumRevisionChanged() {
+            if (!root.frozen)
+                curve.requestPaint()
+        }
+    }
+    onFrozenChanged: curve.requestPaint()
 
-    // 采集时让曲线轻微起伏，冻结/停止时归于静态（形状按设计稿的三个峰）
-    readonly property bool live: collecting && !frozen
-    onWaveformPhaseChanged: curve.requestPaint()
-
-    // 频段统计，取自设计稿
-    readonly property var bands: [
-        { letter: "δ", value: "8.4μV²",  labelX: 36,  valueX: 23 },
-        { letter: "θ", value: "12.8μV²", labelX: 99,  valueX: 82 },
-        { letter: "α", value: "8.4μV²",  labelX: 162, valueX: 149 },
-        { letter: "β", value: "8.4μV²",  labelX: 225, valueX: 212 },
-        { letter: "γ", value: "8.4μV²",  labelX: 288, valueX: 275 }
-    ]
+    // 频段数值由 C++ 侧按真实 PSD 算好（固定五项），这边只负责贴。
+    // 取不到时显示短横，免得界面上出现 "undefined"
+    readonly property var bands: {
+        var values = Acq.spectrumBandValues
+        var letters = ["δ", "θ", "α", "β", "γ"]
+        var labelX = [36, 99, 162, 225, 288]
+        var valueX = [23, 82, 149, 212, 275]
+        var result = []
+        for (var i = 0; i < letters.length; ++i) {
+            result.push({
+                letter: letters[i],
+                value: (values && values.length === 5) ? values[i] : "—",
+                labelX: labelX[i],
+                valueX: valueX[i]
+            })
+        }
+        return result
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -75,7 +87,7 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: root.channelName
+            text: Acq.spectrumChannel
             color: "#3b3b3b"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -108,7 +120,7 @@ Item {
         x: 248
         y: 40
         width: 71
-        height: Design.channelNames.length * 26 + 8
+        height: Acq.channelNames.length * 26 + 8
         radius: 8
         color: "#ffffff"
         border.width: 1
@@ -122,7 +134,7 @@ Item {
             spacing: 0
 
             Repeater {
-                model: Design.channelNames
+                model: Acq.channelNames
 
                 delegate: Rectangle {
                     required property string modelData
@@ -130,13 +142,13 @@ Item {
                     width: parent.width
                     height: 26
                     radius: 5
-                    color: (root.channelName === modelData || channelItemMouse.containsMouse)
+                    color: (Acq.spectrumChannel === modelData || channelItemMouse.containsMouse)
                            ? Design.primarySoft : "transparent"
 
                     Text {
                         anchors.centerIn: parent
                         text: modelData
-                        color: root.channelName === modelData ? Design.primary : "#3b3b3b"
+                        color: Acq.spectrumChannel === modelData ? Design.primary : "#3b3b3b"
                         font.family: Design.fontFamily
                         font.styleName: Design.styleRegular
                         font.pixelSize: 13
@@ -148,7 +160,7 @@ Item {
                         hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
-                            root.channelName = modelData
+                            Acq.spectrumChannel = modelData
                             root.channelMenuOpen = false
                             curve.requestPaint()
                         }
@@ -193,7 +205,6 @@ Item {
             var w = width
             var h = height
             var base = h - 26                      // 曲线基线
-            var jitter = root.live ? Math.sin(root.waveformPhase * 1.6) * 2.2 : 0
 
             // 纵向网格
             ctx.strokeStyle = "rgba(0, 0, 0, 0.16)"
@@ -205,41 +216,46 @@ Item {
                 ctx.stroke()
             }
 
-            // 三个峰的 PSD 形状（δ / α / β 主峰），与设计稿的曲线走势一致
-            // 各通道主峰位置略有差异，切通道时曲线会跟着变
-            var shift = (root.channelIndex % 4) * 0.018
-            function psd(x) {
-                var p1 = 34 * Math.exp(-Math.pow((x - w * (0.22 + shift)) / (w * 0.075), 2))
-                var p2 = 52 * Math.exp(-Math.pow((x - w * (0.46 + shift)) / (w * 0.070), 2))
-                var p3 = 26 * Math.exp(-Math.pow((x - w * (0.68 + shift)) / (w * 0.095), 2))
-                var p4 = 6 * Math.exp(-Math.pow((x - w * 0.92) / (w * 0.070), 2))
-                return p1 + p2 + p3 + p4 + jitter
+            var values = Acq.spectrumCurve
+            if (!values || values.length < 2)
+                return
+
+            // 曲线已由 C++ 归一化成 0~1（按本帧峰值），这里按画布高度缩放。
+            //
+            // 注意点数很少：算法侧的 nperseg 固定为 256，1000 Hz 下频率分辨率
+            // 是 3.9 Hz，0.5–30 Hz 只有 7 个点 —— 所以这条线本来就是折线，
+            // 不是显示做得粗糙，而是分辨率决定的
+            var top = 8
+            var span = base - top
+
+            ctx.beginPath()
+            ctx.moveTo(0, base)
+            for (var i = 0; i < values.length; ++i) {
+                var x = w * i / (values.length - 1)
+                ctx.lineTo(x, base - values[i] * span)
             }
+            ctx.lineTo(w, base)
+            ctx.closePath()
 
             // 面积填充（设计稿是自上而下的渐变）
             var grad = ctx.createLinearGradient(0, 0, 0, base)
             grad.addColorStop(0, "rgba(112, 146, 171, 0.55)")
             grad.addColorStop(1, "rgba(112, 146, 171, 0.06)")
-            ctx.beginPath()
-            ctx.moveTo(0, base)
-            for (var x = 0; x <= w; x += 2)
-                ctx.lineTo(x, base - psd(x))
-            ctx.lineTo(w, base)
-            ctx.closePath()
             ctx.fillStyle = grad
             ctx.fill()
 
             // 曲线本身
             ctx.beginPath()
-            for (var xx = 0; xx <= w; xx += 2) {
-                var y = base - psd(xx)
-                if (xx === 0)
+            for (var j = 0; j < values.length; ++j) {
+                var xx = w * j / (values.length - 1)
+                var y = base - values[j] * span
+                if (j === 0)
                     ctx.moveTo(xx, y)
                 else
                     ctx.lineTo(xx, y)
             }
             ctx.strokeStyle = Design.primary
-            ctx.lineWidth = 1
+            ctx.lineWidth = 2
             ctx.stroke()
         }
     }
@@ -257,7 +273,7 @@ Item {
     Text {
         x: 21
         y: 166
-        text: "Θ"
+        text: "0.5"
         color: "#898989"
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -267,7 +283,7 @@ Item {
     Text {
         x: 287
         y: 166
-        text: "50Hz"
+        text: "30Hz"
         color: "#898989"
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular

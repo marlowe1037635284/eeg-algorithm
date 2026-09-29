@@ -64,7 +64,8 @@ public:
     // 波形显示不复用算法线程的处理结果，而是自己跑一遍滤波：算法侧的滤波器状态
     // 是按「输入恒为直流偏置」的稳态初始化的，一旦按真实信号启动/改参，IIR 状态
     // 与信号不匹配就会冲出与直流偏置同量级的瞬变（几百 µV、要几秒才衰减）。
-    // 显示侧改用 FIR_test.py —— 它的 _zi_seed() 拿本批首个样本把状态预热到稳态，
+    // 显示侧改用 Realtime_IIR.py —— C++ 侧在改参/启动后用本块首个样本把它的历史
+    // buffer 预热到稳态（seed_display_filter_history，思路同参考实现的 _zi_seed），
     // 启动与改参都不会有瞬变（参考项目 pybindwithqt 就是这么做显示通路的）。
     //
     // 为什么放在这里而不是 acquisitionbridge：pybind11 必须先于 Qt 头文件包含，
@@ -72,8 +73,8 @@ public:
     // 没法再引入 pybind11。这里把 pybind11 关在 .cpp 里，对外只暴露普通类型。
 
     // 按滤波参数重建显示侧滤波状态。channels 是显示缓冲的通道数（16）。
-    // 内部会调 FIR_test.reset_state()，下一块数据的首个样本自动完成稳态预热，
-    // 于是「改参数」与「刚启动」都不会有瞬变
+    // 内部会重写 Realtime_IIR 的模块级 b/a 并清空历史 buffer，下一块数据进来时
+    // 由 C++ 侧用该块首帧完成稳态预热，于是「改参数」与「刚启动」都不会有瞬变
     bool configure_display_filter(const ProcessingParams &params, int channels,
                                   QString *error_message);
     // 对一块交错样本做显示滤波。samples 的长度必须是 channels 的整数倍。

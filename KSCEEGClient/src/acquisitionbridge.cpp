@@ -856,7 +856,7 @@ void AcquisitionBridge::pump_display()
     }
 }
 
-// 把一块原始样本过一遍显示侧滤波（就是 FIR_test.process_frame 那条链）。
+// 把一块原始样本过一遍显示侧滤波（就是 Realtime_IIR.process_frame 那条链）。
 // 成功时把 chunk.samples 换成滤波后的值，返回 true；失败返回 false 交给调用方兜底
 bool AcquisitionBridge::apply_display_filter(SignalChunk &chunk)
 {

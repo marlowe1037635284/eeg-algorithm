@@ -46,21 +46,18 @@ QtObject {
     readonly property color textOnDark: "#ffffff"
 
     // ---------- 状态色 ----------
-    // 设计稿里「不良」和「良好」都画成了绿色、「一般」画成了红色，看起来是笔误，
-    // 这里按语义修正：良好=绿、一般=橙、不良=红、脱落=灰。
+    // 电极面板只有三档，颜色与设计稿图例一致：良好=绿、一般=红、脱落=灰。
     readonly property color good: "#23af6e"
     readonly property color warning: "#fea85d"
     readonly property color bad: "#d65a5d"
     readonly property color badSoft: Qt.rgba(0xd6 / 255, 0x5a / 255, 0x5d / 255, 0.10)  // 危险按钮底
     readonly property color offline: "#a3a3a3"
 
-    // 阻抗等级 → 颜色
+    // 阻抗等级 → 颜色（只有良好/一般/脱落三档）
     function impedanceColor(level) {
         if (level === "良好")
             return good
         if (level === "一般")
-            return warning
-        if (level === "不良")
             return bad
         return offline
     }
@@ -70,8 +67,6 @@ QtObject {
         if (level === "良好")
             return "#eaf2ee"
         if (level === "一般")
-            return "#faf1e6"
-        if (level === "不良")
             return "#f5f0ef"
         return "#f4f4f4"
     }

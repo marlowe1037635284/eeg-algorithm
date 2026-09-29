@@ -1999,7 +1999,6 @@ bool AcquisitionBridge::scan_electrodes()
 
     int good = 0;
     int fair = 0;
-    int poor = 0;
     int off = 0;
 
     QVariantList rows;
@@ -2027,7 +2026,7 @@ bool AcquisitionBridge::scan_electrodes()
         const double artifact_fraction = static_cast<double>(artifacts) / std::max(1, frames - 1);
 
         QString level;
-        if (artifact_fraction > kArtifactFraction)
+        if (artifact_fraction > kArtifactFraction || noise >= kFairBelow)
         {
             level = QStringLiteral("脱落");
             ++off;
@@ -2037,15 +2036,10 @@ bool AcquisitionBridge::scan_electrodes()
             level = QStringLiteral("良好");
             ++good;
         }
-        else if (noise < kFairBelow)
+        else
         {
             level = QStringLiteral("一般");
             ++fair;
-        }
-        else
-        {
-            level = QStringLiteral("不良");
-            ++poor;
         }
 
         QVariantMap row;
@@ -2063,8 +2057,8 @@ bool AcquisitionBridge::scan_electrodes()
 
     m_electrode_quality = rows;
     m_electrode_scan_valid = true;
-    m_electrode_summary = tr("良好 %1 · 一般 %2 · 不良 %3 · 脱落 %4")
-                              .arg(good).arg(fair).arg(poor).arg(off);
+    m_electrode_summary = tr("良好 %1 · 一般 %2 · 脱落 %3")
+                              .arg(good).arg(fair).arg(off);
     emit electrodeQualityChanged();
     return true;
 }

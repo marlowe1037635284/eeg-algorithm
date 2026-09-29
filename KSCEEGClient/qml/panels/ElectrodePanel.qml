@@ -68,12 +68,12 @@ Item {
     readonly property var placeholder: [
         { name: "Fp1", text: "—", level: "良好", ratio: 0.26 },
         { name: "Fp2", text: "—", level: "一般", ratio: 0.52 },
-        { name: "F3",  text: "—", level: "不良", ratio: 0.19 },
-        { name: "F4",  text: "—", level: "不良", ratio: 0.19 },
+        { name: "F3",  text: "—", level: "脱落", ratio: 0.19 },
+        { name: "F4",  text: "—", level: "脱落", ratio: 0.19 },
         { name: "C3",  text: "—", level: "良好", ratio: 0.30 },
         { name: "C4",  text: "—", level: "良好", ratio: 0.28 },
         { name: "P3",  text: "—", level: "一般", ratio: 0.42 },
-        { name: "P4",  text: "—", level: "不良", ratio: 0.15 },
+        { name: "P4",  text: "—", level: "脱落", ratio: 0.15 },
         { name: "O1",  text: "—", level: "良好", ratio: 0.32 },
         { name: "O2",  text: "—", level: "良好", ratio: 0.34 },
         { name: "F7",  text: "—", level: "一般", ratio: 0.47 },
@@ -91,25 +91,28 @@ Item {
     property real scroll: 0
     readonly property real maxScroll: Math.max(0, rows.length * rowHeight - viewHeight)
 
-    // 头部图上某个点位对应的接触等级：先在扫描结果里找同名通道，找不到就按
-    // 最近的三路做反距离加权，取加权后噪声最大的那一档
+    // 头部图上某个点位对应的接触等级。
+    // 数据源与下方列表**同一份**（rows）：有扫描结果是设备 16 路，没有则是设计稿
+    // 示意值 —— 两边同源，同名字的电极在图上与列表里永远是同一个档位。
+    // 图上那些设备没有的点位（AF3/F1/Cz/M1…）取最近的三路做反距离加权，取最差档
     function levelAtPoint(name, pointX, pointY) {
-        if (!hasScan)
+        var data = rows
+        if (data.length === 0)
             return ""
         var exact = -1
-        for (var i = 0; i < quality.length; ++i) {
-            if (quality[i].name === name) {
+        for (var i = 0; i < data.length; ++i) {
+            if (data[i].name === name) {
                 exact = i
                 break
             }
         }
         if (exact >= 0)
-            return quality[exact].level
+            return data[exact].level
 
         // 就近估计：权重 1/(d²+1)，取权重最大的三路
         var best = []
-        for (var c = 0; c < quality.length; ++c) {
-            var position = deviceXY[quality[c].name]
+        for (var c = 0; c < data.length; ++c) {
+            var position = deviceXY[data[c].name]
             if (!position)
                 continue
             var dx = position.x - pointX
@@ -122,8 +125,8 @@ Item {
         var worst = ""
         var worstRank = -1
         for (var k = 0; k < Math.min(3, best.length); ++k) {
-            var level = quality[best[k].index].level
-            var rank = level === "脱落" ? 3 : level === "不良" ? 2 : level === "一般" ? 1 : 0
+            var level = data[best[k].index].level
+            var rank = level === "脱落" ? 2 : level === "一般" ? 1 : 0
             if (rank > worstRank) {
                 worstRank = rank
                 worst = level
@@ -178,18 +181,16 @@ Item {
         font.pixelSize: 18
     }
 
-    // 数据来源说明。不做扫描的话这块面板就是一张图，说清了来源才不会有人
-    // 把它当成设备直读的阻抗
+    // 只有扫描失败时才在标题下出现一行红字说明原因，平时不占位
+    // （设计稿标题下方是空的，常态下不该有文字）
     Text {
         x: 14
         y: 32
         width: 300
         elide: Text.ElideRight
-        text: root.scanError.length > 0
-              ? root.scanError
-              : (root.hasScan ? qsTr("接触质量由信号噪声估计 · 非设备直读")
-                              : qsTr("点「阻抗扫描」按实时信号估计"))
-        color: root.scanError.length > 0 ? Design.bad : Design.textMuted
+        visible: root.scanError.length > 0
+        text: root.scanError
+        color: Design.bad
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
         font.pixelSize: 12
@@ -261,7 +262,7 @@ Item {
 
     // ---------- 图例 ----------
     // 设计稿只画了「良好/一般/脱落」三项（面板宽度放不下第四项），
-    // 但颜色按语义修正：良好=绿、一般=橙、脱落=灰。
+    // 颜色也按设计稿图例原样：良好=绿、一般=红、脱落=灰。
     Row {
         x: 129
         y: 54
@@ -328,10 +329,10 @@ Item {
         delegate: Item {
             required property var modelData
 
-            // 没扫过就保持设计稿的绿色示意，扫过之后跟着真实结果变
+            // 与下方列表同源（见 levelAtPoint）：同名电极在图上与列表里永远同一档位，
+            // 不会再出现「图上一片绿、列表却有红黄」的对不上
             readonly property string pointLevel:
-                root.hasScan ? root.levelAtPoint(modelData.name, modelData.x + 8, modelData.y + 8)
-                             : "良好"
+                root.levelAtPoint(modelData.name, modelData.x + 8, modelData.y + 8)
 
             Rectangle {
                 x: modelData.x
@@ -378,8 +379,10 @@ Item {
 
                 readonly property int rowY: 32 * index - root.scroll
 
-                // 行分隔线（首行上方不画）
+                // 行分隔线（首行上方不画）。x 与面板里其它元素对齐（标题/头型图都是 14），
+                // 不设 x 会从面板最左边 0 起画，看起来整条贴左
                 PanelDivider {
+                    x: 14
                     y: rowY - 1
                     width: 303
                     visible: index > 0
@@ -466,8 +469,10 @@ Item {
 
     Rectangle {
         x: 319
-        // 轨道 114 高、滑块 24 高，可走 90px
-        y: 386 + (root.maxScroll > 0 ? root.scroll / root.maxScroll : 0) * 90
+        // 轨道 114 高、滑块 24 高，可走 90px。起点必须对齐轨道顶 370，
+        // 否则 scroll=0 时滑块顶比轨道顶低一截（滚不到最上面）、
+        // scroll=maxScroll 时底边到 500 越过面板高 499（出框）
+        y: 370 + (root.maxScroll > 0 ? root.scroll / root.maxScroll : 0) * 90
         width: 7
         height: 24
         radius: 4

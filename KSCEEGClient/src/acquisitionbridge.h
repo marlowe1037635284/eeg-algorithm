@@ -141,7 +141,8 @@ class AcquisitionBridge : public QObject, public ChunkSink
     // ---- 电极接触质量（面板上的「阻抗扫描」）----
     // 每一项：{ channel, name, level, ratio, noiseUV, text }
     Q_PROPERTY(QVariantList electrodeQuality READ electrode_quality NOTIFY electrodeQualityChanged)
-    // 一句话小结：「良好 13 · 一般 2 · 不良 1 · 脱落 0」，扫描后给界面提示用
+    // 一句话小结：「良好 13 · 一般 2 · 脱落 1」，扫描后给界面提示用
+    // 只有三档：良好 / 一般 / 脱落（噪声大到 kFairBelow 以上或检出伪迹都算脱落）
     Q_PROPERTY(QString electrodeSummary READ electrode_summary NOTIFY electrodeQualityChanged)
     // 扫描还没做过时为 false，界面据此决定显示设计稿的静态样式还是真实结果
     Q_PROPERTY(bool electrodeScanValid READ electrode_scan_valid NOTIFY electrodeQualityChanged)

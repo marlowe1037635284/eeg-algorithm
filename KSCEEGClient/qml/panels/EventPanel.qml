@@ -35,10 +35,11 @@ Item {
                 ? tags[index].color : "#7c3aed"
     }
 
-    // 事件列表可视 3 行，超出部分滚轮滚动（设计稿画了 3 行 + 一根滚动条）
+    // 事件列表可视 4 行，超出部分滚轮滚动。设计稿只画了 3 行，
+    // 但列表底（233）到面板底（296）还空着一块没用上，这里放开到 4 行把它填满
     property real eventScroll: 0
     readonly property int eventRowHeight: 44
-    readonly property int eventViewHeight: 132
+    readonly property int eventViewHeight: 176
     readonly property real eventMaxScroll: Math.max(0, eventCount * eventRowHeight - eventViewHeight)
 
     function clearEvents() {
@@ -49,6 +50,12 @@ Item {
     function addEvent() {
         Acq.add_event(tagNames[tagIndex], tagColorAt(tagIndex))
     }
+
+    // 新标记的事件追加在列表末尾，落在可视区之外就看不见了。
+    // 条数一变就把列表滚到最下面一行（清空时 eventMaxScroll 归 0，滚动量也归 0）
+    onEventCountChanged: Qt.callLater(function() {
+        root.eventScroll = root.eventMaxScroll
+    })
 
     // 改某条事件的标签：列表里那一行的下拉直接改，不再删掉重标 ——
     // 事件在时间轴上的位置是按当时那一刻记的，删了重标就落到别的时间点去了
@@ -175,9 +182,9 @@ Item {
         }
     }
 
-    // ---------- 事件列表（可视 3 行，滚轮滚动）----------
-    // 列表区高度按设计稿取「3 行」：设计稿画了 3 条事件、下面留白，
-    // 条数徽标却写 6 —— 说明列表是可滚动的，这里露出 3 行，其余靠滚动看。
+    // ---------- 事件列表（可视 4 行，滚轮滚动）----------
+    // 设计稿画了 3 条事件、下面留白，条数徽标却写 6 —— 说明列表是可滚动的。
+    // 面板高 296、列表从 101 起，4 行（176px）刚好铺到底部留白，其余靠滚动看。
     Item {
         id: eventViewport
         x: 0
@@ -195,7 +202,10 @@ Item {
 
                 readonly property int rowY: root.eventRowHeight * index - root.eventScroll
 
+                // 行分隔线。x 要与列表里其它元素对齐（圆点/时间/下拉都是 14 起），
+                // 不设 x 会从面板最左边 0 起画，整条看起来贴左
                 PanelDivider {
+                    x: 14
                     y: rowY + 36
                     width: 298
                     visible: index < root.eventCount - 1
@@ -285,8 +295,13 @@ Item {
             }
         }
 
+        // 这个 MouseArea 只为滚轮而存在。它声明在 Repeater 之后、层级更高，
+        // 会盖住每一行的删除按钮与标签下拉；默认它会吞掉按下事件，
+        // 所以这里主动放弃 press（滚轮不走这条路径，onWheel 照常生效），
+        // 点击才能落到下面各行的控件上
         MouseArea {
             anchors.fill: parent
+            onPressed: (mouse) => { mouse.accepted = false }
             onWheel: (wheel) => {
                 var step = wheel.angleDelta.y > 0 ? -root.eventRowHeight : root.eventRowHeight
                 root.eventScroll = Math.max(0, Math.min(root.eventMaxScroll, root.eventScroll + step))
@@ -295,6 +310,7 @@ Item {
     }
 
     // ---------- 滚动条 ----------
+    // 事件没满 4 行（eventMaxScroll = 0）时整条隐藏，不留一根空轨道
     Rectangle {
         x: 319
         y: 92
@@ -302,12 +318,16 @@ Item {
         height: 186
         radius: 4
         color: Qt.rgba(0.478, 0.478, 0.478, 0.10)
+        visible: root.eventMaxScroll > 0
     }
 
     Rectangle {
         x: 319
-        // 轨道 186 高、滑块 24 高，可走 162px
-        y: 108 + (root.eventMaxScroll > 0 ? root.eventScroll / root.eventMaxScroll : 0) * 162
+        visible: root.eventMaxScroll > 0
+        // 轨道 186 高（92~278）、滑块 24 高，可走 162px。
+        // 起点必须对齐轨道顶 92，否则 scroll=0 时滑块顶比轨道顶低一截
+        // （滚不到最上面）、scroll=maxScroll 时底边 294 越过轨道底 278（出框）
+        y: 92 + (root.eventMaxScroll > 0 ? root.eventScroll / root.eventMaxScroll : 0) * 162
         width: 7
         height: 24
         radius: 4

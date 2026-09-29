@@ -1,0 +1,8 @@
+QML debugging is enabled. Only use this in a safe environment.
+[font] 已加载 "D:/myproject/eeg-algorithm/KSCEEGClient/build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug/assets/fonts/AlibabaPuHuiTi-2-55-Regular.ttf" 家族名: QList("Alibaba PuHuiTi 2.0 55 Regular")
+[font] 已加载 "D:/myproject/eeg-algorithm/KSCEEGClient/build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug/assets/fonts/AlibabaPuHuiTi-2-65-Medium.ttf" 家族名: QList("Alibaba PuHuiTi 2.0 65 Medium")
+[font] 已加载 "D:/myproject/eeg-algorithm/KSCEEGClient/build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug/assets/fonts/AlibabaPuHuiTi-2-85-Bold.ttf" 家族名: QList("Alibaba PuHuiTi 2.0 55 Regular")
+[font] 已加载 "D:/myproject/eeg-algorithm/KSCEEGClient/build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug/assets/fonts/AlibabaPuHuiTi-2-105-Heavy.ttf" 家族名: QList("Alibaba PuHuiTi 2.0 105 Heavy")
+[font] 可用家族: "Alibaba PuHuiTi 2.0" 样式: QList("55 Regular", "65 Medium", "85 Bold", "105 Heavy")
+[db] 账号库: "D:/myproject/eeg-algorithm/KSCEEGClient/build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug/eeg-ksc.db"
+qrc:/qt/qml/KSCEEGClient/Main.qml:296: TypeError: Property 'initialize' of object AuthDatabase(0x1f8da815b30) is not a function

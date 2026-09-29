@@ -1038,9 +1038,11 @@ void AcquisitionBridge::render_wave_image(const QVector<float> &window, int samp
         painter.drawLine(QPointF(0.0, center), QPointF(width, center));
     }
 
-    // ---- 纵向时间网格。设计稿里只有三条，位置按宽度等比放 ----
+    // ---- 纵向时间网格。三条竖线落在时间轴 1/4、2/4、3/4 处，与底部刻度对齐 ----
+    // 原来照抄设计稿的比例（186/470/743），而底部刻度是按等分生成的，
+    // 网格线与刻度错开，光看线根本读不出是第几秒
     painter.setPen(QPen(QColor(0, 0, 0, 36), 1));
-    static const double kGridColumns[] = {186.0 / 1037.0, 470.0 / 1037.0, 743.0 / 1037.0};
+    static const double kGridColumns[] = {0.25, 0.5, 0.75};
     for (const double fraction : kGridColumns)
     {
         const double x = std::round(width * fraction) + 0.5;
@@ -1102,6 +1104,18 @@ void AcquisitionBridge::render_wave_image(const QVector<float> &window, int samp
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
 
+    // 数据只画在右侧：时窗是 2s 而只采到 0.5s 时，就只占右边 1/4 宽度，左边留空。
+    // 不加这个限制的话，不足一屏的样本会被拉伸铺满整个时窗，看着像已经采满，
+    // 底部刻度也就读不出真实时间了
+    const int full_window_samples =
+        std::max(1, static_cast<int>(m_time_window * m_sample_rate));
+    const int data_x0 =
+        samples_per_channel >= full_window_samples
+            ? 0
+            : std::max(0, width - static_cast<int>(static_cast<qint64>(width)
+                                                    * samples_per_channel / full_window_samples));
+    const int data_columns = width - data_x0;   // 数据实际占据的像素列数
+
     const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
     const QStringList colors = channel_colors();
 
@@ -1148,13 +1162,16 @@ void AcquisitionBridge::render_wave_image(const QVector<float> &window, int samp
         // 一次分配、按下标写入。这份缓冲是成员而不是每帧新建：
         // 16 路 × 两千多个点，每帧重新分配一次是白白的开销
         const float *samples = window.constData();
-        for (int x = 0; x < width; ++x)
+        // 只遍历数据占据的那些列：左边留空的部分不画（画了会把波形拉满整屏）
+        for (int x = data_x0; x < width; ++x)
         {
-            const int begin =
-                static_cast<int>(static_cast<qint64>(x) * samples_per_channel / width);
+            const int local = x - data_x0;
+            const int begin = static_cast<int>(
+                static_cast<qint64>(local) * samples_per_channel / data_columns);
             const int end = std::max(
                 begin + 1,
-                static_cast<int>(static_cast<qint64>(x + 1) * samples_per_channel / width));
+                static_cast<int>(static_cast<qint64>(local + 1) * samples_per_channel
+                                 / data_columns));
 
             float minimum = std::numeric_limits<float>::max();
             float maximum = std::numeric_limits<float>::lowest();
@@ -1178,7 +1195,8 @@ void AcquisitionBridge::render_wave_image(const QVector<float> &window, int samp
         }
 
         painter.setPen(QPen(QColor(colors.value(c)), 1.0 * ui_scale));
-        painter.drawPolyline(points.constData(), points.size());
+        painter.drawPolyline(points.constData() + data_x0 * 2,
+                             static_cast<int>(points.size()) - data_x0 * 2);
     }
 }
 

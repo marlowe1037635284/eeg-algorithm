@@ -50,7 +50,9 @@ Item {
         patientNo = row.no
         patientName = row.name
         patientGenderAge = row.gender + "  " + row.age + qsTr("岁")
-        patientMeta = row.no + "·" + row.dept + qsTr("·记录") + row.count
+        // 「记录1次」：N 与「次」之间设计稿没有空格，所以用原始数值拼。
+        // 数据层那个 count 是给表格列的 "1 次"，格式不一样，贴在这里会多一个空格
+        patientMeta = row.no + "·" + row.dept + qsTr("·记录") + row.recordCount + qsTr("次")
         hasPatient = true
     }
 
@@ -70,6 +72,18 @@ Item {
                String(minutes).padStart(2, "0") + ":" +
                String(seconds).padStart(2, "0")
     }
+
+    // ---------- 时基 / 走纸速度的换算 ----------
+    // 波形区横向分 4 格（见 WaveformPanel：5 个刻度、4 段间隔），所以每格秒数 = 时窗 / 4。
+    // 默认时窗 2 秒 → 0.5 s/div，正是工具栏和底栏要显示的值
+    readonly property real secondsPerDiv: Acq.timeWindow / 4
+    // 每竖格 7.5mm、一屏 4 格，于是走纸速度 = 30 / 时窗；时窗 2 秒时正好 15mm/s，
+    // 与设计稿那句括号说明对齐。它随「时基」变，不再是一个写死的常量
+    readonly property real paperSpeed: 30 / Math.max(0.1, Acq.timeWindow)
+
+    // 去掉多余的零：0.50 → "0.5"、15.0 → "15"
+    readonly property string timeBaseText: Number(secondsPerDiv.toFixed(2)) + " s/div"
+    readonly property string paperSpeedText: Number(paperSpeed.toFixed(1)) + "mm/s"
 
 
     function resetSession() {
@@ -317,12 +331,14 @@ Item {
         }
 
         // ---------- 有患者：姓名 + 性别年龄 + 档案摘要 ----------
-        // 姓名只设上限不设死宽：姓名是用户自己填的，最长能写多少由卡片宽度说了算
+        // 姓名按文字实际宽度排，200 只是名字太长时的截断上限。
+        // 不能写死 width: 200 —— 分隔线是按姓名右边缘 + 空隙算的，死宽会让
+        // 三个字的名字也把分隔线顶到 222，右边两行被挤到卡片边上
         Text {
             id: nameText
             x: 12
             y: 21
-            width: 200
+            width: Math.min(implicitWidth, 200)
             elide: Text.ElideRight
             visible: root.hasPatient
             text: root.patientName
@@ -495,7 +511,9 @@ Item {
         x: 734
         y: 79
         width: 116
-        choices: ["自动", "±50μV", "±100μV", "±200μV", "±400μV", "±1000μV"]
+        // 单位用 EEG 灵敏度的标准写法「μV/div」（每格多少微伏），不再只写「±100μV」——
+        // 后者看不出「每格」这层意思，和旁边的时基也对不上
+        choices: rangeValues.map(function (v) { return v > 0 ? v + "μV/div" : qsTr("自动") })
         currentIndex: Math.max(0, rangeValues.indexOf(Acq.yRangeUV))
         onActivated: (index) => Acq.yRangeUV = rangeValues[index]
 
@@ -512,24 +530,26 @@ Item {
         font.pixelSize: 18
     }
 
-    // 设计稿这一格的值写的是「50μV/div」，与后面的括号说明「走纸速度 15mm/s」
-    // 以及它自己「时基」的标题都对不上 —— 幅值已经有一格了，这里按语义显示时窗
+    // 时基。单位是 s/div（每竖格多少秒），不再是「秒/屏」，也不再照抄设计稿那个
+    // 明显写错的「50μV/div」——那是幅值的单位，标在时基上没有任何意义。
+    // 选项按 s/div 取整（换算成一屏秒数就是 0.4/0.8/2/4/8 秒）
     ChoiceField {
         x: 917
         y: 79
         width: 104
-        choices: ["0.5 秒/屏", "1 秒/屏", "2 秒/屏", "5 秒/屏", "10 秒/屏"]
+        choices: windowValues.map(function (w) { return Number((w / 4).toFixed(2)) + " s/div" })
         currentIndex: Math.max(0, windowValues.indexOf(Acq.timeWindow))
         onActivated: (index) => Acq.timeWindow = windowValues[index]
 
-        readonly property var windowValues: [0.5, 1, 2, 5, 10]
+        readonly property var windowValues: [0.4, 0.8, 2, 4, 8]
     }
 
-    // 新版设计稿在时基后面加了一段括号说明（照抄）
+    // 走纸速度不再是写死的「15mm/s」：它由当前时基反算（见 root.paperSpeed），
+    // 否则用户改了时基之后这句说明还挂着 15mm/s，与真实参数自相矛盾
     Text {
         x: 1037
         y: 90
-        text: qsTr("(走纸速度：15mm/s)")
+        text: qsTr("(走纸速度：") + root.paperSpeedText + ")"
         color: "#3b3b3b"
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -574,7 +594,7 @@ Item {
             onClicked: root.filterRequested()
 
             ToolTip.visible: containsMouse
-            ToolTip.text: qsTr("高通 / 低通 / 陷波 / ASR / 重参考")
+            ToolTip.text: qsTr("频段预设 / 高通 / 低通 / 陷波")
             ToolTip.delay: 400
         }
     }
@@ -902,8 +922,8 @@ Item {
         Repeater {
             model: [
                 qsTr("采样率：") + Acq.sample_rate() + "Hz",
-                qsTr("时窗：") + Acq.timeWindow + qsTr("秒/屏"),
-                Acq.yRangeUV > 0 ? qsTr("幅值：±") + Acq.yRangeUV + "μV" : qsTr("幅值：自动"),
+                qsTr("时基：") + root.timeBaseText + qsTr("(走纸速度：") + root.paperSpeedText + ")",
+                Acq.yRangeUV > 0 ? qsTr("幅值：") + Acq.yRangeUV + "μV/div" : qsTr("幅值：自动"),
                 Acq.statsText,
                 // 未选患者时不能还挂着一个人名 —— 与左上角那张卡片保持一致
                 qsTr("患者：") + (root.hasPatient ? root.patientName : qsTr("未选择"))

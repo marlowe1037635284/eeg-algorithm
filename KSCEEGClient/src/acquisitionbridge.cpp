@@ -1154,6 +1154,14 @@ void AcquisitionBridge::set_time_window(double seconds)
     }
     m_time_window = clamped;
     emit timeWindowChanged();
+
+    // 时窗变了波形也得跟着重画。
+    //
+    // render_wave() 只在「显示缓冲有新样本」时才画（见那里的注释）：采集停下、
+    // 或者根本没接设备时它永远不会触发，于是点了时基界面纹丝不动。
+    // 这里强制作废上一帧，立刻按新时窗画一次
+    m_rendered_generation = -1;
+    render_wave();
 }
 
 void AcquisitionBridge::set_y_range_uv(int range_uv)
@@ -1164,6 +1172,11 @@ void AcquisitionBridge::set_y_range_uv(int range_uv)
     }
     m_y_range_uv = range_uv;
     emit yRangeChanged();
+
+    // 同 set_time_window()：量程变了必须立刻重画一次，否则采集不在跑的时候
+    // 点幅值看不到任何反馈
+    m_rendered_generation = -1;
+    render_wave();
 }
 
 void AcquisitionBridge::set_dc_removal(bool enabled)

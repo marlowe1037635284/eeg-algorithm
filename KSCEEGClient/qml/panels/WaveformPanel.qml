@@ -188,7 +188,9 @@ Item {
     Text {
         x: 1047
         y: 61
-        text: Acq.yRangeUV > 0 ? "±" + Acq.yRangeUV + "μV" : qsTr("自动量程")
+        // 单位与工具栏那格保持一致（μV/div）。原来写「±100μV」，
+        // 同一个量程在两处显示成两种单位，看着像两个参数
+        text: Acq.yRangeUV > 0 ? Acq.yRangeUV + "μV/div" : qsTr("自动量程")
         color: Qt.rgba(0, 0, 0, 0.4)
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular

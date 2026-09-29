@@ -104,11 +104,13 @@ Item {
     }
 
     // 采集前确认通过后由外层调用。
-    // 「开始采集」在 C++ 侧做三件事：建在线算法会话、开串口、按时间戳建文件落盘
+    // 「开始采集」在 C++ 侧做三件事：建在线算法会话、开串口、按时间戳建文件落盘；
+    // C++ 那边每次也会重置采集计时器并清空事件列表，所以这里同步把时长归零、清事件，
+    // 让「开始采集」一律从 00:00 重新计
     function startCollection() {
         frozen = false
-        if (elapsedSeconds === 0)
-            Acq.clear_events()
+        elapsedSeconds = 0
+        Acq.clear_events()
         Acq.start_collection(recordDir)
     }
 
@@ -716,6 +718,7 @@ Item {
         collecting: root.collecting
         frozen: root.frozen
         channelCount: Acq.channelCount
+        elapsedSeconds: root.elapsedSeconds
     }
 
     ElectrodePanel {

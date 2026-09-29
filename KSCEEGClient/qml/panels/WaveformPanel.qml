@@ -14,11 +14,15 @@ Item {
     property bool frozen: false
     property int channelCount: 16
 
-    // 顶部的事件胶囊显示最近一条事件的墙钟时刻。原来这里是写死的「02:16」，
-    // 与事件面板那份假数据同源；现在两个面板共用 Acq.events，
-    // 没有事件时整个胶囊收起来，而不是挂一个不存在的时刻
-    readonly property var latestEvent: Acq.eventCount > 0
-                                       ? Acq.events[Acq.eventCount - 1] : null
+    // 顶部那个「● 02:16」胶囊是**本次已采集的时长**（REC 指示），不是事件时刻：
+    // 前两位是分钟、后两位是秒。时长由 WorkbenchPage 的采集计时器给，
+    // 与状态栏「记录时长」同一个来源
+    property int elapsedSeconds: 0
+    readonly property string elapsedText: {
+        var minutes = Math.floor(elapsedSeconds / 60)
+        var seconds = elapsedSeconds % 60
+        return String(minutes).padStart(2, "0") + ":" + String(seconds).padStart(2, "0")
+    }
 
     // 波形绘制区。设计稿里网格线从 (501,227) 起、宽 1037；
     // 通道中心从 242 开始每 106px 一个，正好落在每两条网格线之间。
@@ -78,14 +82,15 @@ Item {
         strong: true
     }
 
-    // ---------- 事件胶囊（设计稿右上角的 02:16）----------
+    // ---------- 采集时长胶囊（设计稿右上角的 ● 02:16）----------
     Rectangle {
         x: 105
         y: 11
-        width: 79
+        // 常态就是设计稿的 79（文本 x=30，右侧留 8px）；分钟涨到三位数时按文本撑开，
+        // 不至于把数字挤出去
+        width: Math.max(79, elapsedLabel.implicitWidth + 38)
         height: 29
         radius: 12
-        visible: root.latestEvent !== null
         color: "transparent"
         border.width: 1
         border.color: Design.bad
@@ -100,11 +105,12 @@ Item {
         }
 
         Text {
+            id: elapsedLabel
             x: 30
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: root.latestEvent !== null ? root.latestEvent.wallClock : ""
+            text: root.elapsedText
             color: Design.bad
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular

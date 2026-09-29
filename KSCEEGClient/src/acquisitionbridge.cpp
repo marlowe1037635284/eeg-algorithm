@@ -45,6 +45,25 @@ constexpr int kSpectrumIntervalMs = 1200;
 // 再大只是白白多传几次纹理
 constexpr int kTopographyImageSize = 256;
 
+// 显示待处理队列的容量上限（块数）。按 33ms 一批、每批最多几块估，
+// 64 块 ≈ 2 秒。满了就丢最旧的 —— 显示宁可跳一下也不能让采集线程阻塞
+// （采集线程没有背压接口，见 serialcollector.h 的 ChunkSink）
+constexpr int kDisplayPendingCapacity = 64;
+
+// 只比较**显示滤波相关**的七项。ProcessingParams 里还有 order 与 asr_enabled
+// 这些显示通路用不到的字段 —— 它们变了不该触发显示滤波重建
+//（order 影响不到 2 阶 butter 的显示滤波；asr 本来就不在显示侧跑）
+bool display_filter_params_equal(const ProcessingParams &a, const ProcessingParams &b)
+{
+    return a.high_pass_enabled == b.high_pass_enabled
+           && qFuzzyCompare(a.high_pass_low_hz, b.high_pass_low_hz)
+           && a.low_pass_enabled == b.low_pass_enabled
+           && qFuzzyCompare(a.low_pass_high_hz, b.low_pass_high_hz)
+           && a.notch_enabled == b.notch_enabled
+           && qFuzzyCompare(a.notch_low_hz, b.notch_low_hz)
+           && qFuzzyCompare(a.notch_high_hz, b.notch_high_hz);
+}
+
 // 落盘目录：%LOCALAPPDATA%\EEG-KSC\records
 QString default_record_directory()
 {
@@ -280,7 +299,7 @@ AcquisitionBridge::AcquisitionBridge(PythonEngine *engine, QObject *parent)
         m_worker.start();
     }
 
-    QObject::connect(&m_display_timer, &QTimer::timeout, this, &AcquisitionBridge::render_wave);
+    QObject::connect(&m_display_timer, &QTimer::timeout, this, &AcquisitionBridge::pump_display);
     m_display_timer.setInterval(kDisplayIntervalMs);
     m_display_timer.start();
 
@@ -326,6 +345,9 @@ AcquisitionBridge::AcquisitionBridge(PythonEngine *engine, QObject *parent)
 
     refresh_ports();
     refresh_stats_text();
+    // 显示滤波状态按默认参数先配一次。放在最后：m_engine 已就绪、
+    // 界面其余属性都已初始化，配失败也只影响波形（会回退原始值）
+    refresh_display_filter();
 }
 
 AcquisitionBridge::~AcquisitionBridge()
@@ -360,11 +382,20 @@ bool AcquisitionBridge::deliver(const SignalChunk &chunk)
     m_raw_buffer.append(chunk.samples.constData(), chunk.samples_per_channel, chunk.channels,
                         chunk.first_timestamp_ns, period_ns);
 
-    // 波形**固定**显示原始采集值（见 kDisplayRawSignal 的说明）。
+    // 波形数据源：把原始块压进显示待处理队列，由 GUI 线程的显示定时器取出后
+    // 做**显示通路自己的** Python 滤波（见 pump_display）。
     //
-    // 顺带带来一个好处：算法没起来、会话进了 ERROR 时波形照常在动，
-    // 用户能直接区分「设备还在采、算法出问题」和「整个软件死了」
-    append_to_display(chunk);
+    // 这里绝不能直接调 Python：本函数跑在采集线程上，滤波要取 GIL 且耗时不定，
+    // 会把串口收包拖垮。队列满了丢最旧的块 —— 显示宁可跳一下也不能阻塞采集
+    {
+        const QMutexLocker locker(&m_display_pending_mutex);
+        if (m_display_pending.size() >= kDisplayPendingCapacity)
+        {
+            m_display_pending.removeFirst();
+            m_display_dropped.store(true, std::memory_order_relaxed);
+        }
+        m_display_pending.append(chunk);
+    }
 
     return m_worker.deliver(chunk);
 }
@@ -745,9 +776,10 @@ void AcquisitionBridge::reset_channels(int channels)
     render_wave();
 }
 
-// 把一块样本写进显示缓冲。
+// 把一块样本写进显示缓冲。**只在 GUI 线程上调用**（pump_display）。
 //
-// 写进来的**只有原始采集值**（见 deliver() 的说明）：算法处理后的值不参与波形显示
+// 喂进来的是显示侧 Python 滤波后的值；滤波不可用时是未滤波的原始采集值
+//（pump_display 里兜底），保证「设备还在采」这件事在界面上始终看得见
 void AcquisitionBridge::append_to_display(const SignalChunk &chunk)
 {
     if (chunk.channels <= 0 || chunk.samples_per_channel <= 0 || chunk.samples.isEmpty())
@@ -758,8 +790,7 @@ void AcquisitionBridge::append_to_display(const SignalChunk &chunk)
     const QMutexLocker locker(&m_display_mutex);
     if (m_display_data.isEmpty() || chunk.channels != eeg_montage::kChannelCount)
     {
-        // 通道数与缓冲约定不符：重建交给 GUI 线程做，这里直接丢。
-        // 在这个线程里做分配（可能是几十毫秒）会把采集卡住
+        // 通道数与缓冲约定不符：重建交给 GUI 线程的 reset_channels() 做，这里直接丢
         return;
     }
 
@@ -778,6 +809,107 @@ void AcquisitionBridge::append_to_display(const SignalChunk &chunk)
     }
     // 记一次「有新数据了」。GUI 线程的定时器靠它决定要不要重绘
     m_display_generation.fetch_add(1, std::memory_order_relaxed);
+}
+
+// 显示侧的 Python 滤波（GUI 线程定时回调）。
+//
+// 采集线程只管把原始块塞进 m_display_pending 就继续收数据，滤波放在这里做：
+// 这样即使 Python 卡一下，也只影响画图的节奏，不会把采集链路堵住。
+// 之所以不蹭算法线程的结果，是因为算法线程里还有重参考和 ASR，且它那条滤波
+// 流水线一改参数就要整条重建、接缝必然抖；显示侧独立配置状态反而更稳
+void AcquisitionBridge::pump_display()
+{
+    // 先把攒下的块整体搬出来。Python 调用一律放到锁外 ——
+    // 采集线程往队列里塞块时要用这把锁，不能让它等我们跑完 numpy
+    QVector<SignalChunk> batch;
+    bool dropped = false;
+    {
+        const QMutexLocker locker(&m_display_pending_mutex);
+        batch.swap(m_display_pending);
+        dropped = m_display_dropped.exchange(false, std::memory_order_relaxed);
+    }
+
+    if (dropped)
+    {
+        // 丢过块说明时间轴上出现了空洞：滤波器的内部状态已经和真实信号对不上，
+        // 继续拿旧状态算下去，接缝处会鼓一个包。按当前参数重建一次状态
+        m_display_filter_params_valid = false;
+        refresh_display_filter();
+    }
+
+    for (const SignalChunk &incoming : batch)
+    {
+        SignalChunk chunk = incoming;
+        if (m_display_filter_ready && !apply_display_filter(chunk))
+        {
+            // 滤波这条路出问题就整体关掉，剩下的块按原始值显示。
+            // 与其每块都失败一次、每帧刷一屏错误，不如失败一次就认了
+            m_display_filter_ready = false;
+            m_display_filter_params_valid = false;
+        }
+        append_to_display(chunk);
+    }
+
+    if (!batch.isEmpty())
+    {
+        render_wave();
+    }
+}
+
+// 把一块原始样本过一遍显示侧滤波（就是 FIR_test.process_frame 那条链）。
+// 成功时把 chunk.samples 换成滤波后的值，返回 true；失败返回 false 交给调用方兜底
+bool AcquisitionBridge::apply_display_filter(SignalChunk &chunk)
+{
+    if (m_engine == nullptr)
+    {
+        return false;
+    }
+
+    QVector<float> filtered;
+    QString error;
+    if (!m_engine->process_display_filter(chunk.samples.constData(),
+                                          static_cast<int>(chunk.samples.size()),
+                                          chunk.channels, &filtered, &error))
+    {
+        emit logMessage(QStringLiteral("显示滤波失败，波形回退为原始值：%1").arg(error));
+        return false;
+    }
+
+    chunk.samples = std::move(filtered);
+    return true;
+}
+
+// 按当前处理参数把显示侧的 Python 滤波状态配好。
+// 参数没变时直接返回，不重复配置（配置本身会重置滤波状态）
+void AcquisitionBridge::refresh_display_filter()
+{
+    if (m_engine == nullptr || !m_engine->is_running())
+    {
+        m_display_filter_ready = false;
+        return;
+    }
+
+    if (m_display_filter_params_valid
+        && display_filter_params_equal(m_processing, m_display_filter_params))
+    {
+        return;
+    }
+
+    // 通道数用设备/显示缓冲那一套（eeg_montage::kChannelCount），
+    // 不是界面上 4/8/16 的泳道档位 —— 滤波状态是按真实通道数存的
+    QString error;
+    if (m_engine->configure_display_filter(m_processing, eeg_montage::kChannelCount, &error))
+    {
+        m_display_filter_params = m_processing;
+        m_display_filter_params_valid = true;
+        m_display_filter_ready = true;
+    }
+    else
+    {
+        m_display_filter_params_valid = false;
+        m_display_filter_ready = false;
+        emit logMessage(QStringLiteral("显示滤波配置失败，波形回退为原始值：%1").arg(error));
+    }
 }
 
 void AcquisitionBridge::render_wave()
@@ -1031,13 +1163,29 @@ double AcquisitionBridge::lane_range_uv(int source_channel, const QVector<float>
     }
 
     // 自动量程：取窗口内绝对值峰值，向上取到一个整齐档位。
-    // 每个通道各自算，所以自动量程下通道之间不能直接比大小
+    // 每个通道各自算，所以自动量程下通道之间不能直接比大小。
+    //
+    // 峰值的基准要和画图时一致：开了去直流就按去直流后的值算，否则直流偏置
+    // （几百 ~ 几千 µV）会把量程顶到几千 µV，几十 µV 的脑电被压成一条平线
+    double offset = 0.0;
+    if (m_dc_removal)
+    {
+        double sum = 0.0;
+        for (int i = 0; i < samples_per_channel; ++i)
+        {
+            sum += window.at(static_cast<qsizetype>(i) * eeg_montage::kChannelCount
+                             + source_channel);
+        }
+        offset = sum / samples_per_channel;
+    }
+
     float peak = 0.0f;
     for (int i = 0; i < samples_per_channel; ++i)
     {
-        peak = std::max(peak, std::fabs(window.at(static_cast<qsizetype>(i)
-                                                    * eeg_montage::kChannelCount
-                                                + source_channel)));
+        const double value = window.at(static_cast<qsizetype>(i) * eeg_montage::kChannelCount
+                                       + source_channel)
+                             - offset;
+        peak = std::max(peak, static_cast<float>(std::fabs(value)));
     }
 
     static const double kSteps[] = {10.0, 25.0, 50.0, 100.0, 200.0, 500.0,
@@ -1239,6 +1387,9 @@ void AcquisitionBridge::push_processing_config()
     // 能不能真正打开由算法线程按「参考是否建好」决定（见 pythonworker.cpp）
     params.asr_enabled = m_asr_enabled;
     m_worker.post_processing_config(params);
+    // 显示侧不跑算法那条流水线，得自己跟着参数重建滤波状态，
+    // 否则界面上改了高通/低通/陷波，波形还是按老参数画
+    refresh_display_filter();
 }
 
 void AcquisitionBridge::push_session_config()
@@ -1625,10 +1776,6 @@ void AcquisitionBridge::on_session_state_changed(const QString &state)
 {
     m_session_state = state;
     m_can_reset = state == QLatin1String("error");
-    if (state == QLatin1String("error"))
-    {
-        // 会话坏了就切回原始波形：至少让用户看到设备还在采
-        }
     emit sessionStateChanged();
 }
 
@@ -2236,7 +2383,9 @@ int run_bridge_selfcheck(PythonEngine &engine)
                          .arg(bridge.spectrum_band_values().join(QStringLiteral(" / "))));
 
         // ---- 滤波参数下发后仍有数据（不能把链路打断）----
-        bridge.set_low_pass_high_hz(45.0);
+        // 用 40 Hz 而不是默认的 45 Hz：默认值改到 45 之后写 45 会被 setter 的
+        // qFuzzyCompare 提前返回，等于没改参数，这条检查就失去意义了
+        bridge.set_low_pass_high_hz(40.0);
         check_bridge(
             wait_bridge(
                 [&] { return lane_pixel_span(bridge.current_wave_image(), 0, 16) > 4; }, 20000),

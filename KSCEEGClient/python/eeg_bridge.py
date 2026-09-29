@@ -48,7 +48,7 @@ DEFAULT_PROCESSING: dict[str, Any] = {
     "high_pass_low_hz": 0.5,
     "high_pass_order": 4,
     "low_pass_enabled": True,
-    "low_pass_high_hz": 30.0,
+    "low_pass_high_hz": 45.0,
     "low_pass_order": 4,
     "notch_enabled": True,
     "notch_low_hz": 48.0,

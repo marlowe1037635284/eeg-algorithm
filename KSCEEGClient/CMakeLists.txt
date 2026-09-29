@@ -32,6 +32,9 @@ set(PYTHON_VENV_DIR "D:/myproject/eeg-algorithm/PythonScript/venv" CACHE PATH "P
 # 算法包是 src 布局（源码在 <PythonScript>/src/eeg_algorithm），而 venv 里并没有装
 # eeg_algorithm，所以要把 src 这一层加进 sys.path —— 不能只加项目根目录
 set(EEG_ALGO_SRC_DIR "D:/myproject/eeg-algorithm/PythonScript/src" CACHE PATH "eeg_algorithm 源码目录")
+# 显示通路要直接 import 顶层的实时滤波模块 FIR_test.py（与参考项目 pybindwithqt 同一份），
+# 它是平铺在项目根目录下的，不在 src 那一层，所以这一层也得进 sys.path
+set(PYTHON_PROJECT_DIR "D:/myproject/eeg-algorithm/PythonScript" CACHE PATH "Python 项目根目录（含顶层实时滤波模块 FIR_test.py）")
 set(EEG_BRIDGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python" CACHE PATH "宿主侧适配层 eeg_bridge.py 所在目录")
 
 # ==================== pybind11（源码方式引入） ====================
@@ -177,6 +180,7 @@ target_compile_definitions(appKSCEEGClient
     PRIVATE PYTHON_VENV_DIR="${PYTHON_VENV_DIR}"
     PRIVATE EEG_ALGO_SRC_DIR="${EEG_ALGO_SRC_DIR}"
     PRIVATE EEG_BRIDGE_DIR="${EEG_BRIDGE_DIR}"
+    PRIVATE PYTHON_PROJECT_DIR="${PYTHON_PROJECT_DIR}"
 )
 
 target_link_libraries(appKSCEEGClient

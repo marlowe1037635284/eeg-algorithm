@@ -25,7 +25,7 @@ Item {
     property bool highPassOn: true
     property real highPassLow: 0.5
     property bool lowPassOn: true
-    property real lowPassHigh: 30.0
+    property real lowPassHigh: 45.0
     property bool notchOn: true
 
     // 陷波上下限这次没有对应的界面控件，但读写要原样带过去 ——
@@ -40,12 +40,12 @@ Item {
 
     // 频段预设。副标题是真频率范围，不是设计稿里那串复制粘贴出来的占位值
     readonly property var bandPresets: [
-        { symbol: qsTr("全频"), range: "",      highOn: true, high: 0.5, lowOn: false, low: 0 },
+        { symbol: qsTr("全频"), range: "",      highOn: true, high: 0.5, lowOn: true,  low: 45 },
         { symbol: "δ",        range: "0.5-4",   highOn: true, high: 0.5, lowOn: true,  low: 4 },
         { symbol: "θ",        range: "4-8",     highOn: true, high: 4,   lowOn: true,  low: 8 },
         { symbol: "α",        range: "8-13",    highOn: true, high: 8,   lowOn: true,  low: 13 },
         { symbol: "β",        range: "13-30",   highOn: true, high: 13,  lowOn: true,  low: 30 },
-        { symbol: "γ",        range: "30-100",  highOn: true, high: 30,  lowOn: true,  low: 100 }
+        { symbol: "γ",        range: "30-45",   highOn: true, high: 30,  lowOn: true,  low: 45 }
     ]
 
     // 当前参数落在哪个预设上。落不上任何一个就返回 -1（比如用户自己拖了个

@@ -22,6 +22,7 @@
 #include "pythonengine.h"
 #include "pythontypes.h"
 
+#include <cstring>
 #include <string>
 
 namespace py = pybind11;
@@ -41,6 +42,12 @@ namespace py = pybind11;
 // 不能像参考实现那样只加项目根目录（它的 FIR_test.py 是平铺在顶层的）。
 #ifndef EEG_ALGO_SRC_DIR
 #  define EEG_ALGO_SRC_DIR "D:/myproject/eeg-algorithm/PythonScript/src"
+#endif
+
+// Python 项目根目录。实时滤波模块 FIR_test.py 平铺在这里（不在 src 那一层），
+// 显示通路要直接 import 它，所以这一层也得进 sys.path
+#ifndef PYTHON_PROJECT_DIR
+#  define PYTHON_PROJECT_DIR "D:/myproject/eeg-algorithm/PythonScript"
 #endif
 
 // 宿主侧适配层 eeg_bridge.py 所在目录
@@ -91,6 +98,11 @@ QString resolve_venv_dir()
 QString resolve_algo_src_dir()
 {
     return resolve_dir("EEG_ALGO_SRC_DIR", "app", QStringLiteral(EEG_ALGO_SRC_DIR));
+}
+
+QString resolve_python_project_dir()
+{
+    return resolve_dir("PYTHON_PROJECT_DIR", "project", QStringLiteral(PYTHON_PROJECT_DIR));
 }
 
 QString resolve_bridge_dir()
@@ -168,13 +180,15 @@ void prepare_python_config(PyConfig &config)
     }
 }
 
-// 把算法包源码目录与适配层目录加进 sys.path。
+// 把算法包源码目录、Python 项目根目录与适配层目录加进 sys.path。
 // venv / 用户级 / 系统级的 site-packages 都不在这里管 —— 那些由 venv 身份决定。
 //
+// 项目根目录是给显示通路的实时滤波模块 FIR_test.py 用的（它平铺在顶层）；
 // 顺序上适配层放最前：它是最不可能与别的模块重名的那个名字。
 void setup_python_path()
 {
-    const QStringList dirs = {resolve_bridge_dir(), resolve_algo_src_dir()};
+    const QStringList dirs = {resolve_bridge_dir(), resolve_python_project_dir(),
+                              resolve_algo_src_dir()};
 
     try
     {
@@ -212,7 +226,8 @@ void log_python_environment()
                           << QString::fromStdString(sys.attr("base_prefix").cast<std::string>());
 
         const QStringList modules = {QStringLiteral("numpy"), QStringLiteral("scipy"),
-                                     QStringLiteral("eeg_algorithm"), QStringLiteral("eeg_bridge")};
+                                     QStringLiteral("eeg_algorithm"), QStringLiteral("eeg_bridge"),
+                                     QStringLiteral("FIR_test")};
         for (const QString &name : modules)
         {
             try
@@ -380,6 +395,196 @@ QString PythonEngine::bridge_dir() const
 QString PythonEngine::venv_dir() const
 {
     return m_impl->resolved_venv_dir;
+}
+
+// ==================== 显示通路的独立滤波 ====================
+
+namespace
+{
+
+// 显示侧滤波器阶数与采样率。采样率必须与 FIR_test.py 的模块级 fs 一致（也是 1000），
+// 否则同一个 [低, 高] 区间两边算出的归一化截止频率不同、系数也就对不上。
+//
+// 阶数取 2：显示只要求「看起来是被滤过的」，阶数越低启动瞬态越短；
+// 与 FIR_test.py 的 iir_bp_order 也保持一致
+constexpr int kDisplayFilterOrder = 2;
+constexpr double kDisplayFilterFs = 1000.0;
+
+} // namespace
+
+bool PythonEngine::configure_display_filter(const ProcessingParams &params, int channels,
+                                            QString *error_message)
+{
+    if (m_impl->interpreter == nullptr)
+    {
+        if (error_message != nullptr)
+        {
+            *error_message = QStringLiteral("Python 解释器未启动");
+        }
+        return false;
+    }
+    if (channels <= 0)
+    {
+        if (error_message != nullptr)
+        {
+            *error_message = QStringLiteral("通道数非法");
+        }
+        return false;
+    }
+
+    const py::gil_scoped_acquire gil;
+    try
+    {
+        using namespace py::literals;   // btype_a / fs_a 这些字面量
+
+        const py::module_ np = py::module_::import("numpy");
+        const py::module_ signal = py::module_::import("scipy.signal");
+        const py::module_ fir = py::module_::import("FIR_test");
+
+        // ---- 主滤波：高通 / 低通 → 一个 butter 系数对 ----
+        // FIR_test 的 design_iir() 只做带通，所以这里自己决定 btype：
+        //   两个都开 → bandpass(低, 高)；只开一个 → highpass / lowpass；全关 → 直通
+        const bool has_high = params.high_pass_enabled;
+        const bool has_low = params.low_pass_enabled;
+        const double high_hz = params.high_pass_low_hz;
+        const double low_hz = params.low_pass_high_hz;
+
+        py::object b;
+        py::object a;
+        if (has_high && has_low && high_hz < low_hz)
+        {
+            const py::tuple coeffs = signal.attr("butter")(
+                kDisplayFilterOrder, py::make_tuple(high_hz, low_hz), "btype"_a = "bandpass",
+                "fs"_a = kDisplayFilterFs);
+            b = coeffs[0];
+            a = coeffs[1];
+        }
+        else if (has_high)
+        {
+            const py::tuple coeffs = signal.attr("butter")(
+                kDisplayFilterOrder, high_hz, "btype"_a = "highpass", "fs"_a = kDisplayFilterFs);
+            b = coeffs[0];
+            a = coeffs[1];
+        }
+        else if (has_low)
+        {
+            const py::tuple coeffs = signal.attr("butter")(
+                kDisplayFilterOrder, low_hz, "btype"_a = "lowpass", "fs"_a = kDisplayFilterFs);
+            b = coeffs[0];
+            a = coeffs[1];
+        }
+        else
+        {
+            // 直通：a 只有 [1.0]，process_frame_iir 会跳过 lfilter
+            b = np.attr("array")(py::make_tuple(1.0));
+            a = np.attr("array")(py::make_tuple(1.0));
+        }
+
+        // ---- 陷波：由 [低, 高] 区间反推中心频率与 Q ----
+        // notch_q 在 FIR_test 里是个固定值（25），而界面给的是一个区间，
+        // 所以这里按 Q = 中心频率 / 带宽 换算，区间越窄陷波越尖锐
+        const bool has_notch = params.notch_enabled;
+        const double notch_center = (params.notch_low_hz + params.notch_high_hz) / 2.0;
+        const double notch_width = params.notch_high_hz - params.notch_low_hz;
+
+        py::object notch_b;
+        py::object notch_a;
+        if (has_notch && notch_width > 0.0 && notch_center > 0.0)
+        {
+            const py::tuple coeffs = signal.attr("iirnotch")(
+                notch_center, notch_center / notch_width, "fs"_a = kDisplayFilterFs);
+            notch_b = coeffs[0];
+            notch_a = coeffs[1];
+        }
+        else
+        {
+            // 直通：process_frame_notch 见到 a 长度为 1 就直接返回，不做任何处理
+            notch_b = np.attr("array")(py::make_tuple(1.0));
+            notch_a = np.attr("array")(py::make_tuple(1.0));
+        }
+
+        // 系数写回模块级全局 —— FIR_test 的 process_frame_iir / process_frame_notch
+        // 在调用时读的就是这几个名字
+        fir.attr("iir_bp_b") = b;
+        fir.attr("iir_bp_a") = a;
+        fir.attr("use_iir") = true;
+        fir.attr("notch_b") = notch_b;
+        fir.attr("notch_a") = notch_a;
+        fir.attr("use_notch") = true;
+        // log_timing 每帧 print 一次，在 GUI 线程上跑会明显拖慢界面
+        fir.attr("log_timing") = false;
+
+        // 重建状态。下一块数据的首个样本会自动 _zi_seed 预热到稳态，
+        // 「刚启动」与「改了参数」两种情况都不会有瞬变
+        fir.attr("reset_state")(channels);
+        return true;
+    }
+    catch (const std::exception &exc)
+    {
+        if (error_message != nullptr)
+        {
+            *error_message = QString::fromUtf8(exc.what());
+        }
+        return false;
+    }
+}
+
+bool PythonEngine::process_display_filter(const float *samples, int total_samples, int channels,
+                                          QVector<float> *out, QString *error_message)
+{
+    if (out == nullptr)
+    {
+        return false;
+    }
+    if (m_impl->interpreter == nullptr)
+    {
+        if (error_message != nullptr)
+        {
+            *error_message = QStringLiteral("Python 解释器未启动");
+        }
+        return false;
+    }
+    if (samples == nullptr || total_samples <= 0 || channels <= 0
+        || total_samples % channels != 0)
+    {
+        if (error_message != nullptr)
+        {
+            *error_message = QStringLiteral("样本数与通道数不匹配");
+        }
+        return false;
+    }
+
+    const py::gil_scoped_acquire gil;
+    try
+    {
+        const py::module_ fir = py::module_::import("FIR_test");
+
+        // 交错样本原样拷进 numpy 数组：FIR_test.process_frame 的输入就是这个布局
+        py::array_t<float> input(total_samples);
+        std::memcpy(input.mutable_data(), samples,
+                    static_cast<size_t>(total_samples) * sizeof(float));
+
+        const py::object result = fir.attr("process_frame")(input, channels);
+        // 输出是一维 float32。copy_py_float_array 内部 forcecast，
+        // Python 侧若换了 dtype 会自动拷一份而不是按错误类型读内存
+        if (!pytypes::copy_py_float_array(result, out, total_samples))
+        {
+            if (error_message != nullptr)
+            {
+                *error_message = QStringLiteral("显示滤波返回值长度不符");
+            }
+            return false;
+        }
+        return true;
+    }
+    catch (const std::exception &exc)
+    {
+        if (error_message != nullptr)
+        {
+            *error_message = QString::fromUtf8(exc.what());
+        }
+        return false;
+    }
 }
 
 // ==================== 自检 ====================

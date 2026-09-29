@@ -73,7 +73,7 @@ struct ProcessingParams
     int high_pass_order = 4;
 
     bool low_pass_enabled = true;
-    double low_pass_high_hz = 30.0;
+    double low_pass_high_hz = 45.0;
     int low_pass_order = 4;
 
     bool notch_enabled = true;

@@ -77,9 +77,18 @@ Item {
     // 波形区横向分 4 格（见 WaveformPanel：5 个刻度、4 段间隔），所以每格秒数 = 时窗 / 4。
     // 默认时窗 2 秒 → 0.5 s/div，正是工具栏和底栏要显示的值
     readonly property real secondsPerDiv: Acq.timeWindow / 4
-    // 每竖格 7.5mm、一屏 4 格，于是走纸速度 = 30 / 时窗；时窗 2 秒时正好 15mm/s，
-    // 与设计稿那句括号说明对齐。它随「时基」变，不再是一个写死的常量
-    readonly property real paperSpeed: 30 / Math.max(0.1, Acq.timeWindow)
+    // 走纸速度按**屏幕真实物理尺寸**反算，不再用设计稿那句「一屏 30mm、15mm/s」的标称值：
+    // 那句假定一屏(4格)只有 30mm，而本机屏幕实测宽 525mm、一屏(1037px) 实为 ≈283.55mm，
+    // 两者差 9.45 倍。下面三个常量给出这个物理换算的全部输入：
+    //   屏幕物理宽 525mm ↔ 原生横向 1920px  →  1 逻辑px = 525 / 1920 mm
+    //   波形区宽 1037px（与 WaveformPanel.plotWidth 一致）  →  一屏 = 1037 × 525 / 1920 ≈ 283.55mm
+    // 时窗 seconds 内正好走完这一屏，所以 走纸速度 = 一屏毫米数 / 时窗（时窗 2s 时 ≈141.8mm/s）。
+    // 屏幕换了或分辨率/缩放变了，只要改 screenWidthMM / screenWidthPx 即可
+    readonly property real screenWidthMM: 525
+    readonly property real screenWidthPx: 1920
+    readonly property real plotWidthPx: 1037
+    readonly property real plotWidthMM: plotWidthPx * screenWidthMM / screenWidthPx
+    readonly property real paperSpeed: plotWidthMM / Math.max(0.1, Acq.timeWindow)
 
     // 去掉多余的零：0.50 → "0.5"、15.0 → "15"
     readonly property string timeBaseText: Number(secondsPerDiv.toFixed(2)) + " s/div"
@@ -546,9 +555,10 @@ Item {
         readonly property var windowValues: [0.4, 0.8, 2, 4, 8]
     }
 
-    // 走纸速度不再是写死的「15mm/s」：它由当前时基反算（见 root.paperSpeed），
-    // 否则用户改了时基之后这句说明还挂着 15mm/s，与真实参数自相矛盾
+    // 走纸速度不是写死的：它由屏幕物理尺寸与时基算出（见 root.paperSpeed），
+    // 否则用户改了时基之后这句说明还挂着旧值，与真实参数自相矛盾
     Text {
+        id: paperSpeedLabel
         x: 1037
         y: 90
         text: qsTr("(走纸速度：") + root.paperSpeedText + ")"
@@ -558,8 +568,12 @@ Item {
         font.pixelSize: 16
     }
 
+    // 分隔线与「滤波与后处理」跟随走纸速度文字的实际宽度向右排。
+    // 设计稿把两者写死在 1204 / 1224，那是按「15mm/s」这种短文本量的；
+    // 走纸速度改用物理真值后文本变成「141.8mm/s」，写死的竖杠就压住最后一个字
     Rectangle {
-        x: 1204
+        id: paperSpeedSeparator
+        x: paperSpeedLabel.x + paperSpeedLabel.width + 18
         y: 87
         width: 1
         height: 27
@@ -568,7 +582,7 @@ Item {
 
     // 滤波与后处理。设计稿里它只是个色块，这里接上弹窗
     Rectangle {
-        x: 1224
+        x: paperSpeedSeparator.x + 20
         y: 79
         width: 137
         height: 43

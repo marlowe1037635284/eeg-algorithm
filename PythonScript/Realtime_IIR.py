@@ -256,3 +256,27 @@ def process_frame_iir(interleaved, channels):
 
     return output.reshape(-1).astype(np.float32,copy=False)
 
+def process_frame(interleaved, channels):
+    """C++ 侧的唯一入口：主滤波（FIR 或 IIR，二选一）-> 陷波。
+
+    参数：
+        interleaved：按帧交错的一维序列
+            [采样点0的ch0..chN-1, 采样点1的ch0..chN-1, ...]
+            采样点数 = len(interleaved) // channels（可 1 个或多个）。
+        channels   ：通道数。
+
+    返回：
+        与输入同长度的一维数组（float32），包含所有采样点的滤波结果
+        [滤波后采样点0的ch0..chN-1, 滤波后采样点1的ch0..chN-1, ...]。
+
+    三部分独立开关：改 use_iir 切换 FIR/IIR，改 use_notch 决定是否陷波。
+    内部用 _tick/_tock 打点，统计并打印「接收到数据 -> 处理完成」的耗时（ms）。
+    """
+    channels = int(channels)
+    n_samples = len(interleaved) // channels if channels > 0 else 0
+    
+    out = process_frame_iir(interleaved, channels)
+   
+
+    
+    return out

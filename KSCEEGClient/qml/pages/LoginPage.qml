@@ -255,11 +255,11 @@ Item {
                     border.color: rememberPassword.checked ? Design.brand : "#9a9a9a"
 
                     Image {
-                        x: 6
-                        y: 7
-                        width: 8
-                        height: 6
-                        source: Design.assetRoot + "icons/icon-check.svg"
+                        x: 4.5
+                        y: 5.5
+                        width: 10
+                        height: 8
+                        source: Design.assetRoot + "icons/icon-check-login.svg"
                         visible: rememberPassword.checked
                     }
                 }

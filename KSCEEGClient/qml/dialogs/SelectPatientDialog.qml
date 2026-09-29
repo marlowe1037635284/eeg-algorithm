@@ -325,19 +325,21 @@ Item {
         }
 
         // 「+」图标（施工图 加 @903,663 15×15，笔画 12.72 长、2 粗）
+        // 坐标取整对齐：设计稿原始小数坐标会让 2px 笔画被抗锯齿摊到半像素上，
+        // 端部发虚、看起来圆钝，整数对齐后与设计稿一致（十字中心 910,670）
         Rectangle {
-            x: 904.12
-            y: 669.51
-            width: 12.72
+            x: 904
+            y: 669
+            width: 12
             height: 2
             color: Design.textPrimary
         }
 
         Rectangle {
-            x: 909.48
-            y: 664.15
+            x: 909
+            y: 664
             width: 2
-            height: 12.72
+            height: 12
             color: Design.textPrimary
         }
 

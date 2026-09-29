@@ -371,6 +371,10 @@ private:
     void refresh_display_filter();
     // 往显示缓冲追加一块样本（已滤波）。加锁
     void append_to_display(const SignalChunk &chunk);
+    // 清空显示缓冲与还没处理完的待处理块，并立即把波形重画成空图。
+    // 「开始采集」时调用：不清的话上一段的样本还在缓冲里，新样本只是接在
+    // 后面写，画面上滚动的仍是一整屏上一段的波形，像没重新开始
+    void clear_display();
     // 由 m_display_timer 驱动：有新数据时才重画并自增 revision
     void render_wave();
     // 把当前显示窗口画进 m_wave_image。锁内取快照、锁外绘制 ——

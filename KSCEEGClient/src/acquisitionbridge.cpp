@@ -578,6 +578,10 @@ bool AcquisitionBridge::start_collection(const QString &directory)
     m_events.clear();
     emit eventsChanged();
 
+    // 新一段采集从空图开始：不清显示缓冲的话，上一段的波形还留着，
+    // 新样本接在后面写，画面看起来就像没重新开始
+    clear_display();
+
     m_collector->post_start(request);
     return true;
 }
@@ -621,6 +625,9 @@ void AcquisitionBridge::start_demo_source()
     m_collect_timer.start();
     m_events.clear();
     emit eventsChanged();
+
+    // 同 start_collection()：新一段采集从空图开始
+    clear_display();
 
     m_demo_sequence_id = 0;
     m_demo_timestamp_ns = 1000000000LL;   // 从 1 秒处起步，避开 0 这个哨兵值
@@ -910,6 +917,31 @@ void AcquisitionBridge::refresh_display_filter()
         m_display_filter_ready = false;
         emit logMessage(QStringLiteral("显示滤波配置失败，波形回退为原始值：%1").arg(error));
     }
+}
+
+void AcquisitionBridge::clear_display()
+{
+    // 清空还没处理的待处理块，避免上一段采集残留的样本在本段开头被补画出来
+    {
+        const QMutexLocker locker(&m_display_pending_mutex);
+        m_display_pending.clear();
+    }
+    m_display_dropped.store(false, std::memory_order_relaxed);
+
+    {
+        const QMutexLocker locker(&m_display_mutex);
+        if (!m_display_data.isEmpty())
+        {
+            std::fill(m_display_data.begin(), m_display_data.end(), 0.0f);
+        }
+        m_display_head = 0;
+        m_display_filled = 0;
+    }
+
+    // 强制下一次 render_wave() 重画：它平时靠「generation 变了」判断要不要画，
+    // 而清空缓冲并没有新数据进来，不这样处理画面会一直停在上一段的波形上
+    m_rendered_generation = -1;
+    render_wave();
 }
 
 void AcquisitionBridge::render_wave()

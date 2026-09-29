@@ -97,11 +97,16 @@ Item {
             delegate: Item {
                 required property var modelData
 
-                // 下拉字段：只读，点一下切到下一个选项
+                // 下拉字段：点开列表来选
                 readonly property bool isChoice: modelData.choices !== undefined
+                // 下拉当前值。**必须单独存一份**：下拉与文本框是两个控件，
+                // 文本框在下拉字段上是隐藏的，它的 text 永远是空串。
+                // 原来这里写的是 `property alias value: field.text`，于是性别与科室
+                // 存进库里的永远是空串 —— 界面上却显示得好好的，最难查的那种错
+                property string choiceValue: ""
                 // 控件当前值。save() 通过 Repeater.itemAt(index).value 取值，
                 // 这样控件本身是什么不影响取值口
-                property alias value: field.text
+                readonly property string value: isChoice ? choiceValue : field.text
 
                 // 下拉字段的底与箭头由 ChoiceField 自己画，这里不重复
                 Rectangle {

@@ -7,6 +7,10 @@ import KSCEEGClient
 //   - 页面里直接摆在画布上的东西（顶栏右侧那排控件）用设计稿绝对坐标；
 //   - 放进 AppShell 内容槽里的东西，坐标要减去内容卡片原点 (154,150)，
 //     因为 AppShell 的 contentArea 已经定位在那里了。
+//
+// 数据来自 users 表。原来这一页整张表都是写死的：6 行假用户、搜索框和角色下拉是
+// 画出来的色块、四个按钮里有三个点了没反应（新增/编辑连弹窗都没有），
+// 而登录页登录进来的账号在这儿根本看不到
 Item {
     id: root
 
@@ -17,19 +21,61 @@ Item {
     signal navRequested(string label)
     signal logoutRequested()
     signal addUserRequested()
-    signal editUserRequested(string userName)
+    signal editUserRequested(string account)
+    signal resetPasswordRequested(string account)
+    // 启用 / 停用：直接改状态，不弹确认框（改错了再点一次就回来了，可逆）
+    signal toggleStatusRequested(string account, string nextStatus)
 
-    // 设计稿只画了 3 行示意，但页脚写死「共 6 条记录（当前显示 6 条）」——
-    // 按页脚补到 6 行，否则表格下面空一大片，看着像没做完。
-    // 前 3 行照抄设计稿（正好覆盖 启用/停用/待审核 三种状态），后 3 行按同样口径编。
-    readonly property var users: [
-        { uid: "U-0001", account: "admin",      name: "张伟", role: "管理员", dept: "信息中心", status: "启用",   registered: "2025-03-12", lastLogin: "2026-09-12 10:23:41" },
-        { uid: "U-0001", account: "admin",      name: "张伟", role: "医生",   dept: "信息中心", status: "停用",   registered: "2025-03-12", lastLogin: "2026-09-12 10:23:41" },
-        { uid: "U-0001", account: "admin",      name: "张伟", role: "管理员", dept: "信息中心", status: "待审核", registered: "2025-03-12", lastLogin: "2026-09-12 10:23:41" },
-        { uid: "U-0002", account: "doctor.li",  name: "李静", role: "医生",   dept: "神经内科", status: "启用",   registered: "2025-04-08", lastLogin: "2026-09-10 09:15:02" },
-        { uid: "U-0003", account: "tech.wang",  name: "王强", role: "技师",   dept: "电生理室", status: "启用",   registered: "2025-06-21", lastLogin: "2026-09-08 15:40:18" },
-        { uid: "U-0004", account: "nurse.zhao", name: "赵敏", role: "医生",   dept: "神经内科", status: "停用",   registered: "2025-07-15", lastLogin: "2026-09-05 11:02:37" }
-    ]
+    // 应用数据库，由外层注入
+    property var database
+
+    property int revision: 0
+    function reload() {
+        revision++
+        clampPage()
+    }
+
+    readonly property var allUsers: {
+        revision   // 绑定依赖
+        return database ? database.users() : []
+    }
+
+    // ---------- 搜索 / 筛选 / 分页 ----------
+    // 与患者管理、历史记录三页共用同一套
+    property string searchText: ""
+    property int roleFilter: 0            // roleChoices 的下标，0 = 全部角色
+    property int currentPage: 1
+
+    readonly property var roleChoices: [qsTr("全部角色"), qsTr("管理员"), qsTr("医生"),
+                                        qsTr("技师"), qsTr("观察员")]
+    readonly property string roleKeyword:
+        (roleFilter > 0 && roleFilter < roleChoices.length) ? roleChoices[roleFilter] : ""
+
+    readonly property var filteredUsers: {
+        var keyword = searchText.trim().toLowerCase()
+        var result = []
+        for (var i = 0; i < allUsers.length; ++i) {
+            var row = allUsers[i]
+            if (roleKeyword.length > 0 && row.role !== roleKeyword)
+                continue
+            if (keyword.length > 0) {
+                // 与设计稿的提示一致：用户名 / 姓名 / 手机号（本系统里账号本身就是手机号）
+                var haystack = (row.account + " " + row.name).toLowerCase()
+                if (haystack.indexOf(keyword) < 0)
+                    continue
+            }
+            result.push(row)
+        }
+        return result
+    }
+
+    onSearchTextChanged: currentPage = 1
+    onRoleFilterChanged: currentPage = 1
+
+    function clampPage() {
+        const pages = Math.max(1, Math.ceil(filteredUsers.length / pageSize))
+        currentPage = Math.max(1, Math.min(pages, currentPage))
+    }
 
     // 列 x（设计稿绝对 x 减卡片原点 201）。表头与单元格在设计稿里本身就有几像素错位，各照各的抄。
     readonly property var headerX: [71, 232, 393, 539, 685, 877, 1023, 1200, 1358]
@@ -39,6 +85,13 @@ Item {
     // 即卡片内 103/154/205，正好是 52 + 51 × (index + 1)，行距由分隔线反推。
     readonly property int headerHeight: 52
     readonly property int rowHeight: 51
+    readonly property int bodyHeight: 788
+    readonly property int pageSize: Math.floor(bodyHeight / rowHeight)
+
+    readonly property var users: {
+        const start = (currentPage - 1) * pageSize
+        return filteredUsers.slice(start, start + pageSize)
+    }
 
     // 状态 → 颜色。设计稿里 启用=绿、待审核=橙、停用=灰。
     function statusColor(status)
@@ -50,19 +103,27 @@ Item {
         return Design.offline
     }
 
-    // 角色 → 强调色。管理员蓝、医生紫取自设计稿；技师设计稿里没有，
-    // 借用波形通道色里的青色，避免再凭空引入新颜色。
+    // 角色 → 强调色。管理员蓝、医生紫取自设计稿；技师借用波形通道色里的青色，
+    // 观察员用中性灰 —— 都不再凭空引入新颜色。
     function roleAccent(role)
     {
         if (role === "管理员")
             return "#1b74b8"
         if (role === "医生")
             return "#7b5cd6"
-        return Design.channelColors[0]
+        if (role === "技师")
+            return Design.channelColors[0]
+        return "#6e7788"
     }
 
-    // 行内第三个按钮随状态切换：已停用的给「启用」，其余给「停用」
+    // 行内第三个按钮随状态切换：已停用的给「启用」，其余给「停用」。
+    // 待审核的也走「停用」—— 它的下一步是不让登录，与停用同义
     function toggleLabel(status)
+    {
+        return status === "停用" ? qsTr("启用") : qsTr("停用")
+    }
+
+    function nextStatus(status)
     {
         return status === "停用" ? qsTr("启用") : qsTr("停用")
     }
@@ -71,6 +132,12 @@ Item {
         anchors.fill: parent
         pageTitle: qsTr("用户管理")
         currentNav: qsTr("用户管理")
+        statusItems: {
+            var items = [qsTr("用户：") + root.allUsers.length + qsTr(" 位")]
+            if (root.filteredUsers.length !== root.allUsers.length)
+                items.push(qsTr("筛选后：") + root.filteredUsers.length + qsTr(" 位"))
+            return items
+        }
         userName: root.userName
         userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
@@ -163,6 +230,7 @@ Item {
                     y: rowTop + 11
                     width: 81
                     text: qsTr("重置密码")
+                    onClicked: root.resetPasswordRequested(modelData.account)
                 }
 
                 TableRowButton {
@@ -170,6 +238,8 @@ Item {
                     y: rowTop + 11
                     width: 59
                     text: root.toggleLabel(modelData.status)
+                    onClicked: root.toggleStatusRequested(modelData.account,
+                                                          root.nextStatus(modelData.status))
                 }
 
                 Rectangle {
@@ -182,137 +252,53 @@ Item {
             }
         }
 
-        // ---------- 右侧滚动条 ----------
-        Rectangle {
-            x: 1686
-            y: 64
-            width: 7
-            height: 758
-            radius: 4
-            color: Qt.rgba(0.478, 0.478, 0.478, 0.10)
-        }
-
-        Rectangle {
-            x: 1686
-            y: 319
-            width: 7
-            height: 278
-            radius: 4
-            color: Qt.rgba(0.4, 0.4, 0.4, 0.15)
+        // ---------- 空态 ----------
+        // 「一个人都没有」和「筛完没有了」提示语分开：筛没的时候让人去「新增用户」，
+        // 他会以为库里的人丢了
+        Text {
+            x: 71
+            y: 200
+            width: 1400
+            visible: root.users.length === 0
+            text: root.allUsers.length === 0
+                  ? qsTr("暂无用户，点右上角「新增用户」开通一个账号")
+                  : qsTr("没有符合当前条件的用户，试试换个搜索词或角色")
+            color: Design.textMuted
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
         }
 
         // ---------- 分页 ----------
-        Text {
-            x: 19
-            y: 846
-            text: qsTr("共 %1 条记录（当前显示 %1 条）").arg(root.users.length)
-            color: Design.textSecondary
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
-        }
-
-        Rectangle {
-            x: 1531
+        Pager {
+            x: 0
             y: 842
-            width: 53
-            height: 29
-            radius: 6
-            color: Design.primarySoft
-            border.width: 1
-            border.color: Design.panelBorder
-
-            Text {
-                anchors.centerIn: parent
-                text: qsTr("上一页")
-                color: "#3b3b3b"
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 14
-            }
-        }
-
-        Rectangle {
-            x: 1631
-            y: 842
-            width: 53
-            height: 29
-            radius: 6
-            color: Design.primarySoft
-            border.width: 1
-            border.color: Design.panelBorder
-
-            Text {
-                anchors.centerIn: parent
-                text: qsTr("下一页")
-                color: "#3b3b3b"
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 14
-            }
-        }
-
-        Text {
-            x: 1596
-            y: 845
-            text: "1/1"
-            color: "#000000"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
+            totalCount: root.allUsers.length
+            filteredCount: root.filteredUsers.length
+            pageSize: root.pageSize
+            currentPage: root.currentPage
+            onPageRequested: (page) => root.currentPage = page
         }
     }
 
     // ---------- 标题条右侧的搜索/筛选/操作控件（设计稿绝对坐标）----------
-    Rectangle {
+    SearchField {
         x: 1374
         y: 79
         width: 215
         height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 13
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("搜索用户名/姓名/手机号")
-            color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.3)
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
+        placeholder: qsTr("搜索用户名/姓名/手机号")
+        onTextChanged: root.searchText = text
     }
 
-    Rectangle {
+    ChoiceField {
         x: 1601
         y: 79
         width: 126
         height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 10
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("全部角色")
-            color: "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
-
-        Image {
-            x: 116.5
-            anchors.verticalCenter: parent.verticalCenter
-            width: 7.47
-            height: 7
-            rotation: 90
-            source: Design.assetRoot + "icons/icon-arrow-down.svg"
-        }
+        choices: root.roleChoices
+        currentIndex: root.roleFilter
+        onActivated: (index) => root.roleFilter = index
     }
 
     Rectangle {
@@ -380,8 +366,13 @@ Item {
         }
     }
 
-    // 状态：圆点 + 文字。设计稿里 2 字（启用/停用）和 3 字（待审核）都居中于卡片坐标 692，
+    // 状态：圆点 + 文字。设计稿里 2 字（启用/停用）的整组在 @1070 宽 48、
+    // 3 字（待审核）的在 @1062 宽 63，两者中心都落在卡片坐标 893 ——
     // 所以按整组宽度反向定位，换词后不会跑偏。
+    //
+    // 注意不能像原来那样写 692：那是「部门 / 科室」那一列的位置
+    //（设计稿 @891），状态标签压在上面，实际渲染出来是「信息中心」右边
+    // 直接糊了一个绿点加两个字
     component StatusLabel: Item {
         id: statusLabel
         property string status: ""
@@ -390,7 +381,7 @@ Item {
 
         width: 16 + statusText.width
         height: 22
-        x: 692 - width / 2
+        x: 893 - width / 2
 
         Rectangle {
             y: 7

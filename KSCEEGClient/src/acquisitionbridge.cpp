@@ -530,8 +530,10 @@ bool AcquisitionBridge::start_collection(const QString &directory)
     request.format = SerialCollector::SaveFormat::Binary;
     request.channel_names = eeg_montage::channel_names();
 
-    QString folder = directory.trimmed().isEmpty() ? default_record_directory()
-                                                   : directory.trimmed();
+    // 目录不存在时由采集线程的 recording_start() 建出来（它本来就要处理
+    // 落盘失败的各种情况，建目录属于同一件事），这里不重复
+    const QString folder = directory.trimmed().isEmpty() ? default_record_directory()
+                                                        : directory.trimmed();
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     request.save_path = QDir(folder).filePath(stamp + QStringLiteral(".eegbin"));
     // 同一秒内重复开始会撞名，加后缀而不是覆盖 —— 覆盖会静默丢掉上一段
@@ -1705,7 +1707,7 @@ void AcquisitionBridge::on_recording_changed(bool recording, const QString &file
 
 // ==================== 事件 ====================
 
-void AcquisitionBridge::add_event(const QString &label)
+void AcquisitionBridge::add_event(const QString &label, const QString &color)
 {
     const qint64 elapsed_ms = m_collect_timer.isValid() ? m_collect_timer.elapsed() : 0;
     const qint64 total_seconds = elapsed_ms / 1000;
@@ -1721,10 +1723,157 @@ void AcquisitionBridge::add_event(const QString &label)
     event.insert(QStringLiteral("wallClock"),
                  QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss")));
     event.insert(QStringLiteral("offsetSeconds"), static_cast<double>(elapsed_ms) / 1000.0);
-    event.insert(QStringLiteral("dotColor"), QStringLiteral("#7c3aed"));
+    event.insert(QStringLiteral("dotColor"),
+                 color.isEmpty() ? QStringLiteral("#7c3aed") : color);
 
     m_events.append(event);
     emit eventsChanged();
+}
+
+QVariantList AcquisitionBridge::electrode_map() const
+{
+    QVariantList rows;
+    const eeg_montage::Electrode *table = eeg_montage::electrodes();
+    for (int i = 0; i < eeg_montage::kChannelCount; ++i)
+    {
+        QVariantMap row;
+        row[QStringLiteral("name")] = QString::fromLatin1(table[i].name);
+        row[QStringLiteral("x")] = table[i].x;
+        row[QStringLiteral("y")] = table[i].y;
+        rows.append(row);
+    }
+    return rows;
+}
+
+bool AcquisitionBridge::scan_electrodes()
+{
+    // 门槛按**实际攒到的秒数**判，不按样本个数：1 kHz 下 8 个样本只有 8 毫秒，
+    // 拿它算出来的「噪声底」是个随机数，却会被当成一份可信的电极质量表
+    constexpr double kMinimumSeconds = 1.0;
+    if (m_raw_buffer.available_seconds() < kMinimumSeconds)
+    {
+        m_electrode_quality.clear();
+        m_electrode_summary = tr("实时数据不足（需 1 秒），请先连接设备");
+        m_electrode_scan_valid = false;
+        emit electrodeQualityChanged();
+        return false;
+    }
+
+    SignalChunk chunk;
+    // 取最近 2 秒：再短则差分噪声的统计不稳，再长则结果反映的是更早之前的接触状态
+    if (!m_raw_buffer.snapshot(2, &chunk) || chunk.samples.isEmpty()
+        || chunk.channels <= 0 || chunk.samples_per_channel < 8)
+    {
+        m_electrode_quality.clear();
+        m_electrode_summary = tr("实时数据不足（需 1 秒），请先连接设备");
+        m_electrode_scan_valid = false;
+        emit electrodeQualityChanged();
+        return false;
+    }
+
+    // 分档阈值（µV）：单位是「相邻样本差分的 RMS」，即高频噪声的能量。
+    // 贴得好的电极在静息态下这个值在 1~3 µV 量级，接触变差会成倍抬高。
+    // 这三个数字是**默认经验值**，不同放大器/增益下要跟着调
+    constexpr double kGoodBelow = 3.0;
+    constexpr double kFairBelow = 8.0;
+    constexpr double kMaxBar = 25.0;
+    // 大幅伪迹的判据。**它测的不是 ADC 饱和**，而是「大半个窗口的样本都超过
+    // ±500 µV」—— 脑电本身在几十 µV 量级，这个幅度只可能来自电极脱落、
+    // 导线晃动这类接触问题。名字里带 Artifact 而不是 Railed，就是免得后面
+    // 有人把它当成饱和检测来调
+    constexpr double kArtifactFraction = 0.30;
+    constexpr double kArtifactUV = 500.0;
+
+    const int channels = chunk.channels;
+    const int frames = chunk.samples_per_channel;
+
+    int good = 0;
+    int fair = 0;
+    int poor = 0;
+    int off = 0;
+
+    QVariantList rows;
+    rows.reserve(channels);
+
+    for (int ch = 0; ch < channels; ++ch)
+    {
+        double sum_sq_diff = 0.0;
+        int diff_count = 0;
+        int artifacts = 0;
+
+        float previous = chunk.samples[ch];
+        for (int i = 1; i < frames; ++i)
+        {
+            const float value = chunk.samples[i * channels + ch];
+            const double diff = static_cast<double>(value) - static_cast<double>(previous);
+            sum_sq_diff += diff * diff;
+            ++diff_count;
+            if (std::abs(static_cast<double>(value)) > kArtifactUV)
+                ++artifacts;
+            previous = value;
+        }
+
+        const double noise = diff_count > 0 ? std::sqrt(sum_sq_diff / diff_count) : 0.0;
+        const double artifact_fraction = static_cast<double>(artifacts) / std::max(1, frames - 1);
+
+        QString level;
+        if (artifact_fraction > kArtifactFraction)
+        {
+            level = QStringLiteral("脱落");
+            ++off;
+        }
+        else if (noise < kGoodBelow)
+        {
+            level = QStringLiteral("良好");
+            ++good;
+        }
+        else if (noise < kFairBelow)
+        {
+            level = QStringLiteral("一般");
+            ++fair;
+        }
+        else
+        {
+            level = QStringLiteral("不良");
+            ++poor;
+        }
+
+        QVariantMap row;
+        row[QStringLiteral("channel")] = ch;
+        row[QStringLiteral("name")] = eeg_montage::channel_name(ch);
+        row[QStringLiteral("level")] = level;
+        // 进度条长度按噪声占满量程的比例给，界面直接乘条宽
+        row[QStringLiteral("ratio")] = std::clamp(noise / kMaxBar, 0.05, 1.0);
+        row[QStringLiteral("noiseUV")] = noise;
+        // 数值列显示的是**测得的噪声**，不是换算出来的阻抗 ——
+        // 阻抗值无法从信号推出，编一个像 8.2kΩ 的数字比留空更糟
+        row[QStringLiteral("text")] = QStringLiteral("%1µV").arg(noise, 0, 'f', 1);
+        rows.append(row);
+    }
+
+    m_electrode_quality = rows;
+    m_electrode_scan_valid = true;
+    m_electrode_summary = tr("良好 %1 · 一般 %2 · 不良 %3 · 脱落 %4")
+                              .arg(good).arg(fair).arg(poor).arg(off);
+    emit electrodeQualityChanged();
+    return true;
+}
+
+bool AcquisitionBridge::set_event_label(int index, const QString &label, const QString &color)
+{
+    if (index < 0 || index >= m_events.size())
+    {
+        return false;
+    }
+
+    QVariantMap event = m_events.at(index).toMap();
+    event.insert(QStringLiteral("label"), label);
+    if (!color.isEmpty())
+        event.insert(QStringLiteral("dotColor"), color);
+    m_events[index] = event;
+
+    emit eventsChanged();
+    return true;
 }
 
 void AcquisitionBridge::remove_event(int index)

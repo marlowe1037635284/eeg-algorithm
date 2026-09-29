@@ -1,83 +1,122 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import KSCEEGClient
 
-// 「采集记录预览」弹窗。按 Figma 设计稿 1:1 实现。
+// 「采集记录预览」弹窗。按 Figma 设计稿的版式实现。
 //
 // 设计稿画板 1920×1080，白色卡片位于 (516,61)、尺寸 888×957；
 // 本文件里卡片内部的坐标 = 设计稿绝对坐标 - (516,61)，数值照抄施工图。
 //
-// 注意：施工图导出文件开头还有一批 @1374,79 / @546,218 / @1370,215 之类的节点，
-// 它们是被这个弹窗盖住的「采集记录」页表格（施工图里排在卡片之前绘制、随后被白色卡片完全遮住），
-// 所以这里不重复实现。
+// 数据全部来自真实记录：患者、时间、时长、通道、事件都在库里，
+// 波形是**读回那次落盘的原始文件**画出来的（RecordingPreview）。
+// 原来这一整屏是假的 —— 患者写死「张文涛」、波形是按正弦函数现编的、
+// 回放与导出按钮点了没有任何反应。
 Item {
     id: root
 
     signal dismissed()
-    signal accepted()
+    signal exportRequested(string recordNo)
 
     // 要预览的记录号，弹出前由 Main 回填
-    property string recordNo: "R-0011"
+    property string recordNo: ""
+    // 应用数据库，由外层注入
+    property var database
+
+    function reload() {
+        const row = database ? database.session(recordNo) : ({})
+        detail = row
+        events = database ? database.sessionEvents(recordNo) : []
+
+        // 波形读的是这条记录落盘的那个原始文件；没落盘就退到空态说明白
+        if (row.filePath !== undefined && row.filePath.length > 0)
+            Recording.open(row.filePath)
+        else
+            Recording.close()
+    }
+
+    Component.onCompleted: reload()
 
     // ---------- 头部信息 ----------
-    property string recordId: "R-0011"
-    property string patientName: qsTr("张文涛")
-    property string patientMeta: qsTr("男  45岁")
-    property string patientRecordNo: qsTr("P-0001·神经内科")
+    property var detail: ({})
+    property var events: []
 
-    // ---------- 概览信息卡（施工图 2 行 3 列）----------
-    property var infoCards: [
-        { x: 25,  y: 141, label: qsTr("采集时间"),      value: "2026-9-22 14:06:30" },
-        { x: 309, y: 141, label: qsTr("时长"),          value: "00:00:01" },
-        { x: 594, y: 141, label: qsTr("通道 / 采样率"), value: "16 ch · 256 Hz" },
-        { x: 25,  y: 236, label: qsTr("幅值 / 时基"),   value: "100 μV · 2 s/div" },
-        { x: 309, y: 236, label: qsTr("事件数"),        value: "2" },
-        { x: 594, y: 236, label: qsTr("电极贴合"),      value: "14/16", good: true }
+    readonly property string patientName:
+        detail.patient !== undefined ? detail.patient : ""
+    readonly property string patientMeta: {
+        if (detail.gender === undefined)
+            return ""
+        return detail.gender + "  " + detail.age + qsTr("岁")
+    }
+    readonly property string patientRecordNo:
+        detail.patientNo !== undefined ? (detail.patientNo + "·" + detail.dept) : ""
+
+    // ---------- 概览信息卡 ----------
+    // 设计稿第 4 格写的是「幅值 / 时基」，那两个值是**当时界面上的显示设置**，
+    // 没有跟着记录存下来（存了也只是抄一份界面状态，不是这次采集的属性）。
+    // 换成「原始数据」，显示这次落盘的文件名 —— 这一格本来就该说数据在哪
+    readonly property var infoCards: [
+        { x: 25,  y: 141, label: qsTr("采集时间"),      value: detail.time !== undefined ? detail.time : "—" },
+        { x: 309, y: 141, label: qsTr("时长"),          value: detail.duration !== undefined ? detail.duration : "—" },
+        { x: 594, y: 141, label: qsTr("通道 / 采样率"),
+          value: detail.channels !== undefined
+                 ? detail.channels + " ch · " + detail.rate + " Hz" : "—" },
+        { x: 25,  y: 236, label: qsTr("原始数据"), value: rawFileText },
+        { x: 309, y: 236, label: qsTr("事件数"),   value: detail.events !== undefined ? String(detail.events) : "0" },
+        { x: 594, y: 236, label: qsTr("电极贴合"), value: detail.quality !== undefined ? detail.quality : "—" }
     ]
 
-    property string playbackTime: "2.5 / 00:00:04"
-
-    // 事件条（施工图底部两个「眼动/闭眼」事件）
-    property var events: [
-        { x: 43,  time: "16:13:05", label: qsTr("闭眼") },
-        { x: 289, time: "16:13:05", label: qsTr("闭眼") }
-    ]
+    readonly property string rawFileText: {
+        if (detail.filePath === undefined || detail.filePath.length === 0)
+            return qsTr("未落盘")
+        const parts = detail.filePath.split(/[\\/]/)
+        return parts[parts.length - 1]
+    }
 
     // ---------- 波形几何（均为卡片内坐标）----------
-    readonly property int plotX: 24            // 绘图区（施工图 矩形 223）
+    readonly property int plotX: 24
     readonly property int plotY: 333
     readonly property int plotWidth: 842
-    readonly property int plotHeight: 518
+    // 绘图区到控制条上沿（791）为止。施工图这一格给的是 518，比实际可用高度
+    // 多出 60 —— 照着写的话最下面三路波形会被控制条盖住
+    readonly property int plotHeight: 458
+    // 通道名占住左边一条，波形从它右边起画。宽度按像素传给 C++，
+    // 那边只负责把窗口内的样本铺满给它的这块画布
+    readonly property int traceX: 64
+    readonly property int traceWidth: root.plotX + root.plotWidth - root.traceX
+    // 波形本身到时间轴上方为止（时间轴在 762）。与背景块分开两个高度：
+    // 背景要铺到控制条上沿，而波形不能压到时间轴的字上
+    readonly property int traceHeight: 762 - root.plotY
 
-    readonly property int gridLeft: 64         // 横向网格线 x 范围 64..845
-    readonly property int gridRight: 845
-    readonly property int vLineTop: 345        // 纵向网格线 y 范围 345..761
-    readonly property int vLineBottom: 761
-    readonly property int laneTop: 354         // 第 1 条通道的中心线，间距 25
-    readonly property int laneStep: 25
-    readonly property int laneCount: 16
+    // 回放：把显示窗口按秒推进，速度按每秒 4 格（一屏 5 秒走 1.25 秒）
+    property bool playing: false
+    readonly property double playbackSeconds: Recording.windowStart
+    readonly property double totalSeconds: Math.max(0.01, Recording.durationSeconds)
 
-    readonly property var vGridX: [250, 455, 660]   // 纵向网格线（施工图 直线 43/63/64）
-    readonly property var eventX: [142, 550]        // 紫色眼动竖线（施工图 直线 65/66）
+    Timer {
+        interval: 16
+        repeat: true
+        running: root.playing && Recording.loaded
+        onTriggered: {
+            const next = Recording.windowStart + 0.05
+            if (next >= Math.max(0, Recording.durationSeconds - 0.05)) {
+                Recording.windowStart = Math.max(0, Recording.durationSeconds - Recording.windowSeconds)
+                root.playing = false
+                return
+            }
+            Recording.windowStart = next
+        }
+    }
 
-    // 通道名与配色。施工图是 16 导联蒙太奇：前 8 条正是 Design.channelNames /
-    // Design.channelColors 定义的那 8 条，直接复用设计变量；后 8 条施工图另有其名与配色，照抄
-    // （施工图里写作 01/02，按 10-20 导联体系应为 O1/O2）。
-    readonly property var laneNames: Design.channelNames.concat(["O1", "O2", "F7", "F8",
-                                                                 "T7", "T8", "FZ", "CZ"])
-    readonly property var laneColors: Design.channelColors.concat(["#c2b32e", "#c67342", "#b770d2", "#3eb5a7",
-                                                                   "#beb459", "#76ac96", "#cb933e", "#4f86dc"])
-
-    // 时间轴刻度（施工图给的绝对位置，间距 2s）
-    readonly property var timeMarks: [
-        { x: 50,  label: "-6.4s" },
-        { x: 236, label: "-4.4s" },
-        { x: 441, label: "-2.4s" },
-        { x: 646, label: "-0.4s" },
-        { x: 836, label: "1.6s" }
-    ]
+    // 事件在进度条上的位置（0~1）。超出记录时长的忽略
+    function eventProgress(event) {
+        if (totalSeconds <= 0)
+            return 0
+        return Math.max(0, Math.min(1, event.offsetSeconds / totalSeconds))
+    }
 
     DialogFrame {
-        title: qsTr("采集记录预览 · %1").arg(root.recordNo)
+        title: root.recordNo.length > 0 ? qsTr("采集记录预览 · %1").arg(root.recordNo)
+                                        : qsTr("采集记录预览")
         cardX: 516
         cardY: 61
         cardWidth: 888
@@ -102,7 +141,7 @@ Item {
             y: 87
             height: 33
             verticalAlignment: Text.AlignVCenter
-            text: root.patientName
+            text: root.patientName.length > 0 ? root.patientName : qsTr("—")
             color: "#000000"
             font.family: Design.fontFamily
             font.styleName: Design.styleMedium
@@ -124,9 +163,12 @@ Item {
         }
 
         Text {
-            x: 723
+            x: 600
             y: 93
+            width: 250
             height: 22
+            horizontalAlignment: Text.AlignRight
+            elide: Text.ElideRight
             verticalAlignment: Text.AlignVCenter
             text: root.patientRecordNo
             color: Design.textSecondary
@@ -170,8 +212,10 @@ Item {
                 Text {
                     x: 18
                     y: 44
+                    width: parent.width - 36
                     height: 22
                     verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideMiddle
                     text: modelData.value
                     color: modelData.good ? Design.good : "#333333"
                     font.family: Design.fontFamily
@@ -182,7 +226,7 @@ Item {
             }
         }
 
-        // ---------- 波形区底 ----------
+        // ---------- 波形区 ----------
         Rectangle {
             x: root.plotX
             y: root.plotY
@@ -192,187 +236,185 @@ Item {
             color: Qt.rgba(0xc4 / 255, 0xc4 / 255, 0xc4 / 255, 0.17)
         }
 
-        // ---------- 波形（16 条通道 + 网格）----------
-        Canvas {
-            id: plot
+        // 每路的泳道基线。用静态网格而不是把网格画进 C++ 那张图里 ——
+        // 网格不随窗口变，画进图里等于每帧重画一遍
+        Repeater {
+            model: Math.max(0, Recording.channelCount)
 
-            x: root.plotX
+            delegate: Rectangle {
+                required property int index
+
+                readonly property real laneStep:
+                    Recording.channelCount > 0 ? root.traceHeight / Recording.channelCount : 0
+
+                x: root.traceX
+                y: root.plotY + Math.round(laneStep * index + laneStep / 2)
+                width: root.traceWidth
+                height: 1
+                color: Qt.rgba(0, 0, 0, 0.10)
+            }
+        }
+
+        // 波形本体：由 C++ 从落盘文件里读出来画好，这里只管贴。
+        // revision 变化只是用来制造新 URL，否则 Image 会按 URL 缓存
+        Image {
+            id: plotImage
+            x: root.traceX
             y: root.plotY
-            width: root.plotWidth
-            height: root.plotHeight
+            width: root.traceWidth
+            height: root.traceHeight
+            fillMode: Image.Stretch
+            cache: false
+            asynchronous: false
+            visible: Recording.loaded
+            source: "image://recording/render/" + Recording.revision
 
-            onWidthChanged: requestPaint()
-            onHeightChanged: requestPaint()
-            Component.onCompleted: requestPaint()
-
-            onPaint: {
-                var ctx = getContext("2d")
-                ctx.reset()
-
-                // 画布内坐标 = 卡片坐标 - 绘图区原点
-                var left = root.gridLeft - root.plotX
-                var right = root.gridRight - root.plotX
-                var top = root.vLineTop - root.plotY
-                var bottom = root.vLineBottom - root.plotY
-                var first = root.laneTop - root.plotY
-
-                ctx.lineWidth = 1
-
-                // 横向网格：每条通道的中心线
-                ctx.strokeStyle = "rgba(0, 0, 0, 0.10)"
-                for (var k = 0; k < root.laneCount; ++k)
-                {
-                    var gy = Math.round(first + root.laneStep * k) + 0.5
-                    ctx.beginPath()
-                    ctx.moveTo(left, gy)
-                    ctx.lineTo(right, gy)
-                    ctx.stroke()
-                }
-
-                // 纵向网格
-                for (var v = 0; v < root.vGridX.length; ++v)
-                {
-                    var vx = Math.round(root.vGridX[v] - root.plotX) + 0.5
-                    ctx.beginPath()
-                    ctx.moveTo(vx, top)
-                    ctx.lineTo(vx, bottom)
-                    ctx.stroke()
-                }
-
-                // 紫色眼动事件竖线
-                ctx.strokeStyle = "#7c3aed"
-                for (var e = 0; e < root.eventX.length; ++e)
-                {
-                    var ex = Math.round(root.eventX[e] - root.plotX) + 0.5
-                    ctx.beginPath()
-                    ctx.moveTo(ex, top)
-                    ctx.lineTo(ex, bottom)
-                    ctx.stroke()
-                }
-
-                // 通道曲线。振幅按 ±10px 内合成（通道间距只有 25，不能画太满）。
-                for (var c = 0; c < root.laneCount; ++c)
-                {
-                    var center = Math.round(first + root.laneStep * c)
-                    ctx.strokeStyle = root.laneColors[c]
-                    ctx.beginPath()
-                    for (var x = left; x <= right; x += 1.5)
-                    {
-                        var t = x * 0.045 + c * 1.7
-                        var drift = Math.sin(t * 0.9 + c) * 2.2          // 基线慢漂移
-                        var rhythm = Math.sin(t * 5.3 + c * 0.7) * 1.8   // α 节律
-                        var noise = Math.sin(x * 0.55 + c * 2.2) * 0.9
-                        var spike = Math.pow(Math.max(0, Math.sin(t * 0.42 + c * 0.9)), 10) * 5.0
-                        var y = center + drift + rhythm + noise - spike
-                        if (x === left)
-                            ctx.moveTo(x, y)
-                        else
-                            ctx.lineTo(x, y)
-                    }
-                    ctx.stroke()
+            function report_size() {
+                if (width > 0 && height > 0) {
+                    const scale = Math.min(Screen.devicePixelRatio, 1.5)
+                    Recording.set_view_size(Math.round(width * scale), Math.round(height * scale))
                 }
             }
+            onWidthChanged: report_size()
+            onHeightChanged: report_size()
+            Component.onCompleted: report_size()
+        }
+
+        // 空态：没落盘、或文件读不了时把原因写清楚，而不是留一块空白
+        Text {
+            x: root.plotX
+            anchors.verticalCenter: parent.verticalCenter
+            width: root.plotWidth
+            horizontalAlignment: Text.AlignHCenter
+            wrapMode: Text.WordWrap
+            visible: !Recording.loaded
+            text: Recording.errorText.length > 0
+                  ? Recording.errorText
+                  : qsTr("这条记录没有落盘原始数据，无法回放波形")
+            color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
         }
 
         // ---------- 通道名 ----------
         Repeater {
-            model: root.laneCount
+            model: Recording.channelNames
 
             delegate: Text {
                 required property int index
+                required property string modelData
+
+                readonly property real laneStep:
+                    Recording.channelCount > 0 ? root.traceHeight / Recording.channelCount : 0
 
                 x: 31
-                y: 343 + root.laneStep * index
-                height: 22
+                y: root.plotY + laneStep * index + laneStep / 2 - 8
+                height: 16
                 verticalAlignment: Text.AlignVCenter
-                text: root.laneNames[index]
-                color: root.laneColors[index]
+                text: modelData
+                color: Recording.channelColors[index % Recording.channelColors.length]
                 font.family: Design.fontFamily
                 font.styleName: Design.styleMedium
-                font.pixelSize: 16
+                font.pixelSize: 12
                 font.letterSpacing: -0.27
             }
         }
 
-        // ---------- 事件胶囊（02:16）----------
-        Rectangle {
-            x: 769
-            y: 345
-            width: 79
-            height: 29
-            radius: 12
-            color: "#ffffff"
-            border.width: 1
-            border.color: Design.bad
-
-            Rectangle {
-                x: 8
-                y: 9
-                width: 12
-                height: 12
-                radius: 6
-                color: Design.bad
-            }
-
-            Text {
-                x: 30
-                y: 0
-                height: parent.height
-                verticalAlignment: Text.AlignVCenter
-                text: "02:16"
-                color: Design.bad
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 16
-                font.letterSpacing: -0.27
-            }
-        }
-
-        // ---------- 眼动标记（两条紫色竖线顶端的标签）----------
+        // ---------- 事件竖线 ----------
+        // 位置来自记录里存下的真实时刻：先换算成「距窗口左端多少秒」，再折算成
+        // 横坐标。沿用实时波形那一套 —— 划出窗口的事件跟着消失，
+        // 而不是钉在窗口边上（钉住会让人以为那一刻就在画面边缘）
         Repeater {
-            model: root.eventX
+            model: root.events
 
             delegate: Item {
-                required property int index
+                required property var modelData
 
-                x: root.eventX[index] - 20    // 40 宽的标签居中在竖线上
-                y: 751
-                width: 40
-                height: 17
+                readonly property bool inWindow:
+                    modelData.offsetSeconds >= Recording.windowStart
+                    && modelData.offsetSeconds <= Recording.windowStart + Recording.windowSeconds
+
+                x: root.traceX + root.traceWidth
+                   * (modelData.offsetSeconds - Recording.windowStart)
+                   / Math.max(0.001, Recording.windowSeconds)
+                y: root.plotY
+                width: 1
+                height: root.traceHeight
+                visible: Recording.loaded && inWindow
 
                 Rectangle {
-                    anchors.fill: parent
-                    radius: 6
-                    color: "#7c3aed"
+                    width: 1
+                    height: parent.height
+                    color: modelData.color !== undefined && modelData.color.length > 0
+                           ? modelData.color : "#7c3aed"
                 }
 
-                Text {
-                    anchors.horizontalCenter: parent.horizontalCenter
-                    y: -2
-                    height: 22
-                    verticalAlignment: Text.AlignVCenter
-                    text: qsTr("眼动")
-                    color: "#ffffff"
-                    font.family: Design.fontFamily
-                    font.styleName: Design.styleRegular
-                    font.pixelSize: 12
-                    font.letterSpacing: -0.27
+                // 竖线顶端的标签
+                Rectangle {
+                    x: -20
+                    y: 0
+                    width: 40
+                    height: 17
+                    radius: 6
+                    color: modelData.color !== undefined && modelData.color.length > 0
+                           ? modelData.color : "#7c3aed"
+
+                    Text {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        y: -2
+                        height: 22
+                        verticalAlignment: Text.AlignVCenter
+                        text: modelData.label
+                        color: "#ffffff"
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 12
+                        font.letterSpacing: -0.27
+                    }
                 }
+            }
+        }
+
+        // 幅值标注。波形会从它底下穿过，所以垫一块半透明白底 ——
+        // 不垫的话这行灰字压在彩色曲线上，读不出来
+        Rectangle {
+            x: 700
+            y: root.plotY + 4
+            width: 138
+            height: 18
+            radius: 4
+            visible: Recording.loaded
+            color: Qt.rgba(1, 1, 1, 0.72)
+
+            Text {
+                anchors.centerIn: parent
+                text: qsTr("自动量程 · 已去直流")
+                color: Qt.rgba(0, 0, 0, 0.45)
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 12
             }
         }
 
         // ---------- 时间轴 ----------
+        // 设计稿那五个刻度写的是 -6.4/-4.4/-2.4/-0.4/1.6s（角度偏了），
+        // 这里按当前窗口的起止与总时长算真实时刻
         Repeater {
-            model: root.timeMarks
+            model: 5
 
             delegate: Text {
-                required property var modelData
+                required property int index
 
-                x: modelData.x
-                y: 756
+                readonly property double markSeconds:
+                    Recording.windowStart + Recording.windowSeconds * index / 4
+
+                x: root.traceX + root.traceWidth * index / 4 - width / 2
+                y: 762
                 height: 22
                 verticalAlignment: Text.AlignVCenter
-                text: modelData.label
+                visible: Recording.loaded
+                text: root.formatClock(markSeconds)
                 color: Qt.rgba(0, 0, 0, 0.40)
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
@@ -390,7 +432,7 @@ Item {
             color: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.20)
         }
 
-        // 回放
+        // 回放 / 暂停
         Rectangle {
             x: 39
             y: 804
@@ -398,14 +440,33 @@ Item {
             height: 34
             radius: 8
             color: replayMouse.pressed ? "#64879f" : Design.primary
+            opacity: Recording.loaded ? 1.0 : 0.45
+
+            // 播放时是两条竖线（暂停符号），停下来是三角形
+            Row {
+                x: 17
+                y: 11
+                spacing: 5
+                visible: root.playing
+
+                Repeater {
+                    model: 2
+
+                    delegate: Rectangle {
+                        width: 4
+                        height: 12
+                        color: "#ffffff"
+                    }
+                }
+            }
 
             Image {
                 x: 17
-                y: 23
+                y: 11
                 width: 12
-                height: 11
-                rotation: -90
-                transformOrigin: Item.TopLeft
+                height: 12
+                rotation: 90
+                visible: !root.playing
                 source: Design.assetRoot + "icons/icon-play.svg"
             }
 
@@ -414,7 +475,7 @@ Item {
                 y: 1
                 height: 33
                 verticalAlignment: Text.AlignVCenter
-                text: qsTr("回放")
+                text: root.playing ? qsTr("暂停") : qsTr("回放")
                 color: "#ffffff"
                 font.family: Design.fontFamily
                 font.styleName: Design.styleMedium
@@ -425,8 +486,10 @@ Item {
             MouseArea {
                 id: replayMouse
                 anchors.fill: parent
+                enabled: Recording.loaded
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
+                onClicked: root.playing = !root.playing
             }
         }
 
@@ -440,6 +503,7 @@ Item {
             color: Design.primarySoft
             border.width: 1
             border.color: Design.panelBorder
+            opacity: Recording.loaded ? 1.0 : 0.45
 
             Text {
                 anchors.centerIn: parent
@@ -453,7 +517,12 @@ Item {
 
             MouseArea {
                 anchors.fill: parent
+                enabled: Recording.loaded
                 cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                    root.playing = false
+                    Recording.windowStart = 0
+                }
             }
         }
 
@@ -467,11 +536,12 @@ Item {
             color: Qt.rgba(0, 0, 0, 0.07)
         }
 
-        // 已播放部分。施工图里这个节点没有导出填充色，按渲染图采样约为主色 55%。
+        // 已播放部分。进度按「窗口右端走到了总时长的哪里」算 ——
+        // 波形显示的是窗口，不是整条记录
         Rectangle {
             x: 209
             y: 809
-            width: 131
+            width: 437 * root.playheadRatio
             height: 24
             radius: 17
             color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.55)
@@ -479,7 +549,7 @@ Item {
 
         // 播放头
         Rectangle {
-            x: 316
+            x: 209 + 437 * root.playheadRatio - 12
             y: 809
             width: 24
             height: 24
@@ -487,17 +557,17 @@ Item {
             color: "#59809c"
             border.width: 1
             border.color: "#416a87"
-        }
 
-        Rectangle {
-            x: 322
-            y: 815
-            width: 12
-            height: 12
-            radius: 6
-            color: "#416a87"
-            border.width: 1
-            border.color: "#ffffff"
+            Rectangle {
+                x: 6
+                y: 6
+                width: 12
+                height: 12
+                radius: 6
+                color: "#416a87"
+                border.width: 1
+                border.color: "#ffffff"
+            }
         }
 
         Text {
@@ -505,7 +575,7 @@ Item {
             y: 810
             height: 22
             verticalAlignment: Text.AlignVCenter
-            text: root.playbackTime
+            text: root.formatClock(Recording.windowStart) + " / " + root.formatClock(root.totalSeconds)
             color: Design.textSecondary
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -513,20 +583,20 @@ Item {
             font.letterSpacing: -0.27
         }
 
-        // 导出 PDF
+        // 导出
         Rectangle {
             x: 758
             y: 805
             width: 96
             height: 32
             radius: 10
-            color: Design.primarySoft
+            color: exportMouse.pressed ? Qt.rgba(0.44, 0.57, 0.67, 0.22) : Design.primarySoft
             border.width: 1
             border.color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.29)
 
             Text {
                 anchors.centerIn: parent
-                text: qsTr("导出PDF")
+                text: qsTr("导出")
                 color: Design.primary
                 font.family: Design.fontFamily
                 font.styleName: Design.styleMedium
@@ -535,8 +605,11 @@ Item {
             }
 
             MouseArea {
+                id: exportMouse
                 anchors.fill: parent
+                hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
+                onClicked: root.exportRequested(root.recordNo)
             }
         }
 
@@ -550,61 +623,102 @@ Item {
             color: Qt.rgba(0xc4 / 255, 0xc4 / 255, 0xc4 / 255, 0.17)
         }
 
-        Repeater {
-            model: root.events
+        // 事件卡片横向排开，多了可以滚。原来这里只有两张写死的卡片
+        Item {
+            x: 24
+            y: 867
+            width: 842
+            height: 74
+            clip: true
 
-            delegate: Item {
-                required property var modelData
-                required property int index
+            property real scroll: 0
+            readonly property real contentWidth: root.events.length * 246
 
-                x: modelData.x
-                y: 883
-                width: 235
-                height: 42
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: 7
-                    color: index === 0 ? Design.primarySoft
-                                       : Qt.rgba(0xc4 / 255, 0xc4 / 255, 0xc4 / 255, 0.30)
-                    border.width: index === 0 ? 1 : 0
-                    border.color: Design.primary
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.NoButton
+                onWheel: (wheel) => {
+                    const next = parent.scroll - wheel.angleDelta.y / 3
+                    parent.scroll = Math.max(0, Math.min(Math.max(0, parent.contentWidth - 842), next))
                 }
+            }
 
-                Rectangle {
-                    x: 9
-                    y: 15
-                    width: 12
-                    height: 12
-                    radius: 6
-                    color: "#7c3aed"
-                }
+            Row {
+                x: 19 - parent.scroll
+                y: 16
+                spacing: 11
 
-                Text {
-                    x: 61
-                    y: 10
-                    height: 22
-                    verticalAlignment: Text.AlignVCenter
-                    text: modelData.time
-                    color: "#333333"
-                    font.family: Design.fontFamily
-                    font.styleName: Design.styleMedium
-                    font.pixelSize: 20
-                    font.letterSpacing: 0.73
-                }
+                Repeater {
+                    model: root.events
 
-                Text {
-                    x: 190
-                    y: 10
-                    height: 22
-                    verticalAlignment: Text.AlignVCenter
-                    text: modelData.label
-                    color: "#3b3b3b"
-                    font.family: Design.fontFamily
-                    font.styleName: Design.styleRegular
-                    font.pixelSize: 16
-                    font.letterSpacing: -0.27
+                    delegate: Item {
+                        required property var modelData
+                        required property int index
+
+                        width: 235
+                        height: 42
+
+                        Rectangle {
+                            anchors.fill: parent
+                            radius: 7
+                            color: index === 0 ? Design.primarySoft
+                                               : Qt.rgba(0xc4 / 255, 0xc4 / 255, 0xc4 / 255, 0.30)
+                            border.width: index === 0 ? 1 : 0
+                            border.color: Design.primary
+                        }
+
+                        Rectangle {
+                            x: 9
+                            y: 15
+                            width: 12
+                            height: 12
+                            radius: 6
+                            color: modelData.color !== undefined && modelData.color.length > 0
+                                   ? modelData.color : "#7c3aed"
+                        }
+
+                        Text {
+                            x: 61
+                            y: 10
+                            height: 22
+                            verticalAlignment: Text.AlignVCenter
+                            text: modelData.wallClock
+                            color: "#333333"
+                            font.family: Design.fontFamily
+                            font.styleName: Design.styleMedium
+                            font.pixelSize: 20
+                            font.letterSpacing: 0.73
+                        }
+
+                        Text {
+                            x: 150
+                            y: 10
+                            width: 78
+                            height: 22
+                            horizontalAlignment: Text.AlignRight
+                            elide: Text.ElideRight
+                            verticalAlignment: Text.AlignVCenter
+                            text: modelData.label
+                            color: "#3b3b3b"
+                            font.family: Design.fontFamily
+                            font.styleName: Design.styleRegular
+                            font.pixelSize: 16
+                            font.letterSpacing: -0.27
+                        }
+                    }
                 }
+            }
+
+            // 一条都没有时说清楚，而不是留一块空灰底
+            Text {
+                x: 19
+                y: 26
+                visible: root.events.length === 0
+                text: qsTr("该记录没有事件标注")
+                color: Design.textMuted
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
             }
         }
 
@@ -625,6 +739,26 @@ Item {
             height: 6
             radius: 3
             color: Qt.rgba(0x66 / 255, 0x66 / 255, 0x66 / 255, 0.15)
+            visible: root.events.length > 3
         }
+    }
+
+    // 播放头在整条记录里的比例
+    readonly property real playheadRatio: {
+        if (totalSeconds <= 0)
+            return 0
+        const position = Recording.windowStart + Recording.windowSeconds
+        return Math.max(0, Math.min(1, position / totalSeconds))
+    }
+
+    // 秒 → "mm:ss"。记录最长可能几十分钟，用时分秒
+    function formatClock(seconds) {
+        const total = Math.max(0, Math.round(seconds))
+        const h = Math.floor(total / 3600)
+        const m = Math.floor((total % 3600) / 60)
+        const s = total % 60
+        if (h > 0)
+            return h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
+        return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
     }
 }

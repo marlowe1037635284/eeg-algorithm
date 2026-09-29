@@ -100,6 +100,34 @@ QtObject {
         return name && name.length > 0 ? name.substring(0, 1) : "?"
     }
 
+    // 顶栏那枚「电极贴合 N/16 良好」胶囊的文字。
+    //
+    // 扫描结果由调用方传进来而不是自己去读 Acq：Design 是纯数据单例，
+    // 拿不到 main.cpp 注入的上下文属性。
+    //
+    // 没扫过时按设计稿写 16/16 —— 那一处本来只是示意。**扫过之后必须跟着真实
+    // 结果走**：设计稿里顶栏写 16/16、采集前确认弹窗写 14/16、状态栏写 10/16，
+    // 同一页三个数字，用过一次就没人再信这三个数了
+    function electrodePillText(quality) {
+        if (!quality || quality.length === 0)
+            return qsTr("电极贴合  16/16 良好")
+        return qsTr("电极贴合  ") + electrodeQualityText(quality)
+    }
+
+    // 只要「N/16 良好」那一段（采集前确认弹窗里那一格用）。
+    // 取不到结果时返回空串，由调用方决定显示什么
+    function electrodeQualityText(quality) {
+        if (!quality || quality.length === 0)
+            return ""
+
+        var good = 0
+        for (var i = 0; i < quality.length; ++i) {
+            if (quality[i].level === "良好")
+                ++good
+        }
+        return qsTr("%1/%2 良好").arg(good).arg(quality.length)
+    }
+
     // ---------- 波形通道 ----------
     // 8 个通道各自的曲线颜色，取自设计稿
     readonly property var channelColors: ["#0e9fbf", "#36a772", "#daa82a", "#e07a2e",

@@ -22,9 +22,18 @@ Item {
     signal selectPatientRequested()
     // 点工具栏「滤波与后处理」→ 弹滤波配置
     signal filterRequested()
+    // 需要在界面上说一句话（阻抗扫描完成、导出结果之类），由外层弹轻提示
+    signal notifyRequested(string message, string kind)
 
     property string userName: "管理员"
     property string userRole: "管理员"
+    // 可选的事件标签，来自系统设置里维护的那一份（由 Main 注入）。
+    // 原来事件只有「手动标记」一种，标签是写死的
+    property var tags: []
+    // 记录落盘目录，取自系统设置的「记录保存目录」（由 Main 注入）。
+    // 空串表示没设过，由 C++ 侧退回默认目录 —— 原来这里**始终**传空串，
+    // 于是系统设置里那个目录改了也不生效，记录一直落在默认位置
+    property string recordDir: ""
     // 刚进工作台时是**没有患者**的：设计稿对应「未选择患者 / 点击选择/登记」
     // 那块空态卡片，选完患者才切成患者信息。效果图 E:/UI/效果/未选择患者.png
     property bool hasPatient: false
@@ -86,7 +95,7 @@ Item {
         frozen = false
         if (elapsedSeconds === 0)
             Acq.clear_events()
-        Acq.start_collection("")
+        Acq.start_collection(recordDir)
     }
 
     // 「截图」：把当前界面存成 PNG 放到系统图片目录下，失败就静默跳过
@@ -192,10 +201,10 @@ Item {
         }
     }
 
-    // 电极贴合胶囊。
-    // 注意这一项**没有数据源**：串口协议一次只给 4 路不带电极名的阻抗值
-    // （见 serialprotocol.h 的 parse_impedance_kohm），没法推出「16 个电极各有
-    // 多好」。所以它保持设计稿的静态显示，不做假数据绑定
+    // 电极贴合胶囊。**没有设备直读的电极级阻抗**（协议只给 4 路不带电极名的值，
+    // 见 serialprotocol.h 的 parse_impedance_kohm），所以扫过阻抗之后这里显示的是
+    // 由信号估计出来的接触质量；没扫过时按设计稿写 16/16。
+    // 与左侧面板、采集前确认弹窗共用同一份结果，三处不会再各说各话
     Rectangle {
         x: 1612
         y: 12
@@ -211,7 +220,7 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: qsTr("电极贴合  16/16 良好")
+            text: Design.electrodePillText(Acq.electrodeScanValid ? Acq.electrodeQuality : [])
             color: "#4f4f4f"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -652,9 +661,12 @@ Item {
                     root.stopCollection()
                 } else if (root.hasPatient) {
                     root.precheckRequested()
+                } else {
+                    // 没选患者：这一页采集的数据要挂到某位患者名下，没有对象就开始采
+                    // 会后无从归属。所以不去「什么都不做」，直接把选择/登记弹窗打开 ——
+                    // 用户点这个按钮的意图就是要开始，下一步该干什么由界面来接
+                    root.selectPatientRequested()
                 }
-                // 没选患者时什么都不做：这一页采集的数据要挂到某位患者名下，
-                // 没有对象就开始采，数据落地后无从归属
             }
 
             ToolTip.visible: containsMouse && !root.collecting && !root.hasPatient
@@ -675,10 +687,17 @@ Item {
     }
 
     ElectrodePanel {
+        id: electrodePanel
         x: 107
         y: 225
         width: 331
         height: 499
+        // 扫描结果由面板自己算，这里只负责把小结交给外层弹提示 ——
+        // 16 行列表在 331 宽的格子里只能露出 4 行，不看提示就不知道整体如何
+        onScanFinished: (summary) => {
+            if (summary.length > 0)
+                root.notifyRequested(qsTr("阻抗扫描完成：") + summary, "info")
+        }
     }
 
     EventPanel {
@@ -687,6 +706,8 @@ Item {
         y: 738
         width: 331
         height: 296
+        collecting: root.collecting
+        tags: root.tags
     }
 
     TopographyPanel {

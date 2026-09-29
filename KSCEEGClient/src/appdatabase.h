@@ -7,7 +7,7 @@
 #include <QVariantMap>
 #include <QtQml/qqmlregistration.h>
 
-// 应用本地数据库（SQLite）：账号、偏好设置、患者档案。
+// 应用本地数据库（SQLite）：账号、偏好设置、患者档案、标签、采集记录。
 //
 // 三者共用一个 .db 文件、一个连接：本来就是同一份应用数据，拆成多个连接只会把
 // 「文件放哪、什么时候打开」这套逻辑抄好几遍，而 SQLite 同文件多连接还要自己
@@ -18,6 +18,18 @@
 // AppData 下一个按路径哈希命名的目录里（QML/OfflineStorage/Databases/<hash>.sqlite），
 // 平时根本找不到。这里直接用 Qt Sql 打开一个明确的 .db 文件，
 // 位置就贴在可执行文件旁边，要查数据用任何 SQLite 工具打开即可。
+//
+// ==================== 版本库里的这一份是**表结构模板** ====================
+// 仓库里跟踪的 eeg-ksc.db 只承载表结构（外加一个预置的 admin，方便第一次登录），
+// 里面**不留运行期数据**。部署时把它拷到运行目录，程序在那一份上读写。
+//
+// 由此推出两条约定：
+//   1. 表结构变了（加表、加列）要**同步改这一份模板**。只靠 createTables() 里的
+//      CREATE TABLE IF NOT EXISTS 也能在老库上补出新表，但模板里没有的话，
+//      新部署的机器要等第一次启动才建表，中间那段空窗期不好排查
+//   2. 别拿它当测试库用。**开发期默认连的正是这一份**（见 appdatabase.cpp 的
+//      defaultDatabasePath），调试产生的患者与采集记录会直接写进模板。
+//      提交前记得清一下：只留 admin，其余表清空、自增计数归零
 class AppDatabase : public QObject
 {
     Q_OBJECT
@@ -66,6 +78,55 @@ public:
     // 电极质量没有数据源（协议只给 4 路不带电极名的阻抗），固定返回「—」
     Q_INVOKABLE QVariantList sessions(const QString &patient_no);
 
+    // 单条采集记录的全部字段（「采集记录预览」弹窗用）。
+    // record_no 是界面上的那个编号（R-0011），不是主键 id。
+    // 取不到时返回空 map
+    Q_INVOKABLE QVariantMap session(const QString &record_no);
+
+    // 一条记录里的事件标注，按时间先后。每一项：
+    //   { offsetSeconds, wallClock, label, color }
+    Q_INVOKABLE QVariantList sessionEvents(const QString &record_no);
+
+    // 删一条采集记录：事件标注与**落盘的原始文件**一并删掉。
+    // 留着文件的话确认框上那句「删除后无法恢复」就是假的
+    Q_INVOKABLE bool removeSession(const QString &record_no);
+
+    // 把一条采集记录导出到指定目录，返回 { success, message, path, isRawFile }。
+    // 采集时落了盘就把那个原始文件复制过去；没落盘（比如采集中途退出、
+    // 记录是旧版本写下的）就只能导出记录摘要的 CSV，并在 message 里说明 ——
+    // 导出一份「看起来像数据但不是数据」的文件比拒绝导出更糟
+    Q_INVOKABLE QVariantMap exportSession(const QString &record_no, const QString &directory);
+
+    // ==================== 偏好设置 ====================
+    // 全应用的键值对设置（app_settings 表）。系统设置页写、别处读。
+    // 取不到（或存的是空串）时返回 fallback
+    Q_INVOKABLE QString setting(const QString &key, const QString &fallback = QString()) const;
+    Q_INVOKABLE bool setSetting(const QString &key, const QString &value);
+
+    // ==================== 标注标签 ====================
+    // 标签管理页与工作台的「手动标记」共用这一份。每一项：
+    //   { id, name, code, color }
+    // code 是设备侧的触发编码（设计稿里的 "101,102"），配色供事件标记取用
+    Q_INVOKABLE QVariantList tags();
+    Q_INVOKABLE QVariantMap addTag(const QString &name, const QString &code, const QString &color);
+    Q_INVOKABLE QVariantMap updateTag(int tag_id, const QString &name, const QString &code,
+                                      const QString &color);
+    Q_INVOKABLE bool removeTag(int tag_id);
+
+    // ==================== 用户 ====================
+    // 用户管理页的表格数据，按注册先后（id）排序。每一项：
+    //   { uid, account, name, role, dept, status, registered, lastLogin }
+    Q_INVOKABLE QVariantList users();
+    // 新增 / 修改 / 重置密码 / 启停 / 删除，统一返回 { success, message }
+    Q_INVOKABLE QVariantMap addUser(const QString &account, const QString &password,
+                                    const QString &name, const QString &role,
+                                    const QString &department);
+    Q_INVOKABLE QVariantMap updateUser(const QString &account, const QString &name,
+                                       const QString &role, const QString &department,
+                                       const QString &status);
+    Q_INVOKABLE QVariantMap resetPassword(const QString &account, const QString &new_password);
+    Q_INVOKABLE QVariantMap setUserStatus(const QString &account, const QString &status);
+
     // 新增患者，返回 { success, message, no }。
     // patient_no 留空时按 P-0001 的规则自动生成
     Q_INVOKABLE QVariantMap addPatient(const QString &patient_no, const QString &name,
@@ -80,10 +141,16 @@ public:
     Q_INVOKABLE void recordCollection(const QString &patient_no, int channel_count,
                                       int sample_rate);
 
-    // 停止采集时把这条记录补全（时长、事件数、落盘路径）。
-    // 分两次写而不是攒到停止时一次性写：中途崩了/掉电时，至少留下「什么时候采过」
+    // 停止采集时把这条记录补全（时长、事件数、落盘路径），并把这次的事件标注
+    // 一并存下来。分两次写而不是攒到停止时一次性写：中途崩了/掉电时，至少留下
+    //「什么时候采过」。
+    //
+    // events 是 Acq.events 那一份（每项含 offsetSeconds/wallClock/label/dotColor），
+    // 原样交给数据层拆列。事件不跟着记录存的话，「采集记录预览」里那条事件带
+    // 就永远是空的 —— 记录里只存了事件**个数**，个数拼不回时刻与标签
     Q_INVOKABLE void finishCollection(const QString &patient_no, int duration_seconds,
-                                      int event_count, const QString &file_path);
+                                      int event_count, const QString &file_path,
+                                      const QVariantList &events = QVariantList());
 
 private:
     bool ensureOpen();

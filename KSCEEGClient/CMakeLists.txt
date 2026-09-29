@@ -70,6 +70,9 @@ qt_add_executable(appKSCEEGClient
     src/acquisitionbridge.cpp
     src/bridgeimageproviders.h
     src/bridgeimageproviders.cpp
+    # 历史记录的波形回放（读 .eegbin，不走串口）
+    src/recordingpreview.h
+    src/recordingpreview.cpp
 )
 
 # Design.qml 是设计变量单例（画板尺寸、色板、字体名），需要在 QML 引擎里注册成 singleton，
@@ -87,8 +90,11 @@ qt_add_qml_module(appKSCEEGClient
         qml/components/ChoiceField.qml
         qml/components/DialogFrame.qml
         qml/components/PanelDivider.qml
+        qml/components/Pager.qml
+        qml/components/SearchField.qml
         qml/components/SoftBlob.qml
         qml/components/TableRowButton.qml
+        qml/components/Toast.qml
         qml/dialogs/ConfirmDialog.qml
         qml/dialogs/EditPatientDialog.qml
         qml/dialogs/FilterDialog.qml
@@ -96,7 +102,9 @@ qt_add_qml_module(appKSCEEGClient
         qml/dialogs/NewTagDialog.qml
         qml/dialogs/PrecheckDialog.qml
         qml/dialogs/RecordPreviewDialog.qml
+        qml/dialogs/ResetPasswordDialog.qml
         qml/dialogs/SelectPatientDialog.qml
+        qml/dialogs/UserDialog.qml
         qml/pages/HistoryPage.qml
         qml/pages/LoginPage.qml
         qml/pages/PatientManagementPage.qml

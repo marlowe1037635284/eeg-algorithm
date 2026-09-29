@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtCore
 import KSCEEGClient
 
 // 应用入口。只管三件事：窗口、登录态、页面/弹窗路由。
@@ -44,6 +45,15 @@ ApplicationWindow {
 
     // 弹「编辑患者」「删除确认」时针对的那一行
     property var pendingPatientRow: null
+    // 弹「编辑用户」「重置密码」时针对的那一行
+    property var pendingUserRow: null
+    // 弹「编辑标签」时针对的那一行（null 表示新建）
+    property var pendingTagRow: null
+    // 弹「删除标签」确认框时针对的那一个
+    property int pendingTagId: 0
+    property string pendingTagName: ""
+    // 弹「删除记录」确认框时针对的那条记录号
+    property string pendingRecordNoToDelete: ""
     // 本次采集属于哪位患者（用来在停止时把采集记录补全）。空串表示没有进行中的会话
     property string openSessionPatient: ""
     // 从患者管理页点「记录」进来时带的历史记录页过滤条件
@@ -70,8 +80,10 @@ ApplicationWindow {
             if (Acq.collecting || window.openSessionPatient.length === 0)
                 return
             var summary = Acq.collection_summary()
+            // 事件要跟着记录一起存：只存个数的话，「采集记录预览」里那条事件带
+            // 就永远是空的 —— 个数拼不回时刻与标签
             appDatabase.finishCollection(window.openSessionPatient, summary.durationSeconds,
-                                         summary.eventCount, summary.filePath)
+                                         summary.eventCount, summary.filePath, Acq.events)
             window.openSessionPatient = ""
         }
     }
@@ -96,7 +108,10 @@ ApplicationWindow {
                 errorMessage = ""
                 var result = appDatabase.authenticateOrRegister(account, password)
                 if (!result.success) {
-                    errorMessage = qsTr("密码不正确，请重新输入")
+                    // 失败原因由数据层给（密码不对 / 账号被停用 / 还没过审），
+                    // 这里不再一律说成「密码不正确」—— 被停用的人反复改密码是白费力气
+                    errorMessage = result.message.length > 0
+                                   ? result.message : qsTr("密码不正确，请重新输入")
                     clearPassword()
                     return
                 }
@@ -124,6 +139,17 @@ ApplicationWindow {
             visible: window.loggedIn && window.activeDialog !== ""
             sourceComponent: window.dialogComponent()
         }
+
+        // 轻提示。放在弹窗层**之后**，所以即使弹着框也能看见
+        //「已保存」这类反馈；它自己在顶栏中间那段空白里，不遮设计元素
+        Toast {
+            id: toast
+        }
+    }
+
+    // 全应用统一的轻提示出口。页面/弹窗不各弹各的，免得两处同时在屏幕上说话
+    function showToast(message, kind) {
+        toast.show(message, kind)
     }
 
     // ---------- 路由逻辑 ----------
@@ -164,6 +190,10 @@ ApplicationWindow {
         case "recordPreview": return recordPreviewComponent
         case "newTag":        return newTagComponent
         case "confirmDelete": return confirmDeleteComponent
+        case "userEdit":      return userEditComponent
+        case "resetPassword": return resetPasswordComponent
+        case "confirmDeleteRecord": return confirmDeleteRecordComponent
+        case "confirmDeleteTag":    return confirmDeleteTagComponent
         default:              return null
         }
     }
@@ -184,6 +214,33 @@ ApplicationWindow {
                 return rows[i]
         }
         return null
+    }
+
+    // 按账号在库里找一位用户。编辑 / 重置密码 / 启停之后都要用最新的那一份
+    function findUserRow(account) {
+        if (!account)
+            return null
+        var rows = appDatabase.users()
+        for (var i = 0; i < rows.length; ++i) {
+            if (rows[i].account === account)
+                return rows[i]
+        }
+        return null
+    }
+
+    // 导出一条采集记录。导出目录固定用「文档」，不再让用户每导一次选一次目录 ——
+    // 提示语里会带上完整路径，想找文件照着路径去就行
+    function exportRecord(recordNo) {
+        var folder = StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+        if (!folder || folder.length === 0)
+            folder = StandardPaths.writableLocation(StandardPaths.HomeLocation)
+        if (!folder || folder.length === 0) {
+            showToast(qsTr("找不到可用的导出目录"), "error")
+            return
+        }
+
+        var result = appDatabase.exportSession(recordNo, folder)
+        showToast(result.message, result.success ? "success" : "error")
     }
 
     function enterWorkbench() {
@@ -238,9 +295,15 @@ ApplicationWindow {
         WorkbenchPage {
             userName: window.currentUserName.length > 0 ? window.currentUserName : window.defaultUserName
             userRole: window.currentUserRole.length > 0 ? window.currentUserRole : window.defaultUserRole
+            // 事件标签取自系统设置里维护的那一份。工作台每次进入都会重建，
+            // 所以这里读一次就是最新的
+            tags: appDatabase.tags()
+            // 落盘目录同理：工作台重建时读一次设置，采集时就近用它
+            recordDir: appDatabase.setting("record_dir", "")
 
             onLogoutRequested: window.handleLogout()
             onNavRequested: (label) => window.navigateTo(label)
+            onNotifyRequested: (message, kind) => window.showToast(message, kind)
             // 点「开始采集」先弹确认框，确认后才真正开始
             onPrecheckRequested: window.activeDialog = "precheck"
             onSelectPatientRequested: window.activeDialog = "selectPatient"
@@ -310,6 +373,12 @@ ApplicationWindow {
             }
             onLogoutRequested: window.handleLogout()
             onRecordPreviewRequested: (recordNo) => window.openRecordPreview(recordNo)
+            // 删除是不可撤销的，先弹确认框
+            onRecordDeleteRequested: (recordNo) => {
+                window.pendingRecordNoToDelete = recordNo
+                window.activeDialog = "confirmDeleteRecord"
+            }
+            onRecordExportRequested: (recordNo) => window.exportRecord(recordNo)
         }
     }
 
@@ -319,9 +388,40 @@ ApplicationWindow {
         UserManagementPage {
             userName: window.currentUserName.length > 0 ? window.currentUserName : window.defaultUserName
             userRole: window.currentUserRole.length > 0 ? window.currentUserRole : window.defaultUserRole
+            database: appDatabase
+
+            // 每次进这一页都重新读一遍库：在别处改过账号（比如刚登录时自动登记的
+            // 新用户）之后，页面重建时拿到的必须是新数据
+            Component.onCompleted: reload()
 
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.handleLogout()
+
+            onAddUserRequested: {
+                window.pendingUserRow = null
+                window.activeDialog = "userEdit"
+            }
+            onEditUserRequested: (account) => {
+                window.pendingUserRow = window.findUserRow(account)
+                window.activeDialog = "userEdit"
+            }
+            onResetPasswordRequested: (account) => {
+                window.pendingUserRow = window.findUserRow(account)
+                window.activeDialog = "resetPassword"
+            }
+            // 启停直接生效：可逆的操作不值得再来一道确认
+            onToggleStatusRequested: (account, nextStatus) => {
+                var result = appDatabase.setUserStatus(account, nextStatus)
+                if (!result.success) {
+                    window.showToast(result.message, "error")
+                    return
+                }
+                var page = window.currentPageItem()
+                if (page && page.reload)
+                    page.reload()
+                window.showToast(qsTr("已%1账号「%2」").arg(nextStatus).arg(account),
+                                 nextStatus === qsTr("启用") ? "success" : "info")
+            }
         }
     }
 
@@ -331,10 +431,31 @@ ApplicationWindow {
         SystemSettingsPage {
             userName: window.currentUserName.length > 0 ? window.currentUserName : window.defaultUserName
             userRole: window.currentUserRole.length > 0 ? window.currentUserRole : window.defaultUserRole
+            database: appDatabase
+
+            // 进页面时把库里的设置读进草稿，标签也重新读一遍
+            Component.onCompleted: {
+                loadSettings()
+                reload()
+            }
 
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.handleLogout()
-            onNewTagRequested: window.activeDialog = "newTag"
+            // 新增与编辑共用同一个弹窗，靠 pendingTagRow 是否为空区分
+            onNewTagRequested: {
+                window.pendingTagRow = null
+                window.activeDialog = "newTag"
+            }
+            onEditTagRequested: (tag) => {
+                window.pendingTagRow = tag
+                window.activeDialog = "newTag"
+            }
+            onDeleteTagRequested: (tagId, tagName) => {
+                window.pendingTagId = tagId
+                window.pendingTagName = tagName
+                window.activeDialog = "confirmDeleteTag"
+            }
+            onSaved: window.showToast(qsTr("设置已保存"), "success")
         }
     }
 
@@ -465,9 +586,15 @@ ApplicationWindow {
         id: recordPreviewComponent
 
         RecordPreviewDialog {
-            recordNo: window.pendingRecordNo.length > 0 ? window.pendingRecordNo : "R-0011"
-            onDismissed: window.closeDialog()
-            onAccepted: window.closeDialog()
+            database: appDatabase
+            recordNo: window.pendingRecordNo
+            onDismissed: {
+                // 关掉预览就把文件释放掉：一条 10 分钟的记录映射着约 38 MB，
+                // 一直开着不划算
+                Recording.close()
+                window.closeDialog()
+            }
+            onExportRequested: (recordNo) => window.exportRecord(recordNo)
         }
     }
 
@@ -503,8 +630,134 @@ ApplicationWindow {
         id: newTagComponent
 
         NewTagDialog {
+            database: appDatabase
+            Component.onCompleted: openFor(window.pendingTagRow)
+
+            onDismissed: {
+                window.closeDialog()
+                window.pendingTagRow = null
+            }
+            onAccepted: {
+                var wasEdit = editMode
+                window.closeDialog()
+                window.pendingTagRow = null
+
+                var page = window.currentPageItem()
+                if (page && page.reload)
+                    page.reload()
+                window.showToast(wasEdit ? qsTr("标签已保存") : qsTr("标签已创建"), "success")
+            }
+        }
+    }
+
+    Component {
+        id: confirmDeleteTagComponent
+
+        ConfirmDialog {
+            title: qsTr("删除标签")
+            confirmText: qsTr("删除")
+            danger: true
+            message: window.pendingTagName.length > 0
+                     ? qsTr("确定要删除标签「%1」吗？已用它标注过的历史事件不会被改动。")
+                           .arg(window.pendingTagName)
+                     : ""
             onDismissed: window.closeDialog()
-            onAccepted: window.closeDialog()
+            onAccepted: {
+                var tagId = window.pendingTagId
+                var tagName = window.pendingTagName
+                window.closeDialog()
+                window.pendingTagId = 0
+                window.pendingTagName = ""
+
+                if (!appDatabase.removeTag(tagId)) {
+                    window.showToast(qsTr("删除标签失败"), "error")
+                    return
+                }
+                var page = window.currentPageItem()
+                if (page && page.reload)
+                    page.reload()
+                window.showToast(qsTr("已删除标签「%1」").arg(tagName), "success")
+            }
+        }
+    }
+
+    Component {
+        id: userEditComponent
+
+        UserDialog {
+            database: appDatabase
+            Component.onCompleted: openFor(window.pendingUserRow)
+
+            onDismissed: {
+                window.closeDialog()
+                window.pendingUserRow = null
+            }
+            onAccepted: {
+                // 先把要用来报信的信息读出来：closeDialog() 会让 Loader 立刻销毁本对象
+                var wasEdit = editMode
+                var who = wasEdit ? editingAccount : accountText
+                window.closeDialog()
+                window.pendingUserRow = null
+
+                var page = window.currentPageItem()
+                if (page && page.reload)
+                    page.reload()
+                window.showToast(wasEdit ? qsTr("已保存用户「%1」").arg(who)
+                                         : qsTr("已新增用户「%1」").arg(who), "success")
+            }
+        }
+    }
+
+    Component {
+        id: resetPasswordComponent
+
+        ResetPasswordDialog {
+            database: appDatabase
+            Component.onCompleted: openFor(window.pendingUserRow)
+
+            onDismissed: {
+                window.closeDialog()
+                window.pendingUserRow = null
+            }
+            onAccepted: {
+                var who = displayName.length > 0 ? displayName : account
+                window.closeDialog()
+                window.pendingUserRow = null
+                window.showToast(qsTr("已重置「%1」的密码").arg(who), "success")
+            }
+        }
+    }
+
+    Component {
+        id: confirmDeleteRecordComponent
+
+        ConfirmDialog {
+            title: qsTr("删除采集记录")
+            confirmText: qsTr("删除")
+            danger: true
+            // 说清楚原始文件也会被删：只删记录的话，那句「无法恢复」是假的，
+            // 数据还好端端躺在磁盘上
+            message: window.pendingRecordNoToDelete.length > 0
+                     ? qsTr("确定要删除采集记录「%1」吗？该记录的事件标注与已落盘的原始数据文件都会一并删除，且无法恢复。")
+                           .arg(window.pendingRecordNoToDelete)
+                     : ""
+            onDismissed: window.closeDialog()
+            onAccepted: {
+                var recordNo = window.pendingRecordNoToDelete
+                window.closeDialog()
+                window.pendingRecordNoToDelete = ""
+                if (recordNo.length === 0)
+                    return
+
+                if (!appDatabase.removeSession(recordNo)) {
+                    window.showToast(qsTr("删除记录失败"), "error")
+                    return
+                }
+                var page = window.currentPageItem()
+                if (page && page.reload)
+                    page.reload()
+                window.showToast(qsTr("已删除记录「%1」").arg(recordNo), "success")
+            }
         }
     }
 

@@ -1,5 +1,6 @@
 #include "serialcollector.h"
 
+#include "eegbinformat.h"
 #include "pythonengine.h"
 #include "serialprotocol.h"
 
@@ -48,21 +49,11 @@ constexpr qint64 kFileFlushBytes = 256 * 1024;
 constexpr int kRawBufferSeconds = 180;
 
 // ==================== 二进制格式 ====================
-// 64 字节文件头（全小端），其后是连续的样本记录：
-//   偏移 0   magic[8]      "EEGBIN01"
-//        8   version       u32
-//       12   channels      u32
-//       16   sample_rate   u32
-//       20   header_size   u32（= 64）
-//       24   start_utc_ms  i64
-//       32   frame_count   i64（收尾时回填，写头时置 0）
-//       40   reserved[24]
-// 样本记录：float32 帧优先交错，每帧 channels 个值，单位 µV。
+// 头部字段、magic、头长等常量在 eegbinformat.h 里，**与回放端共用同一份**
+//（recordingpreview.cpp 读的就是它）。以前这里和那边各写一遍、靠注释约定
+//「必须逐字对应」，格式一改就会静默解析出乱码波形。
 // 之所以自己拼字节而不走 QDataStream：格式固定且只有这几行，拼出来一眼能看懂
-constexpr char kBinaryMagic[8] = {'E', 'E', 'G', 'B', 'I', 'N', '0', '1'};
-constexpr quint32 kBinaryVersion = 1;
-constexpr quint32 kBinaryHeaderSize = 64;
-constexpr qint64 kBinaryFrameCountOffset = 32;
+constexpr qint64 kBinaryFrameCountOffset = eegbin::kFrameCountOffset;
 
 void append_u32_le(QByteArray &out, quint32 value)
 {
@@ -294,14 +285,14 @@ bool recording_start(Recorder &recorder, const SerialCollector::StartRequest &re
     else
     {
         QByteArray header;
-        header.append(kBinaryMagic, int(sizeof(kBinaryMagic)));
-        append_u32_le(header, kBinaryVersion);
+        header.append(eegbin::kMagic, int(sizeof(eegbin::kMagic)));
+        append_u32_le(header, eegbin::kVersion);
         append_u32_le(header, static_cast<quint32>(channel_count));
         append_u32_le(header, static_cast<quint32>(sample_rate));
-        append_u32_le(header, kBinaryHeaderSize);
+        append_u32_le(header, eegbin::kHeaderSize);
         append_i64_le(header, QDateTime::currentMSecsSinceEpoch());
         append_i64_le(header, 0);                          // frame_count，收尾回填
-        while (header.size() < static_cast<int>(kBinaryHeaderSize))
+        while (header.size() < static_cast<int>(eegbin::kHeaderSize))
         {
             header.append('\0');
         }

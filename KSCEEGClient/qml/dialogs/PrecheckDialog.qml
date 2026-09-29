@@ -118,10 +118,13 @@ Item {
                   valueColor: Acq.portOpen ? Design.good : Design.bad },
                 { x: 1056, y: 473, label: qsTr("通道"),   value: Acq.channelCount + qsTr("通道") },
                 { x: 682,  y: 559, label: qsTr("采样率"), value: Acq.sample_rate() + "Hz" },
-                // 电极质量**没有数据源**：协议一次只给 4 路不带电极名的阻抗值
-                //（见 serialprotocol.h），推不出「N/16 良好」。与其编一个数字，
-                // 不如写明拿不到
-                { x: 869,  y: 559, label: qsTr("电极质量"), value: qsTr("—") },
+                // 电极质量取工作台那次「阻抗扫描」的结果（由信号估计，见
+                // ElectrodePanel 的说明）。没扫过就写「未扫描」——
+                // 这里原来写的是「—」，看着像扫了但没结果
+                { x: 869,  y: 559, label: qsTr("电极质量"),
+                  value: Acq.electrodeScanValid
+                         ? Design.electrodeQualityText(Acq.electrodeQuality)
+                         : qsTr("未扫描") },
                 { x: 1056, y: 559, label: qsTr("原始数据"), value: qsTr("不过滤保存") }
             ]
 

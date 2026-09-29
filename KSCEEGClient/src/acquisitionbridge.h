@@ -129,6 +129,17 @@ class AcquisitionBridge : public QObject, public ChunkSink
     Q_PROPERTY(QVariantList events READ events NOTIFY eventsChanged)
     Q_PROPERTY(int eventCount READ event_count NOTIFY eventsChanged)
 
+    // ---- 电极接触质量（面板上的「阻抗扫描」）----
+    // 每一项：{ channel, name, level, ratio, noiseUV, text }
+    Q_PROPERTY(QVariantList electrodeQuality READ electrode_quality NOTIFY electrodeQualityChanged)
+    // 一句话小结：「良好 13 · 一般 2 · 不良 1 · 脱落 0」，扫描后给界面提示用
+    Q_PROPERTY(QString electrodeSummary READ electrode_summary NOTIFY electrodeQualityChanged)
+    // 扫描还没做过时为 false，界面据此决定显示设计稿的静态样式还是真实结果
+    Q_PROPERTY(bool electrodeScanValid READ electrode_scan_valid NOTIFY electrodeQualityChanged)
+    // 16 路的电极二维位置：{ name, x, y }，相对头半径的百分比（与地形图同源）。
+    // 暴露出来是为了让电极面板能在自己的坐标系里算「哪个真实通道离这个点位最近」
+    Q_PROPERTY(QVariantList electrodeMap READ electrode_map CONSTANT)
+
 public:
     explicit AcquisitionBridge(PythonEngine *engine, QObject *parent = nullptr);
     ~AcquisitionBridge() override;
@@ -166,8 +177,25 @@ public:
 
     // 采样率，状态栏与「数据点」显示用
     Q_INVOKABLE int sample_rate() const { return m_sample_rate; }
-    // 事件：手动标记，时间取自采集计时与墙钟
-    Q_INVOKABLE void add_event(const QString &label);
+    // 电极接触质量扫描（面板上的「阻抗扫描」按钮）。
+    //
+    // **设备没有可用的电极级阻抗**：当前协议一次只给 4 路不带电极名的值
+    //（见 serialprotocol.h 的 parse_impedance_kohm），而界面要的是 16 路带导联名的。
+    // 所以这里量的是**信号本身**：电极贴不牢时接触噪声会明显抬高，噪声底从原始
+    // 数据里测得出来。返回的 level 是据此分的档，text 给的是测得的噪声值 ——
+    // 不换算成 kΩ，那个数字编不出来。
+    //
+    // 待硬件侧提供电极级阻抗接口后，这个函数是**唯一的替换点**：把读原始缓冲
+    // 改成发命令、读回值即可，QML 那一侧不用动（它只认
+    // electrodeQuality / electrodeSummary / electrodeScanValid 这三样）
+    Q_INVOKABLE bool scan_electrodes();
+    // 事件：手动标记，时间取自采集计时与墙钟。
+    // color 留空时用默认的事件紫；系统设置里建过标签的话由界面把标签色传进来，
+    // 这样同一个标签在事件列表和波形竖线上是同一个颜色
+    Q_INVOKABLE void add_event(const QString &label, const QString &color = QString());
+    // 改某条事件的标签（事件列表里那一行的下拉）。越界返回 false
+    Q_INVOKABLE bool set_event_label(int index, const QString &label,
+                                     const QString &color = QString());
     Q_INVOKABLE void remove_event(int index);
     Q_INVOKABLE void clear_events();
     // 本次采集已经过去多少秒。波形面板用它把事件定位到当前显示窗口里的横向位置
@@ -246,6 +274,11 @@ public:
     QVariantList events() const { return m_events; }
     int event_count() const { return m_events.size(); }
 
+    QVariantList electrode_quality() const { return m_electrode_quality; }
+    QString electrode_summary() const { return m_electrode_summary; }
+    bool electrode_scan_valid() const { return m_electrode_scan_valid; }
+    QVariantList electrode_map() const;
+
     bool demo_source() const { return m_demo_enabled; }
 
 public slots:
@@ -286,6 +319,7 @@ signals:
     void spectrumRevisionChanged();
     void spectrumChannelChanged();
     void eventsChanged();
+    void electrodeQualityChanged();
     void demoSourceChanged();
     // 给界面的日志区
     void logMessage(const QString &message);
@@ -425,6 +459,11 @@ private:
     // 事件
     QVariantList m_events;
     QElapsedTimer m_collect_timer;
+
+    // 电极接触质量的最近一次扫描结果
+    QVariantList m_electrode_quality;
+    QString m_electrode_summary;
+    bool m_electrode_scan_valid = false;
 
     QStringList m_available_ports;
     bool m_port_open = false;

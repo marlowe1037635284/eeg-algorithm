@@ -31,40 +31,97 @@ Item {
     // 所以由外层传进来而不是从库里读
     property string currentPatientNo: ""
 
+    // ---------- 数据 ----------
     // 列表来自 patients 表。Q_INVOKABLE 没有变更通知，用一个 revision 显式触发重算：
     // 进页面、新增或删除患者之后调 reload()
     property int revision: 0
-    function reload() { revision++ }
+    function reload() {
+        revision++
+        clampPage()
+    }
 
-    readonly property var patients: {
+    readonly property var allPatients: {
         revision   // 绑定依赖
         return database ? database.patients() : []
     }
 
-    function isCurrent(no) { return no === root.currentPatientNo && no !== "" }
+    // ---------- 搜索 / 筛选 / 分页 ----------
+    // 三个列表页共用同一套：搜索词 + 一个下拉筛选 + 分页。
+    // 原来这一页的搜索框和科室下拉都是画出来的色块，点不动也筛不了
+    property string searchText: ""
+    property int deptFilter: 0            // deptChoices 的下标，0 = 全部科室
+    property int currentPage: 1
 
-    // ---------- 列表滚动 ----------
-    // 设计稿右侧**没有滚动条**，所以默认不画；只有真的放不下时才出现。
-    //
-    // 不套裁剪容器：套了以后行就从「内容槽坐标系」变成「容器坐标系」，
-    // 每一处 x/y 都要重算一遍（档案列表那次就是这么错的）。这里改成
-    // 只渲染看得见的那几行，坐标体系完全不动
+    // 科室下拉的选项从**库里实际有的科室**归纳，不另写一份固定表：
+    // 写死的话，新增患者时填了表外的科室，这里就永远筛不出来
+    readonly property var deptChoices: {
+        var names = [qsTr("全部科室")]
+        for (var i = 0; i < allPatients.length; ++i) {
+            var dept = allPatients[i].dept
+            if (dept.length > 0 && names.indexOf(dept) < 0)
+                names.push(dept)
+        }
+        return names
+    }
+    readonly property string deptKeyword:
+        (deptFilter > 0 && deptFilter < deptChoices.length) ? deptChoices[deptFilter] : ""
+
+    readonly property var filteredPatients: {
+        var keyword = searchText.trim().toLowerCase()
+        var result = []
+        for (var i = 0; i < allPatients.length; ++i) {
+            var row = allPatients[i]
+            if (deptKeyword.length > 0 && row.dept !== deptKeyword)
+                continue
+            if (keyword.length > 0) {
+                // 与设计稿的提示一致：病历号 / 姓名 / 诊断
+                var haystack = (row.no + " " + row.name + " " + row.diag).toLowerCase()
+                if (haystack.indexOf(keyword) < 0)
+                    continue
+            }
+            result.push(row)
+        }
+        return result
+    }
+
+    // 改搜索词或换科室之后回到第 1 页：留在第 3 页看一份只剩两条的结果没有意义
+    onSearchTextChanged: currentPage = 1
+    onDeptFilterChanged: currentPage = 1
+
+    // 科室选项是从数据里归纳的，会随患者增减伸缩。原来选中的那个科室
+    // 如果最后一个患者被删掉，下标就悬空了 —— 回到「全部科室」，
+    // 而不是留一个空的下拉框配一张完整的表
+    onDeptChoicesChanged: {
+        if (deptFilter >= deptChoices.length)
+            deptFilter = 0
+    }
+
+    function resetFilters() {
+        searchText = ""
+        deptFilter = 0
+        currentPage = 1
+    }
+
+    // 删掉患者之后当前页可能已经不存在了（停在最后一页时最常遇到）
+    function clampPage() {
+        const pages = Math.max(1, Math.ceil(filteredPatients.length / pageSize))
+        currentPage = Math.max(1, Math.min(pages, currentPage))
+    }
+
     readonly property int rowHeight: 51
     readonly property int bodyTop: 52          // 表头高 52，第一行紧接其后
     readonly property int bodyHeight: 788
-    readonly property int visibleRowCount: Math.floor(bodyHeight / rowHeight)
-    readonly property real maxScroll: Math.max(0, patients.length * rowHeight - bodyHeight)
-    property real listScroll: 0
-    function scrollBy(delta) {
-        listScroll = Math.max(0, Math.min(maxScroll, listScroll + delta))
+    // 一屏正好装下的行数。分页之后每页就这么多行，滚动条自然不再出现 ——
+    // 设计稿给的是分页，不是滚动
+    readonly property int pageSize: Math.floor(bodyHeight / rowHeight)
+
+    // 当前页的那一段
+    readonly property var patients: {
+        const start = (currentPage - 1) * pageSize
+        return filteredPatients.slice(start, start + pageSize)
     }
-    // 第一个可见行的下标。行渲染的是 patients 的一个切片
-    readonly property int firstVisibleRow: Math.floor(listScroll / rowHeight)
-    readonly property bool scrollBarVisible: maxScroll > 0
-    readonly property real scrollThumbHeight:
-        Math.max(40, bodyHeight * bodyHeight / Math.max(1, patients.length * rowHeight))
-    readonly property real scrollThumbY:
-        bodyTop + (bodyHeight - scrollThumbHeight) * (maxScroll > 0 ? listScroll / maxScroll : 0)
+
+    function isCurrent(no) { return no === root.currentPatientNo && no !== "" }
 
     // 表格列 x（设计稿坐标 272/442/597/752/907/1062/1217/1403/1559 减去卡片原点 201）
     readonly property var columnX: [71, 241, 396, 551, 706, 861, 1016, 1202, 1358]
@@ -76,7 +133,9 @@ Item {
         // 底栏指标从真实数据来。原来那一串（256Hz、电极 10/16 良好、患者「张文强」）
         // 是写死的，与页面上的实际值互相矛盾
         statusItems: {
-            var items = [qsTr("患者：") + root.patients.length + qsTr(" 位")]
+            var items = [qsTr("患者：") + root.allPatients.length + qsTr(" 位")]
+            if (root.filteredPatients.length !== root.allPatients.length)
+                items.push(qsTr("筛选后：") + root.filteredPatients.length + qsTr(" 位"))
             if (root.currentPatientNo.length > 0)
                 items.push(qsTr("当前：") + root.currentPatientNo)
             return items
@@ -121,34 +180,18 @@ Item {
         }
 
         // ---------- 数据行 ----------
-        // 表格区的滚轮。放在行**之前**声明，所以行和行内按钮仍然先收到点击；
-        // acceptedButtons: NoButton 让它只收滚轮事件
-        MouseArea {
-            x: -47
-            y: root.bodyTop
-            width: 1794
-            height: root.bodyHeight
-            acceptedButtons: Qt.NoButton
-            onWheel: (wheel) => { console.log('wheel delta=' + wheel.angleDelta.y + ' max=' + root.maxScroll); root.scrollBy(-wheel.angleDelta.y / 3) }
-        }
-
         Repeater {
-            // 只渲染看得见的那几行（多一行做缓冲）。这样既不用裁剪容器，
-            // 也不会在患者很多时白画几百行
-            model: root.patients.slice(root.firstVisibleRow,
-                                       root.firstVisibleRow + root.visibleRowCount + 1)
+            // 只渲染**当前页**的那一段（patients 已经是切片）
+            model: root.patients
 
             delegate: Item {
                 required property var modelData
                 required property int index
 
-                // 切片里的下标要还原成整张表里的下标，斑马纹和行位置都靠它
-                readonly property int realIndex: root.firstVisibleRow + index
                 // 设计稿里表头高 52、第一行紧接其后，所以行起点是 52 + 51*i。
                 // 这里原先是 68，整张表往下偏了 16px；而分隔线又写成 rowY+35，
                 // 正好把偏差凑了回去 —— 行位置错了、分隔线还落在行中间
-                readonly property int rowY:
-                    root.bodyTop + root.rowHeight * realIndex - root.listScroll
+                readonly property int rowY: root.bodyTop + root.rowHeight * index
                 // 行内元素一律按「在 51 高的行里居中」排：
                 // 文字约 20 高 → +16；按钮 31 高 → +10；「当前」标记 17 高 → +16。
                 // 历史记录页用的就是这套偏移，两页保持一致
@@ -159,7 +202,7 @@ Item {
                     width: 1794
                     height: 51
                     color: Qt.rgba(1, 1, 1, 0.25)
-                    visible: (realIndex % 2) === 0
+                    visible: (index % 2) === 0
                 }
 
                 // 点整行 = 把这位患者设为当前患者。
@@ -171,9 +214,6 @@ Item {
                     height: 51
                     cursorShape: Qt.PointingHandCursor
                     onClicked: root.patientActivated(modelData.no)
-                    // 滚轮挂在行上而不是下面那个背景层：行在这一层之上，
-                    // 滚轮事件被行吃掉后只会往父链冒泡，到不了下面的兄弟
-                    onWheel: (wheel) => root.scrollBy(-wheel.angleDelta.y / 3)
                 }
 
                 Text { x: 68;  y: rowY + 16; text: modelData.no;   color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
@@ -250,154 +290,57 @@ Item {
         }
 
         // ---------- 空态 ----------
-        // 库里一位患者都没有时，表格区是空的；不写一句话的话看起来像没加载出来
+        // 库里一位患者都没有时，表格区是空的；不写一句话的话看起来像没加载出来。
+        // 「一位都没有」和「筛完没有了」是两回事，提示语也要分开 ——
+        // 筛没的时候让用户去「新增患者」，他会以为自己的数据丢了
         Text {
             x: 71
             y: 200
+            width: 1400
             visible: root.patients.length === 0
-            text: qsTr("暂无患者，点右上角「新增患者」登记一位")
+            text: root.allPatients.length === 0
+                  ? qsTr("暂无患者，点右上角「新增患者」登记一位")
+                  : qsTr("没有符合当前条件的患者，试试换个搜索词或科室")
             color: Design.textMuted
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
 
-        // ---------- 右侧滚动条 ----------
-        // 设计稿里没有这条；只有患者多到一屏放不下时才出现，
-        // 而且滑块高度与位置跟着实际内容走（原来是一条常驻的轨道 + 一个写死的滑块，
-        // 只有一位患者时它也挂在那儿，而且滑块位置和内容毫无关系）
-        Rectangle {
-            x: 1686
-            y: root.bodyTop
-            width: 7
-            height: root.bodyHeight
-            radius: 4
-            color: Qt.rgba(0.478, 0.478, 0.478, 0.10)
-            visible: root.scrollBarVisible
-        }
-
-        Rectangle {
-            x: 1686
-            y: root.scrollThumbY
-            width: 7
-            height: root.scrollThumbHeight
-            radius: 4
-            color: Qt.rgba(0.4, 0.4, 0.4, 0.28)
-            visible: root.scrollBarVisible
-        }
-
         // ---------- 分页 ----------
-        Text {
-            x: 19
-            y: 846
-            text: qsTr("共 %1 条记录（当前显示 %1 条）").arg(root.patients.length)
-            color: Design.textSecondary
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
-        }
-
-        Rectangle {
-            x: 1531
+        // 设计稿这一段是「共 N 条记录（当前显示 M 条）」+ 上一页 / 1/1 / 下一页。
+        // 原来三个元素都是写死的静态文字，按钮连点击区都没有
+        Pager {
+            x: 0
             y: 842
-            width: 53
-            height: 29
-            radius: 6
-            color: Design.primarySoft
-            border.width: 1
-            border.color: Design.panelBorder
-
-            Text {
-                anchors.centerIn: parent
-                text: qsTr("上一页")
-                color: "#3b3b3b"
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 14
-            }
-        }
-
-        Rectangle {
-            x: 1631
-            y: 842
-            width: 53
-            height: 29
-            radius: 6
-            color: Design.primarySoft
-            border.width: 1
-            border.color: Design.panelBorder
-
-            Text {
-                anchors.centerIn: parent
-                text: qsTr("下一页")
-                color: "#3b3b3b"
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 14
-            }
-        }
-
-        Text {
-            x: 1596
-            y: 845
-            text: "1/1"
-            color: "#000000"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
+            totalCount: root.allPatients.length
+            filteredCount: root.filteredPatients.length
+            pageSize: root.pageSize
+            currentPage: root.currentPage
+            onPageRequested: (page) => root.currentPage = page
         }
     }
 
     // ---------- 标题条右侧的筛选/操作控件（设计稿绝对坐标）----------
-    Rectangle {
+    SearchField {
         x: 1374
         y: 79
         width: 215
         height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 13
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("搜索病历号/姓名/诊断")
-            color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.3)
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
+        placeholder: qsTr("搜索病历号/姓名/诊断")
+        // 即时过滤：列表就那么几十行，按一次键重算一遍完全跟得上，
+        // 不必再要求用户按回车
+        onTextChanged: root.searchText = text
     }
 
-    Rectangle {
+    ChoiceField {
         x: 1601
         y: 79
         width: 126
         height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 10
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("全部科室")
-            color: "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
-
-        Image {
-            x: 109
-            anchors.verticalCenter: parent.verticalCenter
-            width: 7.47
-            height: 7
-            rotation: 90
-            source: Design.assetRoot + "icons/icon-arrow-down.svg"
-        }
+        choices: root.deptChoices
+        currentIndex: root.deptFilter
+        onActivated: (index) => root.deptFilter = index
     }
 
     Rectangle {

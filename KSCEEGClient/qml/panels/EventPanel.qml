@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import KSCEEGClient
 
 // 「事件标注」面板。
@@ -13,6 +14,27 @@ Item {
     readonly property var eventModel: Acq.events
     property int eventCount: Acq.eventCount
 
+    // 采集是否进行中。事件要挂在「采集开始以来的第几秒」上，没在采集时标了
+    // 也没有时间基准可用，所以按钮在待机时是禁用的
+    property bool collecting: false
+
+    // 可选的标签。来自系统设置里的「标签管理」（由工作台传进来）。
+    // 一个标签都没建过时退回一项「手动标记」—— 否则标记按钮就没得选了
+    property var tags: []
+    readonly property var tagNames: {
+        var names = []
+        for (var i = 0; i < tags.length; ++i)
+            names.push(tags[i].name)
+        return names.length > 0 ? names : [qsTr("手动标记")]
+    }
+    property int tagIndex: 0
+
+    // 标签色跟着标签走，事件列表里的圆点与波形上的竖线用同一个颜色
+    function tagColorAt(index) {
+        return (index >= 0 && index < tags.length && tags[index].color.length > 0)
+                ? tags[index].color : "#7c3aed"
+    }
+
     // 事件列表可视 3 行，超出部分滚轮滚动（设计稿画了 3 行 + 一根滚动条）
     property real eventScroll: 0
     readonly property int eventRowHeight: 44
@@ -23,9 +45,16 @@ Item {
         Acq.clear_events()
     }
 
-    // 时间戳交给 C++ 取（它才有采集计时与墙钟），这里只传标签
-    function addEvent(label) {
-        Acq.add_event(label)
+    // 时间戳交给 C++ 取（它才有采集计时与墙钟），这里只传标签与颜色
+    function addEvent() {
+        Acq.add_event(tagNames[tagIndex], tagColorAt(tagIndex))
+    }
+
+    // 改某条事件的标签：列表里那一行的下拉直接改，不再删掉重标 ——
+    // 事件在时间轴上的位置是按当时那一刻记的，删了重标就落到别的时间点去了
+    function relabelEvent(index, label) {
+        var at = tagNames.indexOf(label)
+        Acq.set_event_label(index, label, tagColorAt(at))
     }
 
     Rectangle {
@@ -99,38 +128,21 @@ Item {
         width: 321
     }
 
-    // 手动标记下拉（设计稿里是静态样式，这里保留外观）
-    Rectangle {
+    // 手动标记下拉。设计稿里只是一个写着「手动标记」的色块，
+    // 这里接成真的可选列表 —— 标签就是系统设置里维护的那一份
+    ChoiceField {
         x: 14
         y: 60
         width: 141
         height: 29
-        radius: 10
-        color: Design.primarySoft
-
-        Text {
-            x: 11
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("手动标记")
-            color: "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
-        }
-
-        Image {
-            x: 132
-            anchors.verticalCenter: parent.verticalCenter
-            width: 7.47
-            height: 7
-            rotation: 90
-            source: Design.assetRoot + "icons/icon-arrow-down.svg"
-        }
+        pixelSize: 14
+        fieldRadius: 10
+        choices: root.tagNames
+        currentIndex: root.tagIndex
+        onActivated: (index) => root.tagIndex = index
     }
 
-    // 标记事件按钮
+    // 标记事件按钮。待机时压暗并禁用：没有采集起点就没有「第几秒」可言
     Rectangle {
         x: 162
         y: 60
@@ -138,6 +150,7 @@ Item {
         height: 29
         radius: 12
         color: markMouse.pressed ? "#64879f" : Design.primary
+        opacity: root.collecting ? 1.0 : 0.45
 
         Text {
             anchors.centerIn: parent
@@ -151,8 +164,14 @@ Item {
         MouseArea {
             id: markMouse
             anchors.fill: parent
+            enabled: root.collecting
+            hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.addEvent(qsTr("手动"))
+            onClicked: root.addEvent()
+
+            ToolTip.visible: containsMouse && !root.collecting
+            ToolTip.text: qsTr("请先开始采集再标记事件")
+            ToolTip.delay: 300
         }
     }
 
@@ -215,35 +234,27 @@ Item {
                     font.pixelSize: 12
                 }
 
-                Text {
-                    x: 163
-                    y: rowY + 3
-                    height: 22
-                    verticalAlignment: Text.AlignVCenter
-                    text: modelData.label
-                    color: Design.textSecondary
-                    font.family: Design.fontFamily
-                    font.styleName: Design.styleRegular
-                    font.pixelSize: 16
-                }
+                // 标签名不再单独画一个 Text：它由下面那个下拉显示。
+                // 两个都留的话，下拉那层底是半透明的，两层字会叠在一起
 
-                // 标签下拉
-                Rectangle {
+                // 标签下拉。原来只是一个画出来的灰块 —— 标错标签只能删掉重标，
+                // 而重标会把事件挪到当前时刻，时间点就丢了。
+                // 这里直接改标签名，事件在时间轴上的位置保持不变。
+                //
+                // currentIndex 允许是 -1：标签被删掉之后，老事件身上还留着
+                // 那个已经不在列表里的名字。这时用 placeholder 显示它自己的标签，
+                // 而不是硬凑成第 0 项 —— 那会让界面显示一个跟事实不符的标签
+                ChoiceField {
                     x: 148
                     y: rowY
                     width: 116
                     height: 27
-                    radius: 10
-                    color: Qt.rgba(0.561, 0.561, 0.561, 0.10)
-
-                    Image {
-                        x: 108
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: 7.47
-                        height: 7
-                        rotation: 90
-                        source: Design.assetRoot + "icons/icon-arrow-down.svg"
-                    }
+                    pixelSize: 13
+                    fieldRadius: 10
+                    choices: root.tagNames
+                    placeholder: modelData.label
+                    currentIndex: root.tagNames.indexOf(modelData.label)
+                    onActivated: (tagAt) => root.relabelEvent(index, root.tagNames[tagAt])
                 }
 
                 // 删除按钮

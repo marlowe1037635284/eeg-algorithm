@@ -80,13 +80,16 @@ Item {
         border.width: 1
         border.color: Design.pillBorder
 
+        // 设备连接状态接的是真实值。原来所有业务页都写死「已连接」+ 绿灯，
+        // 而采集工作台那一处是绑 Acq 的 —— 同一台机器上拔掉串口，两个页面对
+        // 同一件事给出相反的答案
         Rectangle {
             x: 13
             y: 10
             width: 8
             height: 8
             radius: 4
-            color: Design.good
+            color: Acq.portOpen ? Design.good : Design.offline
         }
 
         Text {
@@ -94,7 +97,7 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: qsTr("Neurolink-6016 已连接")
+            text: Acq.portOpen ? qsTr("Neurolink-6016 已连接") : qsTr("Neurolink-6016 未连接")
             color: "#4f4f4f"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -117,7 +120,8 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: qsTr("电极贴合  16/16 良好")
+            // 工作台上扫过阻抗之后，这几处显示的都是同一份结果
+            text: Design.electrodePillText(Acq.electrodeScanValid ? Acq.electrodeQuality : [])
             color: "#4f4f4f"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular

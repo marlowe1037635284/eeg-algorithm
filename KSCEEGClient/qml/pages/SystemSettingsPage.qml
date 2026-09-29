@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Dialogs
 import KSCEEGClient
 
 // 「系统设置」页。设计稿画板 1920×1080，用 AppShell 当外壳。
@@ -8,6 +10,10 @@ import KSCEEGClient
 //   - 放进 AppShell 内容槽里的东西，坐标要减去内容卡片原点 (154,150)。
 // 内容槽里的四个设置面板再各自以「面板」为原点摆放子元素（省去大量 +216/+1057 的平移），
 // 每个面板上都注明了它在设计稿里的绝对原点，方便逐条对照施工图。
+//
+// 数据落点：所有设置项存在 app_settings 表里，标签存在 tags 表里。
+// 原来这一页整页都是静态的 —— 5 行设置全是画出来的色块、标签表是两份写死的假数据、
+// 「浏览」「保存设置」点了没反应、标签的编辑/删除也没有行为。
 Item {
     id: root
 
@@ -15,22 +21,106 @@ Item {
     property string userName: qsTr("管理员")
     property string userRole: qsTr("管理员")
 
+    // 应用数据库，由外层注入
+    property var database
+
     signal navRequested(string label)
     signal logoutRequested()
     signal newTagRequested()
-    // 设计稿顶栏右侧画了「保存设置」，这里给出对应的信号
-    signal saveRequested()
+    signal editTagRequested(var tag)
+    // 删除标签是不可撤销的（设计稿的提示条也这么写），交给外层弹确认框
+    signal deleteTagRequested(int tagId, string tagName)
+    // 保存成功，外层弹轻提示
+    signal saved()
 
-    // 标签表数据。设计稿只画了 2 行，均为 rTMS / 101,102；第 1 行带白底高亮（当前选中行）。
-    readonly property var tags: [
-        { name: "rTMS", code: "101,102", color: "#295da1", selected: true },
-        { name: "rTMS", code: "101,102", color: "#876ee3", selected: false }
-    ]
+    // ---------- 标签 ----------
+    // Q_INVOKABLE 没有变更通知，用一个 revision 显式触发重算
+    property int revision: 0
+    function reload() { revision++ }
+
+    readonly property var tags: {
+        revision
+        return database ? database.tags() : []
+    }
+
+    // ---------- 设置项草稿 ----------
+    // 打开页面时从库里读一次，之后改的是本地副本；点「保存设置」才整体写回。
+    // 边改边写的话，改错了连反悔的机会都没有
+    property string recordDir: "D:\\EEGData\\Records"
+    property int saveIntervalIndex: 1
+    property int fileFormatIndex: 0
+    property int channelCountIndex: 2
+    property int impedanceThresholdIndex: 1
+
+    readonly property var saveIntervalChoices: [qsTr("5分钟"), qsTr("10分钟"), qsTr("30分钟")]
+    readonly property var saveIntervalValues: ["5", "10", "30"]
+    readonly property var fileFormatChoices: [qsTr("BDF（.bdf）"), qsTr("EDF（.edf）"), qsTr("EEG（.eeg）")]
+    readonly property var fileFormatValues: ["bdf", "edf", "eeg"]
+    readonly property var channelCountChoices: [qsTr("4通道"), qsTr("8通道"), qsTr("16通道")]
+    readonly property var channelCountValues: [4, 8, 16]
+    readonly property var impedanceChoices: [qsTr("5kΩ"), qsTr("10kΩ"), qsTr("20kΩ")]
+    readonly property var impedanceValues: ["5", "10", "20"]
+
+    function loadSettings() {
+        if (!database)
+            return
+        recordDir = database.setting("record_dir", "D:\\EEGData\\Records")
+        saveIntervalIndex = Math.max(0, saveIntervalValues.indexOf(
+                                        database.setting("auto_save_minutes", "10")))
+        fileFormatIndex = Math.max(0, fileFormatValues.indexOf(
+                                      database.setting("record_format", "bdf")))
+        channelCountIndex = Math.max(0, channelCountValues.indexOf(
+                                        Number(database.setting("default_channels", "16"))))
+        impedanceThresholdIndex = Math.max(0, impedanceValues.indexOf(
+                                              database.setting("low_impedance_kohm", "10")))
+    }
+
+    function saveSettings() {
+        if (!database)
+            return
+
+        database.setSetting("record_dir", recordDir)
+        database.setSetting("auto_save_minutes", saveIntervalValues[saveIntervalIndex])
+        database.setSetting("record_format", fileFormatValues[fileFormatIndex])
+        database.setSetting("default_channels", String(channelCountValues[channelCountIndex]))
+        database.setSetting("low_impedance_kohm", impedanceValues[impedanceThresholdIndex])
+
+        // 「默认通道数」顺带应用到工作台的档位，否则这个设置要等到下次开程序
+        // 才看得出效果，等于没生效。采集进行中不动它 —— 泳道数量在中途变样
+        // 会让人以为数据出了问题
+        if (!Acq.collecting)
+            Acq.channelCount = channelCountValues[channelCountIndex]
+
+        saved()
+    }
+
+    // file:///D:/x/y → D:\x\y。只为文件对话框服务，不引入额外的模块
+    function pathFromUrl(url) {
+        var text = url.toString()
+        if (text.indexOf("file:///") === 0)
+            text = text.substring(8)
+        return decodeURIComponent(text).replace(/\//g, "\\")
+    }
+
+    FolderDialog {
+        id: folderDialog
+        title: qsTr("选择记录保存目录")
+        onAccepted: root.recordDir = root.pathFromUrl(selectedFolder)
+    }
+
+    // 采集默认值的「默认采样率」是只读的：设备按固定的 1000 Hz 出帧，
+    // 这个值必须与设备一致，不能由用户改（改了只会让时间轴与算法的时间基准全错）
+    readonly property string deviceRateText: Acq.sample_rate() + "Hz"
 
     AppShell {
         anchors.fill: parent
         pageTitle: qsTr("系统设置")
         currentNav: qsTr("系统设置")
+        statusItems: {
+            var items = [qsTr("标签：") + root.tags.length + qsTr(" 个")]
+            items.push(qsTr("记录目录：") + root.recordDir)
+            return items
+        }
         userName: root.userName
         userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
@@ -78,11 +168,16 @@ Item {
                 y: 64
                 width: 154
                 horizontalAlignment: Text.AlignRight
-                text: "D:\\EEGData\\Records"
+                elide: Text.ElideLeft
+                text: root.recordDir
                 color: Design.textSecondary
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 16
+
+                ToolTip.visible: pathMouse.containsMouse
+                ToolTip.text: root.recordDir
+                ToolTip.delay: 400
             }
 
             Rectangle {
@@ -91,7 +186,7 @@ Item {
                 width: 59
                 height: 32
                 radius: 10
-                color: Design.primarySoft
+                color: browseMouse.pressed ? Qt.rgba(0.44, 0.57, 0.67, 0.22) : Design.primarySoft
                 border.width: 1
                 border.color: Design.panelBorder
 
@@ -103,6 +198,26 @@ Item {
                     font.styleName: Design.styleMedium
                     font.pixelSize: 14
                 }
+
+                MouseArea {
+                    id: browseMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: folderDialog.open()
+                }
+            }
+
+            // 路径文字本身也可以点开目录选择：看到路径不对时第一反应是点它
+            MouseArea {
+                id: pathMouse
+                x: 582
+                y: 59
+                width: 154
+                height: 32
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: folderDialog.open()
             }
 
             Rectangle {
@@ -117,14 +232,18 @@ Item {
                 x: 0
                 y: 122
                 label: qsTr("自动保存间隔")
-                value: qsTr("10分钟")
+                choices: root.saveIntervalChoices
+                currentIndex: root.saveIntervalIndex
+                onActivated: (index) => root.saveIntervalIndex = index
             }
 
             SettingRow {
                 x: 0
                 y: 181
                 label: qsTr("记录文件格式")
-                value: qsTr("BDF（.bdf）")
+                choices: root.fileFormatChoices
+                currentIndex: root.fileFormatIndex
+                onActivated: (index) => root.fileFormatIndex = index
                 dividerBelow: false   // 末行的分隔线正好压在面板下边缘，设计稿没画
             }
         }
@@ -154,18 +273,23 @@ Item {
                 font.pixelSize: 18
             }
 
+            // 只读：设备的采样率不能改，写成下拉框只会让人以为能改
             SettingRow {
                 x: 0
                 y: 64
                 label: qsTr("默认采样率")
-                value: qsTr("256Hz")
+                readOnly: true
+                value: root.deviceRateText
+                hint: qsTr("由设备决定")
             }
 
             SettingRow {
                 x: 0
                 y: 122
                 label: qsTr("默认通道数")
-                value: qsTr("16通道")
+                choices: root.channelCountChoices
+                currentIndex: root.channelCountIndex
+                onActivated: (index) => root.channelCountIndex = index
             }
 
             SettingRow {
@@ -173,7 +297,9 @@ Item {
                 y: 180
                 label: qsTr("低阻抗自动提醒")
                 hint: qsTr("阈值")
-                value: qsTr("10kΩ")
+                choices: root.impedanceChoices
+                currentIndex: root.impedanceThresholdIndex
+                onActivated: (index) => root.impedanceThresholdIndex = index
                 dividerBelow: false   // 末行的分隔线正好压在面板下边缘，设计稿没画
             }
         }
@@ -233,6 +359,21 @@ Item {
                 font.styleName: Design.styleMedium
                 font.pixelSize: 18
             }
+
+            // 数据库文件路径。设计稿没有这一项 —— 本地库是这台机器上的全部数据，
+            // 找不到文件就没法备份/迁移，而它藏在源码目录里平时根本看不见
+            Text {
+                x: 10
+                y: 300
+                width: 808
+                horizontalAlignment: Text.AlignHCenter
+                elide: Text.ElideMiddle
+                text: qsTr("数据文件：") + (root.database ? root.database.databasePath : "")
+                color: Design.textMuted
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 12
+            }
         }
 
         // ================= 右栏 · 标签管理（设计稿 @1057,164 828×856）=================
@@ -258,6 +399,18 @@ Item {
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 18
+            }
+
+            Text {
+                x: 100
+                y: 9
+                height: 28
+                verticalAlignment: Text.AlignVCenter
+                text: qsTr("共 %1 个").arg(root.tags.length)
+                color: Design.textMuted
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
             }
 
             // 表格外框（设计稿 807×714）
@@ -317,7 +470,7 @@ Item {
                         width: 807
                         height: 51
                         color: Qt.rgba(1, 1, 1, 0.25)
-                        visible: modelData.selected
+                        visible: index === 0
                     }
 
                     Rectangle {
@@ -326,7 +479,7 @@ Item {
                         width: 18
                         height: 18
                         radius: 4
-                        color: modelData.color
+                        color: modelData.color.length > 0 ? modelData.color : Design.primary
                     }
 
                     Text {
@@ -352,8 +505,10 @@ Item {
                         Text {
                             x: 12
                             anchors.verticalCenter: parent.verticalCenter
-                            text: modelData.code
-                            color: "#3b3b3b"
+                            width: parent.width - 24
+                            elide: Text.ElideRight
+                            text: modelData.code.length > 0 ? modelData.code : qsTr("未设置")
+                            color: modelData.code.length > 0 ? "#3b3b3b" : Design.textMuted
                             font.family: Design.fontFamily
                             font.styleName: Design.styleRegular
                             font.pixelSize: 14
@@ -365,6 +520,7 @@ Item {
                         y: parent.rowY + 11
                         width: 59
                         text: qsTr("编辑")
+                        onClicked: root.editTagRequested(modelData)
                     }
 
                     TagAction {
@@ -372,6 +528,7 @@ Item {
                         y: parent.rowY + 11
                         width: 59
                         text: qsTr("删除")
+                        onClicked: root.deleteTagRequested(modelData.id, modelData.name)
                     }
 
                     // 行分隔线：设计稿是主色 30%，比通用 divider（主色 20%）略重，照抄设计稿的 alpha
@@ -381,8 +538,21 @@ Item {
                         width: 789
                         height: 1
                         color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.30)
+                        visible: index < root.tags.length - 1
                     }
                 }
+            }
+
+            // 一个标签都没有时说明该点哪儿，否则表格区一大片空白看着像没加载出来
+            Text {
+                x: 31
+                y: 120
+                visible: root.tags.length === 0
+                text: qsTr("还没有标签，点下方「新增标签」建一个")
+                color: Design.textMuted
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 16
             }
 
             // 新建标签按钮（设计稿 807×43，加号 + 文字整体居中）
@@ -474,7 +644,7 @@ Item {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.saveRequested()
+            onClicked: root.saveSettings()
         }
     }
 
@@ -484,11 +654,17 @@ Item {
         id: settingRow
 
         property string label: ""
+        // 只读行直接显示这个值
         property string value: ""
         // 「阈值」这类夹在标签和下拉框之间的灰字提示，只有低阻抗那一行有
         property string hint: ""
-        // 每块面板的最后一行下面没有分隔线（设计稿里那条线正好和面板下边缘重合）
         property bool dividerBelow: true
+        // 只读：不画下拉框也不可点，值直接写在框里（设备决定的值，如采样率）
+        property bool readOnly: false
+
+        property var choices: []
+        property int currentIndex: 0
+        signal activated(int index)
 
         width: 828
         height: 58
@@ -523,32 +699,38 @@ Item {
             visible: settingRow.dividerBelow
         }
 
+        // 只读行：灰底 + 数值，不给箭头也不给点击 —— 看不出能点，就不会有人去点
         Rectangle {
             x: 668
             y: -4
             width: 142
             height: 29
             radius: 10
-            color: Design.primarySoft
+            visible: settingRow.readOnly
+            color: Design.panelFillSoft
 
             Text {
                 x: 12
                 anchors.verticalCenter: parent.verticalCenter
                 text: settingRow.value
-                color: "#3b3b3b"
+                color: Design.textSecondary
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 14
             }
+        }
 
-            Image {
-                x: 132.5
-                anchors.verticalCenter: parent.verticalCenter
-                width: 7.47
-                height: 7
-                rotation: 90
-                source: Design.assetRoot + "icons/icon-arrow-down.svg"
-            }
+        ChoiceField {
+            x: 668
+            y: -4
+            width: 142
+            height: 29
+            visible: !settingRow.readOnly
+            pixelSize: 14
+            fieldRadius: 10
+            choices: settingRow.choices
+            currentIndex: settingRow.currentIndex
+            onActivated: (index) => settingRow.activated(index)
         }
     }
 
@@ -574,9 +756,9 @@ Item {
             font.pixelSize: 16
         }
 
-        // 行为待接口对接，这里只给出手型光标
         MouseArea {
             anchors.fill: parent
+            hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             onClicked: tagAction.clicked()
         }

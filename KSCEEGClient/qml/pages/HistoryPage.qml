@@ -17,6 +17,13 @@ Item {
     signal navRequested(string label)
     signal logoutRequested()
     signal recordPreviewRequested(string recordNo)
+    // 删记录：交给外层弹确认框，确认后才真删
+    signal recordDeleteRequested(string recordNo)
+    // 导出一条记录：落盘了原始数据就复制它，否则导出记录摘要
+    signal recordExportRequested(string recordNo)
+    // 「分析」：后处理整屏。目前按钮不可用，留着这个信号是为了后处理接上去时
+    // 不用再改一次页面结构
+    signal analysisRequested(string recordNo)
 
     // 设计稿的电极质量小胶囊：描边与文字同色，良好=绿、不良=橙（描边色即 #ff8d1a）。
     // 注意这里的「不良」在设计稿里画的是品牌橙而不是红色，按设计稿原样保留。
@@ -38,11 +45,63 @@ Item {
     property string patientFilterName: ""
 
     property int revision: 0
-    function reload() { revision++ }
+    function reload() {
+        revision++
+        clampPage()
+    }
 
-    readonly property var records: {
+    // 库里的记录（已按患者预筛过）。界面上还要再过一道搜索与通道筛选
+    readonly property var allRecords: {
         revision   // 绑定依赖
         return database ? database.sessions(patientFilter) : []
+    }
+
+    // ---------- 搜索 / 筛选 / 分页 ----------
+    // 与患者管理、用户管理同一套：搜索词 + 一个下拉筛选 + 分页。
+    // 原来这一页的搜索框和「全部通道」都是画出来的色块，点不动也筛不了
+    property string searchText: ""
+    property int channelFilter: 0         // channelChoices 的下标
+    property int currentPage: 1
+
+    readonly property var channelChoices: [qsTr("全部通道"), "4", "8", "16"]
+    readonly property string channelKeyword:
+        channelFilter > 0 && channelFilter < channelChoices.length ? channelChoices[channelFilter] : ""
+
+    readonly property var filteredRecords: {
+        var keyword = searchText.trim().toLowerCase()
+        var result = []
+        for (var i = 0; i < allRecords.length; ++i) {
+            var row = allRecords[i]
+            if (channelKeyword.length > 0 && row.channels !== channelKeyword)
+                continue
+            if (keyword.length > 0) {
+                // 与设计稿的提示一致：记录ID / 患者姓名
+                var haystack = (row.no + " " + row.patient).toLowerCase()
+                if (haystack.indexOf(keyword) < 0)
+                    continue
+            }
+            result.push(row)
+        }
+        return result
+    }
+
+    onSearchTextChanged: currentPage = 1
+    onChannelFilterChanged: currentPage = 1
+
+    function clampPage() {
+        const pages = Math.max(1, Math.ceil(filteredRecords.length / pageSize))
+        currentPage = Math.max(1, Math.min(pages, currentPage))
+    }
+
+    readonly property int rowHeight: 51
+    readonly property int bodyTop: 52
+    readonly property int bodyHeight: 788
+    // 一屏正好装下的行数，与患者管理页同一口径
+    readonly property int pageSize: Math.floor(bodyHeight / rowHeight)
+
+    readonly property var records: {
+        const start = (currentPage - 1) * pageSize
+        return filteredRecords.slice(start, start + pageSize)
     }
 
     // 清掉过滤，回到全部记录
@@ -73,9 +132,11 @@ Item {
         pageTitle: qsTr("历史采集记录")
         currentNav: qsTr("历史记录")
         statusItems: {
-            var items = [qsTr("记录：") + root.records.length + qsTr(" 条")]
+            var items = [qsTr("记录：") + root.allRecords.length + qsTr(" 条")]
+            if (root.filteredRecords.length !== root.allRecords.length)
+                items.push(qsTr("筛选后：") + root.filteredRecords.length + qsTr(" 条"))
             if (root.patientFilter.length > 0)
-                items.push(qsTr("筛选：") + (root.patientFilterName.length > 0
+                items.push(qsTr("患者：") + (root.patientFilterName.length > 0
                                              ? root.patientFilterName : root.patientFilter))
             return items
         }
@@ -167,16 +228,23 @@ Item {
                     x: 1429
                     y: rowY + 11
                     text: qsTr("分析")
+                    // 「数据分析与后处理」是另一整屏，还没实现。按钮留着（设计稿有），
+                    // 但压暗并说明原因 —— 点下去毫无反应比暂时不可用更让人困惑
+                    enabled: false
+                    onClicked: root.analysisRequested(modelData.no)
                 }
                 TableRowButton {
                     x: 1500
                     y: rowY + 11
                     text: qsTr("导出")
+                    onClicked: root.recordExportRequested(modelData.no)
                 }
+                // 历史记录页的「删除」在设计稿里不是红色（患者管理页那个才是），照设计稿
                 TableRowButton {
                     x: 1571
                     y: rowY + 11
                     text: qsTr("删除")
+                    onClicked: root.recordDeleteRequested(modelData.no)
                 }
 
                 Rectangle {
@@ -189,33 +257,21 @@ Item {
             }
         }
 
-        // ---------- 右侧滚动条 ----------
-        Rectangle {
-            x: 1686
-            y: 64
-            width: 7
-            height: 758
-            radius: 4
-            color: Qt.rgba(0.478, 0.478, 0.478, 0.10)
-        }
-
-        Rectangle {
-            x: 1686
-            y: 319
-            width: 7
-            height: 278
-            radius: 4
-            color: Qt.rgba(0.4, 0.4, 0.4, 0.15)
-        }
-
         // ---------- 空态 ----------
+        // 三种「空」的原因不同，提示语也要分开：一位记录都没有、这位患者没有、
+        // 筛没的。一律说「去工作台采集一次」的话，正在筛选的人会以为数据丢了
         Text {
             x: 71
             y: 200
+            width: 1400
             visible: root.records.length === 0
-            text: root.patientFilter.length > 0
-                  ? qsTr("这位患者还没有采集记录")
-                  : qsTr("还没有采集记录，去采集工作台开始一次采集")
+            text: {
+                if (root.allRecords.length === 0)
+                    return root.patientFilter.length > 0
+                           ? qsTr("这位患者还没有采集记录")
+                           : qsTr("还没有采集记录，去采集工作台开始一次采集")
+                return qsTr("没有符合当前条件的记录，试试换个搜索词或通道数")
+            }
             color: Design.textMuted
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -223,87 +279,25 @@ Item {
         }
 
         // ---------- 分页 ----------
-        Text {
-            x: 19
-            y: 846
-            text: qsTr("共 %1 条记录（当前显示 %1 条）").arg(root.records.length)
-            color: Design.textSecondary
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
-        }
-
-        Rectangle {
-            x: 1531
+        Pager {
+            x: 0
             y: 842
-            width: 53
-            height: 29
-            radius: 6
-            color: Design.primarySoft
-            border.width: 1
-            border.color: Design.panelBorder
-
-            Text {
-                anchors.centerIn: parent
-                text: qsTr("上一页")
-                color: "#3b3b3b"
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 14
-            }
-        }
-
-        Rectangle {
-            x: 1631
-            y: 842
-            width: 53
-            height: 29
-            radius: 6
-            color: Design.primarySoft
-            border.width: 1
-            border.color: Design.panelBorder
-
-            Text {
-                anchors.centerIn: parent
-                text: qsTr("下一页")
-                color: "#3b3b3b"
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 14
-            }
-        }
-
-        Text {
-            x: 1596
-            y: 845
-            text: "1/1"
-            color: "#000000"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 14
+            totalCount: root.allRecords.length
+            filteredCount: root.filteredRecords.length
+            pageSize: root.pageSize
+            currentPage: root.currentPage
+            onPageRequested: (page) => root.currentPage = page
         }
     }
 
     // ---------- 标题条右侧的筛选控件（设计稿绝对坐标）----------
-    Rectangle {
+    SearchField {
         x: 1374
         y: 79
         width: 215
         height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 13
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("搜索记录ID/患者姓名")
-            color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.3)
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
+        placeholder: qsTr("搜索记录ID/患者姓名")
+        onTextChanged: root.searchText = text
     }
 
     Rectangle {
@@ -353,34 +347,14 @@ Item {
         }
     }
 
-    Rectangle {
+    ChoiceField {
         x: 1739
         y: 79
         width: 126
         height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 10
-            y: 0
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            text: qsTr("全部通道")
-            color: "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
-
-        Image {
-            x: 116.5
-            anchors.verticalCenter: parent.verticalCenter
-            width: 7.47
-            height: 7
-            rotation: 90
-            source: Design.assetRoot + "icons/icon-arrow-down.svg"
-        }
+        choices: root.channelChoices
+        currentIndex: root.channelFilter
+        onActivated: (index) => root.channelFilter = index
     }
 
     // 电极质量胶囊：设计稿里只有描边没有底色，且文字与描边同色

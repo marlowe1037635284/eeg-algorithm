@@ -764,13 +764,20 @@ ApplicationWindow {
     // ---------- 启动 ----------
 
     Component.onCompleted: {
-        // 账号库在 AuthDatabase 构造时就建好了表和默认管理员，这里只负责回填输入框。
+        // 账号库在 AppDatabase 构造时就建好了表和默认管理员，这里只负责回填输入框。
         //
-        // 从没登录过时按设计稿的样子：输入框留空显示占位提示、「记住密码」勾上；
-        // 登录过之后：手机号总是回填，密码只有勾了「记住密码」才回填。
-        var last = appDatabase.lastLogin()
-        loginPage.rememberChecked = last.hasRecord ? last.remember : true
+        // **没有登录记录时什么都不做**，让登录页保持自己那份默认值
+        //（admin / admin123456，与 AppDatabase 预置的管理员一致）——
+        // 清成空的话，每次开程序都要把账号密码重敲一遍，而版本库里那个
+        // 模板本来就一条登录记录都不带。
+        //
+        // 有记录时：账号总是回填，密码只有当初勾了「记住密码」才回填
+        //（没勾的话数据层已经把密码删了，这里也取不到）
+        const last = appDatabase.lastLogin()
+        if (!last.hasRecord)
+            return
+        loginPage.rememberChecked = last.remember
         loginPage.accountText = last.phone
-        loginPage.passwordText = (last.remember && last.password.length > 0) ? last.password : ""
+        loginPage.passwordText = last.remember ? last.password : ""
     }
 }

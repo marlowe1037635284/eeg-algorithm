@@ -60,7 +60,9 @@ public:
     // ==================== 患者 ====================
 
     // 全部患者，按病历号排序。每一项的键与患者管理页表格的列一一对应：
-    //   { no, name, gender, age, dept, diag, note, count, last, createdAt }
+    //   { no, name, gender, age, dept, diag, note, count, recordCount, last, createdAt }
+    // count 是给表格直接贴的「6 次」；recordCount 是同一个数的原始值，
+    // 给需要自己拼文案的地方用（选患者弹窗里的「1次记录」）
     //
     // 采集次数与最近采集时间是**从 recording_sessions 表汇总出来的**，
     // 不在患者表里另存一份 —— 同一件事存两处，迟早会对不上

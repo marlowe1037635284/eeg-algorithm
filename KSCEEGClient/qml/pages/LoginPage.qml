@@ -143,6 +143,9 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: 22
                 anchors.rightMargin: 22
+                // 首次运行的默认账号，与 AppDatabase 预置的那个管理员一致
+                //（见 appdatabase.cpp 的构造函数）。库里存过登录记录时会被覆盖，
+                // 没存过就保持这个值，省得每次开程序都重敲
                 text: "admin"
                 color: "#3d3d3d"
                 selectionColor: Design.primary
@@ -196,6 +199,7 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: 22
                 anchors.rightMargin: 22
+                // 同上，与预置管理员的密码一致
                 text: "admin123456"
                 color: "#3d3d3d"
                 selectionColor: Design.primary

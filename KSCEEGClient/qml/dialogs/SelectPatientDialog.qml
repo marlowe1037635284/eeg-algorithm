@@ -50,9 +50,12 @@ Item {
     property real scroll: 0
     function rowY(index) { return 472 - listOriginY + Math.round(index * rowStep) - scroll }
     function dividerY(index) { return 503 - listOriginY + Math.round(index * rowStep) - scroll }
-    // 行描述：性别·年龄·科室·N 次记录
+    // 行描述：性别·年龄·科室·N次记录。
+    // 设计稿写的是「男·45岁·神经内科·1次记录」—— N 与「次」之间没有空格，
+    // 所以用原始数值拼；数据层那个 count 是给表格列的 "1 次"，格式不一样
     function rowDesc(row) {
-        return row.gender + "·" + row.age + "岁·" + row.dept + "·" + row.count
+        return row.gender + "·" + row.age + qsTr("岁·") + row.dept + "·"
+               + row.recordCount + qsTr("次记录")
     }
 
     DialogFrame {
@@ -86,6 +89,7 @@ Item {
         // 卡片里显示**当前高亮**的那位患者；一位都没有时说明该去哪儿登记。
         // 原来这里写死「张文涛」，与下面的档案列表其实是两份互不相干的数据
         Text {
+            id: currentNameText
             x: 704
             y: 386
             text: {
@@ -100,14 +104,22 @@ Item {
             font.pixelSize: 20
         }
 
-        // 姓名与年龄之间设计稿留了两个空格，照抄
+        // 姓名与年龄之间设计稿留了两个空格，照抄。
+        //
+        // 横坐标取「设计稿的位置」与「姓名实际右边缘 + 空隙」里较大的那个：
+        // 三个字的名字完全落在设计稿的位置上（两个文本之间的空隙照旧），
+        // 名字更长时才往右让。写死设计稿那个 775 会被长名字压住，
+        // 而一律紧跟姓名之后又会把设计稿留的那段空隙吃掉
         Text {
-            x: 775
+            id: genderAgeText
+            x: Math.max(775, currentNameText.x + currentNameText.width + 10)
             y: 392
             visible: root.selectedIndex >= 0 && root.selectedIndex < root.archiveRows.length
+            // 取值前先判空：visible 拦不住绑定的求值，列表为空时
+            // archiveRows[-1] 是 undefined，直接取 .gender 会抛 TypeError
             text: {
                 const row = root.archiveRows[root.selectedIndex]
-                return row.gender + "  " + row.age + qsTr("岁")
+                return row ? row.gender + "  " + row.age + qsTr("岁") : ""
             }
             color: Design.textSecondary
             font.family: Design.fontFamily
@@ -115,13 +127,22 @@ Item {
             font.pixelSize: 16
         }
 
+        // 同理。这一段设计稿给的起点是 955，与「性别 年龄」之间空着一大段 ——
+        // 那是设计稿的样子，不是排版失误，所以缺省就用它
         Text {
-            x: 955
+            x: Math.max(955, genderAgeText.x + genderAgeText.width + 16)
             y: 392
+            // 科室与诊断由用户自己填、长度没边，右边界卡在表头横条的右沿
+            //（canvas 1238），长了省略而不是顶出卡片
+            width: Math.max(0, 1238 - x)
+            elide: Text.ElideRight
             visible: root.selectedIndex >= 0 && root.selectedIndex < root.archiveRows.length
             text: {
                 const row = root.archiveRows[root.selectedIndex]
-                return row.no + "·" + row.dept + "·" + row.diag + qsTr("·采集记录") + row.count
+                // 「采集记录1次」：设计稿里 N 与「次」之间没有空格，
+                // 所以用原始数值拼，不能直接贴数据层那个 "1 次"
+                return row ? row.no + "·" + row.dept + "·" + row.diag
+                             + qsTr("·采集记录") + row.recordCount + qsTr("次") : ""
             }
             color: Design.textSecondary
             font.family: Design.fontFamily
@@ -129,9 +150,11 @@ Item {
             font.pixelSize: 16
         }
 
-        // 一位患者都没有时，把「下一步该干什么」说清楚
+        // 一位患者都没有时，把「下一步该干什么」说清楚。
+        // 位置同样跟在姓名之后 ——「暂无患者档案」比「张文涛」宽得多，
+        // 写死 775 会直接压在它上面（这就是一句话里两段字叠成一团的原因）
         Text {
-            x: 775
+            x: currentNameText.x + currentNameText.width + 16
             y: 392
             visible: root.archiveRows.length === 0
             text: qsTr("点下方「登记新患者」新增一位")
@@ -180,8 +203,8 @@ Item {
                 }
             }
 
-            // 行分隔线（施工图是主色 30%，按约定统一用设计系统的主色 20%）。
-            // 最后一行下面不画
+            // 行分隔线。施工图给的是主色 30%（直线 10/49/50/51），
+            // 比设计系统里通用的 20% 略重 —— 照抄施工图那档
             Repeater {
                 model: Math.max(0, root.archiveRows.length - 1)
 
@@ -192,7 +215,7 @@ Item {
                     y: root.dividerY(index)
                     width: 539
                     height: 1
-                    color: Design.panelBorder
+                    color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.30)
                 }
             }
 

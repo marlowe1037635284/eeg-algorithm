@@ -69,9 +69,12 @@ Item {
             font.pixelSize: 20
         }
 
-        // 姓名与年龄之间设计稿留了两个空格，照抄
+        // 姓名与年龄之间设计稿留了两个空格，照抄。
+        // 位置取设计稿的 775 与「姓名右边缘 + 空隙」中较大的那个：
+        // 三个字的名字落在设计稿的位置上，更长时才往右让
         Text {
-            x: 775
+            id: genderAgeText
+            x: Math.max(775, patientNameText.x + patientNameText.width + 10)
             y: 421
             visible: root.hasPatient
             text: root.patientGenderAge
@@ -81,9 +84,13 @@ Item {
             font.pixelSize: 16
         }
 
+        // 同理；科室与诊断由用户填写、长度没边，所以给右边界，
+        // 长了就省略而不是顶出卡片
         Text {
-            x: 1032
+            x: Math.max(1032, genderAgeText.x + genderAgeText.width + 16)
             y: 421
+            width: Math.max(0, 1238 - x)
+            elide: Text.ElideRight
             visible: root.hasPatient
             text: root.patientMeta
             color: Design.textSecondary

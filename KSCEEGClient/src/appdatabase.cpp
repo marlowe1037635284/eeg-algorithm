@@ -495,6 +495,9 @@ QVariantList AppDatabase::patients()
         row[QStringLiteral("createdAt")] = query.value(7).toString();
         // 表格里这两列是文本，格式在数据层定好，界面直接贴
         row[QStringLiteral("count")] = QStringLiteral("%1 次").arg(count);
+        // 同一件事给一个原始数值：选患者弹窗里要拼成「1次记录」，
+        // 而从 "1 次" 这个字符串里往回抠数字是自找麻烦
+        row[QStringLiteral("recordCount")] = count;
         row[QStringLiteral("last")] = last.isEmpty() ? QStringLiteral("—") : last;
         rows.append(row);
     }

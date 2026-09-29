@@ -12,7 +12,7 @@ Item {
 
     // 空串表示不显示
     property string message: ""
-    // info / success / error，决定底色
+    // info / success / warn / error，决定底色
     property string kind: "info"
     // 每次调用都自增，用来在「连续弹同一条提示」时也能重新播一次动画
     property int serial: 0
@@ -21,6 +21,10 @@ Item {
     readonly property color accent: {
         if (kind === "success")
             return Design.good
+        // 提醒（「请先选择患者」这类）：不是错误，但比普通提示更需要被看到，
+        // 用设计系统里的警示橙
+        if (kind === "warn")
+            return Design.warning
         if (kind === "error")
             return Design.bad
         return Design.primary

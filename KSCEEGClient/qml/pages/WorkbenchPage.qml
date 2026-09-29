@@ -301,9 +301,14 @@ Item {
         border.width: 1
         border.color: Design.panelBorder
 
-        // 姓名与档案摘要之间的竖分隔线。空态下没有姓名，这条线就没有意义
+        // 姓名与档案摘要之间的竖分隔线。空态下没有姓名，这条线就没有意义。
+        //
+        // 位置取「设计稿的 96」与「姓名右边缘 + 空隙」中较大的那个：三个字的名字
+        // 正好落在设计稿的位置上，更长的名字才把分隔线和右边两行一起往右让 ——
+        // 写死 96 的话四个字以上就会跨过这条线压到性别年龄上
         Rectangle {
-            x: 96
+            id: nameDivider
+            x: Math.max(96, nameText.x + nameText.width + 10)
             y: 16
             width: 1
             height: 44
@@ -312,9 +317,13 @@ Item {
         }
 
         // ---------- 有患者：姓名 + 性别年龄 + 档案摘要 ----------
+        // 姓名只设上限不设死宽：姓名是用户自己填的，最长能写多少由卡片宽度说了算
         Text {
+            id: nameText
             x: 12
             y: 21
+            width: 200
+            elide: Text.ElideRight
             visible: root.hasPatient
             text: root.patientName
             color: "#000000"
@@ -324,7 +333,7 @@ Item {
         }
 
         Text {
-            x: 110
+            x: nameDivider.x + 14
             y: 12
             visible: root.hasPatient
             text: root.patientGenderAge
@@ -335,8 +344,10 @@ Item {
         }
 
         Text {
-            x: 110
+            x: nameDivider.x + 14
             y: 42
+            width: Math.max(0, parent.width - x - 12)
+            elide: Text.ElideRight
             visible: root.hasPatient
             text: root.patientMeta
             color: Design.textSecondary
@@ -663,9 +674,10 @@ Item {
                     root.precheckRequested()
                 } else {
                     // 没选患者：这一页采集的数据要挂到某位患者名下，没有对象就开始采
-                    // 会后无从归属。所以不去「什么都不做」，直接把选择/登记弹窗打开 ——
-                    // 用户点这个按钮的意图就是要开始，下一步该干什么由界面来接
-                    root.selectPatientRequested()
+                    // 会后无从归属。这里只给一句提示，**不主动把选择患者弹窗推出来** ——
+                    // 用户可能只是想先看看，也可能是误点，一屏弹窗盖上来太打扰。
+                    // 要选患者，点左上角那张卡片（那里本来就写着「点击选择/登记」）
+                    root.notifyRequested(qsTr("请先选择患者再开始采集"), "warn")
                 }
             }
 

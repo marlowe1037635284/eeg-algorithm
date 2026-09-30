@@ -359,21 +359,6 @@ Item {
                 font.styleName: Design.styleMedium
                 font.pixelSize: 18
             }
-
-            // 数据库文件路径。设计稿没有这一项 —— 本地库是这台机器上的全部数据，
-            // 找不到文件就没法备份/迁移，而它藏在源码目录里平时根本看不见
-            Text {
-                x: 10
-                y: 300
-                width: 808
-                horizontalAlignment: Text.AlignHCenter
-                elide: Text.ElideMiddle
-                text: qsTr("数据文件：") + (root.database ? root.database.databasePath : "")
-                color: Design.textMuted
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 12
-            }
         }
 
         // ================= 右栏 · 标签管理（设计稿 @1057,164 828×856）=================
@@ -679,9 +664,13 @@ Item {
             font.pixelSize: 16
         }
 
+        // 右对齐贴着下拉框左侧：只读行那个「由设备决定」比「阈值」长得多，
+        // 从固定 x 左对齐会一路顶进右边的数值框，和「1000Hz」叠在一起
         Text {
-            x: 617
+            x: 480
             y: 0
+            width: 169
+            horizontalAlignment: Text.AlignRight
             visible: settingRow.hint.length > 0
             text: settingRow.hint
             color: Design.textSecondary

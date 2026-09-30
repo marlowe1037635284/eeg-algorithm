@@ -70,6 +70,11 @@ ApplicationWindow {
         id: appDatabase
     }
 
+    // 导出 PDF 用。无状态，只做「一条记录 → 一份 A4 报告」的排版
+    RecordReport {
+        id: recordReport
+    }
+
     // 采集停止时把这次记录补全（时长、事件数、落盘路径）。
     //
     // 挂在 collectingChanged 上而不是工作台的停止按钮上：拔线、掉电时线程会自己
@@ -235,6 +240,22 @@ ApplicationWindow {
         }
 
         var result = appDatabase.exportSession(recordNo, folder)
+        showToast(result.message, result.success ? "success" : "error")
+    }
+
+    // 从预览弹窗里导出 PDF：排版全在 RecordReport 里做，这里只负责选目录与提示。
+    // 与 exportRecord 的区别是产物 —— 那个导原始数据，这个导一份可读的报告
+    function exportRecordPdf(recordNo) {
+        var folder = StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
+        if (!folder || folder.length === 0)
+            folder = StandardPaths.writableLocation(StandardPaths.HomeLocation)
+        if (!folder || folder.length === 0) {
+            showToast(qsTr("找不到可用的导出目录"), "error")
+            return
+        }
+
+        var result = recordReport.exportPdf(appDatabase.session(recordNo),
+                                            appDatabase.sessionEvents(recordNo), folder)
         showToast(result.message, result.success ? "success" : "error")
     }
 
@@ -599,7 +620,7 @@ ApplicationWindow {
                 Recording.close()
                 window.closeDialog()
             }
-            onExportRequested: (recordNo) => window.exportRecord(recordNo)
+            onExportRequested: (recordNo) => window.exportRecordPdf(recordNo)
         }
     }
 

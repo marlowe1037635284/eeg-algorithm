@@ -45,7 +45,7 @@ class RecordingPreview : public QObject
                    NOTIFY viewChanged)
     Q_PROPERTY(double windowSeconds READ window_seconds WRITE set_window_seconds
                    NOTIFY viewChanged)
-    // 幅值标尺（µV）：0 表示按窗口内峰值自动
+    // 幅值标尺（µV）：0 表示按窗口内峰值自动。默认 100，与工作台那一栏的初值一致
     Q_PROPERTY(int yRangeUV READ y_range_uv WRITE set_y_range_uv NOTIFY viewChanged)
     // 每画好一帧自增，QML 靠它变化触发 Image 换 URL（否则 Image 会按 URL 缓存，
     // 图永远停在第一帧）。
@@ -83,6 +83,15 @@ public:
     QImage current_image() const;
     QQuickImageProvider *create_image_provider();
 
+    // 把任意一段窗口画成一张图，供导出 PDF 的报告页使用。
+    //
+    // 报告要的是「整段记录的总览」，与界面上当前显示的那一屏无关，所以窗口参数
+    // 直接由调用方给出，不走 windowStart / m_image 那套状态 —— 借用的话就得先把
+    // 界面的视窗挪来挪去，导出完再挪回去，中途还会闪。返回空图表示画不出来
+    // （文件没打开、尺寸非法）。y_range_uv 为 0 表示按窗口内峰值自动
+    QImage render_window(double start_seconds, double seconds, int width, int height,
+                         int y_range_uv) const;
+
 public slots:
     void set_window_start(double seconds);
     void set_window_seconds(double seconds);
@@ -98,8 +107,6 @@ private:
     void unload();
     // 按当前窗口重画一帧。锁内取数据、锁外绘制
     void render();
-    // 窗口内某通道的样本下标范围。越界时自动夹到文件范围内
-    void frame_range(int *first, int *last) const;
 
     QFile m_file;
     // 文件映射，只读。整段映射而不是边读边解析：一条 10 分钟的记录约 38 MB，
@@ -118,8 +125,8 @@ private:
     QSize m_view_size;
     double m_window_start = 0.0;
     double m_window_seconds = 5.0;
-    // 0 表示自动量程
-    int m_y_range_uv = 0;
+    // 0 表示自动量程（界面上的「幅值 / 时基」据此显示；默认 100 µV）
+    int m_y_range_uv = 100;
     int m_revision = 0;
 
     QImage m_image;

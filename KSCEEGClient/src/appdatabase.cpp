@@ -10,6 +10,7 @@
 #include <QSqlQuery>
 #include <QTextStream>
 #include <QTimeZone>
+#include <QUrl>
 
 #include <algorithm>
 
@@ -940,8 +941,15 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
         return result;
     }
 
-    const QDir target_dir(directory);
-    if (directory.isEmpty() || !target_dir.exists())
+    // QML 侧 StandardPaths.writableLocation 给的是 file:/// 形式的 URL（QML 的 url
+    // 类型，本身没有 toLocalFile），直接拿去构造 QDir 会判定为不存在的目录，
+    // 所以先按 URL 解成本地路径再用
+    QString target_path = directory;
+    if (target_path.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
+        target_path = QUrl(target_path).toLocalFile();
+
+    const QDir target_dir(target_path);
+    if (target_path.isEmpty() || !target_dir.exists())
     {
         result[QStringLiteral("message")] = QStringLiteral("导出目录不可用");
         return result;

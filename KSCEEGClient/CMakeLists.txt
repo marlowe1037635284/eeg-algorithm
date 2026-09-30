@@ -76,6 +76,9 @@ qt_add_executable(appKSCEEGClient
     # 历史记录的波形回放（读 .eegbin，不走串口）
     src/recordingpreview.h
     src/recordingpreview.cpp
+    # 把一条记录排成 A4 报告（导出 PDF）
+    src/recordreport.h
+    src/recordreport.cpp
 )
 
 # Design.qml 是设计变量单例（画板尺寸、色板、字体名），需要在 QML 引擎里注册成 singleton，

@@ -1,24 +1,16 @@
-"""在线 DTO：处理配置、查询、结果与状态。"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 
-from eeg_algorithm.errors import AlgorithmErrorInfo
-from eeg_algorithm.types.common import (
-    AbsoluteTimeRange,
-    ChannelLayout,
-    FrequencyBand,
-    SignalBlock,
-)
-from eeg_algorithm.types.enums import (
-    QualityFlag,
-    ReferenceMethod,
-    SessionState,
-)
+from .common import AbsoluteTimeRange, ChannelLayout, SignalBlock
+from .enums import BandPreset, QualityFlag, ReferenceMethod, SessionState
+
+if TYPE_CHECKING:
+    from eeg_algorithm.errors import AlgorithmErrorInfo
 
 
 @dataclass(frozen=True)
@@ -57,7 +49,7 @@ class PhaseModelConfig:
     enabled: bool
     model_path: str
     target_channels: tuple[str, ...]
-    device: str = "cpu"              # cpu | cuda
+    device: str = "cpu"
     window_samples: int = 1
 
 
@@ -70,6 +62,13 @@ class OnlineConfig:
     phase: PhaseModelConfig
     rolling_window_s: float
     return_processed_signal: bool = True
+
+
+@dataclass(frozen=True)
+class FrequencyBand:
+    preset: BandPreset
+    low_hz: float
+    high_hz: float
 
 
 @dataclass(frozen=True)
@@ -133,11 +132,11 @@ class TopographyResult:
     config_version: int
     band: FrequencyBand
     actual_time_range: AbsoluteTimeRange
-    grid_x: NDArray[np.float32]            # [W]
-    grid_y: NDArray[np.float32]            # [H]
-    grid_values: NDArray[np.float32]       # [H, W]
-    head_mask: NDArray[np.bool_]           # [H, W]
-    electrode_values: NDArray[np.float32]  # [C]
+    grid_x: NDArray[np.float32]
+    grid_y: NDArray[np.float32]
+    grid_values: NDArray[np.float32]
+    head_mask: NDArray[np.bool_]
+    electrode_values: NDArray[np.float32]
     electrode_names: tuple[str, ...]
 
 
@@ -148,8 +147,8 @@ class SpectrumResult:
     channel_name: str
     band: FrequencyBand
     actual_time_range: AbsoluteTimeRange
-    frequencies_hz: NDArray[np.float32]    # [F]
-    psd: NDArray[np.float32]               # [F]
+    frequencies_hz: NDArray[np.float32]
+    psd: NDArray[np.float32]
 
 
 @dataclass(frozen=True)
@@ -165,3 +164,4 @@ class SessionStatus:
     warmup_remaining_samples: int
     rolling_buffer_duration_s: float
     last_error: AlgorithmErrorInfo | None
+

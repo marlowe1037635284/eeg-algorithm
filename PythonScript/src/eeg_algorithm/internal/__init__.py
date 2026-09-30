@@ -1,4 +1,2 @@
-"""``eeg_algorithm.internal`` 包。
+"""Private implementation modules. C++ callers must not import this package."""
 
-C++ 不得直接导入本包内的任何模块。
-"""

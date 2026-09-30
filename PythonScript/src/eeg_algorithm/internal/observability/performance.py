@@ -1,52 +1,47 @@
-"""性能聚合：调用次数、平均耗时、P99、最大耗时。"""
-
 from __future__ import annotations
 
-import threading
+import logging
+import time
 from collections import defaultdict
+from dataclasses import dataclass, field
+from threading import Lock
+
+import numpy as np
+
+from .context import get_logger, log_event
+
+
+@dataclass
+class _Series:
+    values_us: list[int] = field(default_factory=list)
+    last_emit_s: float = field(default_factory=time.monotonic)
 
 
 class PerformanceAggregator:
-    """按操作名聚合耗时统计，不在每个采样点写日志。"""
+    def __init__(self, interval_s: float = 5.0) -> None:
+        self._interval_s = interval_s
+        self._lock = Lock()
+        self._series: dict[str, _Series] = defaultdict(_Series)
+        self._logger = get_logger(__name__)
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._stats: dict[str, dict] = defaultdict(
-            lambda: {"count": 0, "total_us": 0.0, "max_us": 0.0, "samples": []}
+    def record(self, operation: str, duration_us: int, *, session_id: int | None = None) -> None:
+        now = time.monotonic()
+        with self._lock:
+            series = self._series[operation]
+            series.values_us.append(duration_us)
+            if now - series.last_emit_s < self._interval_s:
+                return
+            values = np.asarray(series.values_us, dtype=np.float64)
+            series.values_us.clear()
+            series.last_emit_s = now
+        log_event(
+            self._logger,
+            logging.INFO,
+            f"性能汇总: count={values.size}, avg_us={values.mean():.1f}, "
+            f"p99_us={np.percentile(values, 99):.1f}, max_us={values.max():.1f}",
+            code="PERFORMANCE_SUMMARY",
+            operation=operation,
+            session_id=session_id,
+            duration_ms=float(values.mean() / 1000.0),
         )
 
-    def record(self, operation: str, duration_us: float) -> None:
-        with self._lock:
-            s = self._stats[operation]
-            s["count"] += 1
-            s["total_us"] += duration_us
-            s["max_us"] = max(s["max_us"], duration_us)
-            s["samples"].append(duration_us)
-
-    def summarize(self) -> dict[str, dict[str, float | int]]:
-        with self._lock:
-            out: dict[str, dict[str, float | int]] = {}
-            for op, s in self._stats.items():
-                count = s["count"]
-                out[op] = {
-                    "count": count,
-                    "avg_us": s["total_us"] / count if count else 0.0,
-                    "p99_us": _percentile(s["samples"], 99.0),
-                    "max_us": s["max_us"],
-                }
-            return out
-
-    def clear(self) -> None:
-        with self._lock:
-            self._stats.clear()
-
-
-def _percentile(sorted_or_not: list[float], p: float) -> float:
-    if not sorted_or_not:
-        return 0.0
-    values = sorted(sorted_or_not)
-    k = (len(values) - 1) * (p / 100.0)
-    lo = int(k)
-    hi = min(lo + 1, len(values) - 1)
-    frac = k - lo
-    return values[lo] + (values[hi] - values[lo]) * frac

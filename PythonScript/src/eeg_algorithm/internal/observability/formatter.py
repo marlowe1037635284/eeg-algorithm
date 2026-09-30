@@ -1,5 +1,3 @@
-"""JSON Lines 日志格式化。"""
-
 from __future__ import annotations
 
 import json
@@ -7,25 +5,34 @@ import logging
 from datetime import datetime, timezone
 
 
-class JsonLinesFormatter(logging.Formatter):
-    """每行输出一条 JSON 记录。"""
+class JsonLineFormatter(logging.Formatter):
+    _OPTIONAL_FIELDS = (
+        "code",
+        "operation",
+        "session_id",
+        "request_id",
+        "sequence_id",
+        "config_version",
+        "preprocess_version",
+        "duration_ms",
+    )
 
     def format(self, record: logging.LogRecord) -> str:
-        ts = datetime.fromtimestamp(record.created, tz=timezone.utc)
-        timestamp = ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{record.msecs:03.0f}Z"
-        payload = {
-            "timestamp": timestamp,
+        timestamp = datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds")
+        payload: dict[str, object] = {
+            "timestamp": timestamp.replace("+00:00", "Z"),
+            "timestamp_utc_ns": int(record.created * 1_000_000_000),
             "level": record.levelname,
             "logger": record.name,
-            "code": getattr(record, "code", ""),
             "message": record.getMessage(),
-            "operation": getattr(record, "operation", None),
-            "session_id": getattr(record, "session_id", None),
-            "request_id": getattr(record, "request_id", None),
-            "sequence_id": getattr(record, "sequence_id", None),
-            "config_version": getattr(record, "config_version", None),
-            "preprocess_version": getattr(record, "preprocess_version", None),
-            "duration_ms": getattr(record, "duration_ms", None),
             "thread": record.threadName,
+            "process_id": record.process,
         }
-        return json.dumps(payload, ensure_ascii=False)
+        for name in self._OPTIONAL_FIELDS:
+            value = getattr(record, name, None)
+            if value is not None:
+                payload[name] = value
+        if record.exc_info:
+            payload["exception"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), default=str)
+

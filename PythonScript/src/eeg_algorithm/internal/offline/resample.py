@@ -1,12 +1,12 @@
-"""离线降采样。"""
-
 from __future__ import annotations
 
-import numpy as np
-from scipy.signal import resample
+from fractions import Fraction
 
-from eeg_algorithm.types.common import ChannelLayout, SignalBlock
-from eeg_algorithm.types.offline import ResampleConfig
+import numpy as np
+from scipy import signal as scipy_signal
+
+from eeg_algorithm.errors import INVALID_SAMPLE_RATE, algorithm_error
+from eeg_algorithm.types import ChannelLayout, ResampleConfig, SignalBlock
 
 
 def resample_offline(
@@ -14,23 +14,20 @@ def resample_offline(
     layout: ChannelLayout,
     config: ResampleConfig,
 ) -> tuple[SignalBlock, ChannelLayout]:
-    if not config.enabled:
+    if not config.enabled or np.isclose(config.target_rate_hz, layout.sample_rate_hz):
         return signal, layout
-    src_rate = layout.sample_rate_hz
-    target_rate = config.target_rate_hz
-    n_src = signal.values.shape[1]
-    n_out = max(1, int(round(n_src * target_rate / src_rate)))
-
-    # 抗混叠重采样（FFT 方法）。
-    values = resample(signal.values, n_out, axis=1).astype(np.float32)
-    new_ts = np.linspace(
-        signal.timestamps_ns[0], signal.timestamps_ns[-1], n_out
-    ).astype(np.int64)
-
-    new_layout = ChannelLayout(
-        channel_names=layout.channel_names,
-        sample_rate_hz=target_rate,
-        positions=layout.positions,
-        unit=layout.unit,
+    if not 0 < config.target_rate_hz <= layout.sample_rate_hz:
+        raise algorithm_error(INVALID_SAMPLE_RATE, "目标采样率必须位于(0, 当前采样率]", "resample_offline")
+    ratio = Fraction(config.target_rate_hz / layout.sample_rate_hz).limit_denominator(10_000)
+    values = scipy_signal.resample_poly(signal.values, ratio.numerator, ratio.denominator, axis=1)
+    count = values.shape[1]
+    period_ns = 1_000_000_000.0 / config.target_rate_hz
+    timestamps = np.rint(signal.timestamps_ns[0] + np.arange(count) * period_ns).astype(np.int64)
+    new_layout = ChannelLayout(layout.channel_names, config.target_rate_hz, layout.positions, layout.unit)
+    new_block = SignalBlock(
+        signal.first_sequence_id,
+        np.ascontiguousarray(timestamps),
+        np.ascontiguousarray(values, dtype=np.float32),
     )
-    return SignalBlock(signal.first_sequence_id, new_ts, values), new_layout
+    return new_block, new_layout
+

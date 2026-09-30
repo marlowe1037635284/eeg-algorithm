@@ -1,32 +1,20 @@
-"""日志系统管理器（单例）。
-
-职责：
-- 初始化、重新配置和关闭日志系统。
-- 管理文件日志队列和界面告警队列。
-- 提供 ``drain_log_events()`` 和日志状态查询。
-"""
-
 from __future__ import annotations
 
 import logging
-import logging.handlers
 import os
 import queue
-import threading
-import time
+from datetime import datetime
+from logging.handlers import QueueListener, RotatingFileHandler
 from pathlib import Path
+from threading import RLock
 
-from eeg_algorithm.internal.observability.formatter import JsonLinesFormatter
-from eeg_algorithm.internal.observability.handlers import BoundedQueueHandler
-from eeg_algorithm.internal.observability.performance import PerformanceAggregator
-from eeg_algorithm.types.observability import (
-    LogEvent,
-    LoggingConfig,
-    LoggingStatus,
-    LogLevel,
-)
+from eeg_algorithm.errors import INVALID_ARGUMENT, INVALID_STATE, algorithm_error
+from eeg_algorithm.types import LogEvent, LogLevel, LoggingConfig, LoggingStatus
 
-_LEVEL_TO_INT: dict[LogLevel, int] = {
+from .formatter import JsonLineFormatter
+from .handlers import NonBlockingQueueHandler, UiEventHandler
+
+_LEVELS = {
     LogLevel.DEBUG: logging.DEBUG,
     LogLevel.INFO: logging.INFO,
     LogLevel.WARNING: logging.WARNING,
@@ -34,172 +22,185 @@ _LEVEL_TO_INT: dict[LogLevel, int] = {
     LogLevel.CRITICAL: logging.CRITICAL,
 }
 
-_ROOT = "eeg_algorithm"
 
-
-class _ObservabilityManager:
+class LoggingManager:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._config: LoggingConfig | None = None
-        self._root_logger = logging.getLogger(_ROOT)
-        self._root_logger.setLevel(logging.DEBUG)
-        self._root_logger.addHandler(logging.NullHandler())
-
-        self._queue_handler: BoundedQueueHandler | None = None
-        self._file_handler: logging.Handler | None = None
-        self._file_queue: "queue.Queue[logging.LogRecord] | None" = None
-        self._ui_queue: "queue.Queue[LogEvent] | None" = None
-        self._listener: logging.handlers.QueueListener | None = None
-
-        self._dropped_file = 0
-        self._dropped_ui = 0
+        self._lock = RLock()
+        self._enabled = False
+        self._configured = False
+        self._active_log_file: str | None = None
+        self._dropped_file_records = 0
+        self._dropped_ui_events = 0
         self._last_error: str | None = None
-        self._active_file: str | None = None
-        self._performance = PerformanceAggregator()
+        self._file_queue: queue.Queue[logging.LogRecord] | None = None
+        self._ui_queue: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=1)
+        self._listener: QueueListener | None = None
+        self._file_handler: RotatingFileHandler | None = None
+        self._queue_handler: NonBlockingQueueHandler | None = None
+        self._ui_handler: UiEventHandler | None = None
 
-    # ---- 配置 ----
+    @property
+    def configured(self) -> bool:
+        with self._lock:
+            return self._configured
+
     def configure(self, config: LoggingConfig) -> None:
         with self._lock:
-            self._shutdown_locked()
-            self._config = config
+            if self._configured:
+                raise algorithm_error(INVALID_STATE, "日志系统已经配置", "configure_logging")
+            self._validate(config)
+            self._configured = True
+            self._enabled = config.enabled
+            self._ui_queue = queue.Queue(maxsize=config.event_queue_capacity)
             if not config.enabled:
-                self._active_file = None
                 return
 
-            log_dir = Path(config.directory) if config.directory else Path.cwd() / "logs"
             try:
-                log_dir.mkdir(parents=True, exist_ok=True)
-                filename = (
-                    f"eeg_algorithm-{time.strftime('%Y%m%d')}-{os.getpid()}.jsonl"
+                directory = Path(config.directory).expanduser().resolve()
+                directory.mkdir(parents=True, exist_ok=True)
+                filename = f"eeg_algorithm-{datetime.now():%Y%m%d}-{os.getpid()}.jsonl"
+                path = directory / filename
+                file_queue: queue.Queue[logging.LogRecord] = queue.Queue(
+                    maxsize=max(1024, config.event_queue_capacity * 4)
                 )
-                path = log_dir / filename
-                self._active_file = str(path)
-
-                self._file_queue = queue.Queue(maxsize=config.event_queue_capacity)
-                self._ui_queue = queue.Queue(maxsize=config.event_queue_capacity)
-
-                fh = logging.handlers.RotatingFileHandler(
+                file_handler = RotatingFileHandler(
                     path,
                     maxBytes=config.rotate_max_bytes,
                     backupCount=config.rotate_backup_count,
                     encoding="utf-8",
+                    delay=False,
                 )
-                fh.setFormatter(JsonLinesFormatter())
-                fh.setLevel(logging.DEBUG)
-                self._file_handler = fh
-
-                qh = BoundedQueueHandler(
-                    self._file_queue,
+                file_handler.setLevel(_LEVELS[config.min_level])
+                file_handler.setFormatter(JsonLineFormatter())
+                queue_handler = NonBlockingQueueHandler(file_queue, self._increment_file_drop)
+                queue_handler.setLevel(_LEVELS[config.min_level])
+                ui_handler = UiEventHandler(
                     self._ui_queue,
-                    _LEVEL_TO_INT[config.ui_event_min_level],
-                    self._on_file_drop,
-                    self._on_ui_drop,
+                    self._increment_ui_drop,
+                    _LEVELS[config.ui_event_min_level],
                 )
-                qh.setLevel(_LEVEL_TO_INT[config.min_level])
-                self._queue_handler = qh
-                self._root_logger.addHandler(qh)
+                listener = QueueListener(file_queue, file_handler, respect_handler_level=True)
 
-                self._listener = logging.handlers.QueueListener(
-                    self._file_queue, fh, respect_handler_level=True
-                )
-                self._listener.start()
-            except Exception as exc:  # noqa: BLE001
+                package_logger = logging.getLogger("eeg_algorithm")
+                package_logger.setLevel(min(_LEVELS[config.min_level], _LEVELS[config.ui_event_min_level]))
+                package_logger.propagate = False
+                package_logger.addHandler(queue_handler)
+                package_logger.addHandler(ui_handler)
+                listener.start()
+
+                self._file_queue = file_queue
+                self._file_handler = file_handler
+                self._queue_handler = queue_handler
+                self._ui_handler = ui_handler
+                self._listener = listener
+                self._active_log_file = str(path)
+            except Exception as exc:
                 self._last_error = str(exc)
-                self._shutdown_locked()
+                self._enabled = False
+                self._configured = False
+                raise algorithm_error(INVALID_ARGUMENT, f"日志初始化失败: {exc}", "configure_logging") from exc
 
-    # ---- 回调 ----
-    def _on_file_drop(self) -> None:
-        self._dropped_file += 1
-
-    def _on_ui_drop(self) -> None:
-        self._dropped_ui += 1
-
-    # ---- 查询 ----
-    def drain_log_events(self, max_items: int = 100) -> tuple[LogEvent, ...]:
-        ui_queue = self._ui_queue
-        if ui_queue is None:
-            return ()
+    def drain(self, max_items: int = 100) -> tuple[LogEvent, ...]:
+        if max_items <= 0:
+            raise algorithm_error(INVALID_ARGUMENT, "max_items必须大于0", "drain_log_events")
         events: list[LogEvent] = []
-        while len(events) < max_items:
+        for _ in range(max_items):
             try:
-                events.append(ui_queue.get_nowait())
+                record = self._ui_queue.get_nowait()
             except queue.Empty:
                 break
+            events.append(self._to_event(record))
         return tuple(events)
 
-    def get_logging_status(self) -> LoggingStatus:
+    def status(self) -> LoggingStatus:
         with self._lock:
-            enabled = (
-                self._config is not None
-                and self._config.enabled
-                and self._listener is not None
-            )
             return LoggingStatus(
-                enabled=enabled,
-                active_log_file=self._active_file,
-                dropped_file_records=self._dropped_file,
-                dropped_ui_events=self._dropped_ui,
+                enabled=self._enabled,
+                active_log_file=self._active_log_file,
+                dropped_file_records=self._dropped_file_records,
+                dropped_ui_events=self._dropped_ui_events,
                 last_logging_error=self._last_error,
             )
 
-    @property
-    def performance(self) -> PerformanceAggregator:
-        return self._performance
-
-    # ---- 关闭 ----
-    def close(self) -> None:
+    def shutdown(self) -> None:
         with self._lock:
-            self._shutdown_locked()
-            self._active_file = None
-            self._config = None
-
-    def _shutdown_locked(self) -> None:
-        if self._listener is not None:
-            self._listener.stop()
-            self._listener = None
-        if self._queue_handler is not None:
-            self._root_logger.removeHandler(self._queue_handler)
-            self._queue_handler = None
-        if self._file_handler is not None:
-            try:
+            package_logger = logging.getLogger("eeg_algorithm")
+            if self._queue_handler is not None:
+                package_logger.removeHandler(self._queue_handler)
+            if self._ui_handler is not None:
+                package_logger.removeHandler(self._ui_handler)
+            if self._listener is not None:
+                try:
+                    self._listener.stop()
+                except queue.Full:
+                    if self._file_queue is not None:
+                        try:
+                            self._file_queue.get_nowait()
+                        except queue.Empty:
+                            pass
+                    self._listener.stop()
+                except Exception as exc:
+                    self._last_error = str(exc)
+            if self._file_handler is not None:
+                self._file_handler.flush()
                 self._file_handler.close()
-            except Exception:  # noqa: BLE001
-                pass
+            self._listener = None
             self._file_handler = None
-        self._file_queue = None
-        self._ui_queue = None
+            self._queue_handler = None
+            self._ui_handler = None
+            self._file_queue = None
+            self._enabled = False
+
+    def _validate(self, config: LoggingConfig) -> None:
+        if config.enabled and not config.directory.strip():
+            raise algorithm_error(INVALID_ARGUMENT, "启用日志时directory不能为空", "configure_logging")
+        if config.rotate_max_bytes <= 0 or config.rotate_backup_count < 0:
+            raise algorithm_error(INVALID_ARGUMENT, "日志轮转参数非法", "configure_logging")
+        if config.event_queue_capacity <= 0 or config.performance_interval_s <= 0:
+            raise algorithm_error(INVALID_ARGUMENT, "日志队列容量和性能周期必须大于0", "configure_logging")
+
+    def _increment_file_drop(self) -> None:
+        with self._lock:
+            self._dropped_file_records += 1
+
+    def _increment_ui_drop(self) -> None:
+        with self._lock:
+            self._dropped_ui_events += 1
+
+    @staticmethod
+    def _to_event(record: logging.LogRecord) -> LogEvent:
+        return LogEvent(
+            timestamp_utc_ns=int(record.created * 1_000_000_000),
+            level=LogLevel(record.levelname),
+            code=str(getattr(record, "code", "UNSPECIFIED")),
+            message=record.getMessage(),
+            operation=getattr(record, "operation", None),
+            session_id=getattr(record, "session_id", None),
+            request_id=getattr(record, "request_id", None),
+            sequence_id=getattr(record, "sequence_id", None),
+            duration_ms=getattr(record, "duration_ms", None),
+        )
 
 
-_manager = _ObservabilityManager()
+_manager = LoggingManager()
 
 
-def configure_logging(config: LoggingConfig) -> None:
-    """配置异步日志系统。应在 ``create_api()`` 之前调用。"""
+def configure(config: LoggingConfig) -> None:
     _manager.configure(config)
 
 
 def drain_log_events(max_items: int = 100) -> tuple[LogEvent, ...]:
-    """供 C++ 周期性拉取告警事件。"""
-    return _manager.drain_log_events(max_items)
+    return _manager.drain(max_items)
 
 
-def get_logging_status() -> LoggingStatus:
-    return _manager.get_logging_status()
+def get_status() -> LoggingStatus:
+    return _manager.status()
 
 
-def close_logging() -> None:
-    _manager.close()
+def shutdown() -> None:
+    _manager.shutdown()
 
 
-def get_logger(name: str) -> logging.Logger:
-    """获取 ``eeg_algorithm.<name>`` 命名空间下的 logger。"""
-    return logging.getLogger(f"{_ROOT}.{name}")
+def is_configured() -> bool:
+    return _manager.configured
 
-
-def record_performance(operation: str, duration_us: float) -> None:
-    """记录一次算法调用耗时。"""
-    _manager.performance.record(operation, duration_us)
-
-
-def performance_summary() -> dict:
-    return _manager.performance.summarize()

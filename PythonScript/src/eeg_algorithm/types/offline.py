@@ -1,23 +1,17 @@
-"""离线 DTO：预处理配置、查询、数据集、结果与状态。"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 from numpy.typing import NDArray
 
-from eeg_algorithm.errors import AlgorithmErrorInfo
-from eeg_algorithm.types.common import (
-    AbsoluteTimeRange,
-    ChannelLayout,
-    FrequencyBand,
-    SignalBlock,
-)
-from eeg_algorithm.types.enums import (
-    OfflineSessionState,
-    ReferenceMethod,
-)
+from .common import AbsoluteTimeRange, ChannelLayout, SignalBlock
+from .enums import OfflineSessionState, ReferenceMethod
+from .online import FrequencyBand
+
+if TYPE_CHECKING:
+    from eeg_algorithm.errors import AlgorithmErrorInfo
 
 
 @dataclass(frozen=True)
@@ -119,8 +113,8 @@ class OfflineSpectrumResult:
     preprocess_version: int
     channel_name: str
     selected_range: AbsoluteTimeRange
-    frequencies_hz: NDArray[np.float32]  # [F]
-    psd: NDArray[np.float32]             # [F]
+    frequencies_hz: NDArray[np.float32]
+    psd: NDArray[np.float32]
 
 
 @dataclass(frozen=True)
@@ -129,11 +123,11 @@ class OfflineTopographyResult:
     preprocess_version: int
     frequency_band: FrequencyBand
     selected_range: AbsoluteTimeRange
-    grid_x: NDArray[np.float32]            # [W]
-    grid_y: NDArray[np.float32]            # [H]
-    grid_values: NDArray[np.float32]       # [H, W]
-    head_mask: NDArray[np.bool_]           # [H, W]
-    electrode_values: NDArray[np.float32]  # [C]
+    grid_x: NDArray[np.float32]
+    grid_y: NDArray[np.float32]
+    grid_values: NDArray[np.float32]
+    head_mask: NDArray[np.bool_]
+    electrode_values: NDArray[np.float32]
     electrode_names: tuple[str, ...]
 
 
@@ -146,3 +140,4 @@ class OfflineSessionStatus:
     raw_sample_count: int
     preprocessed_sample_count: int | None
     last_error: AlgorithmErrorInfo | None
+

@@ -1,23 +1,5 @@
-"""异步日志与可观测性子包。"""
+from .context import get_logger, log_event
+from .manager import configure, drain_log_events, get_status, shutdown
 
-from eeg_algorithm.internal.observability.manager import (
-    close_logging,
-    configure_logging,
-    drain_log_events,
-    get_logger,
-    get_logging_status,
-    performance_summary,
-    record_performance,
-)
-from eeg_algorithm.internal.observability.performance import PerformanceAggregator
+__all__ = ["configure", "drain_log_events", "get_logger", "get_status", "log_event", "shutdown"]
 
-__all__ = [
-    "PerformanceAggregator",
-    "close_logging",
-    "configure_logging",
-    "drain_log_events",
-    "get_logger",
-    "get_logging_status",
-    "performance_summary",
-    "record_performance",
-]

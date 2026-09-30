@@ -1,42 +1,27 @@
-"""数组工具：C-contiguous 转换与 NaN/Inf 校验。"""
-
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import NDArray
 
-from eeg_algorithm.errors import error
-from eeg_algorithm.errors import ErrorCode
-
-
-def as_contiguous_float32(a: np.ndarray) -> np.ndarray:
-    """转换为 C-contiguous ``float32``，若已是目标类型则零拷贝返回。"""
-    arr = np.asarray(a, dtype=np.float32)
-    if not arr.flags.c_contiguous:
-        arr = np.ascontiguousarray(arr)
-    return arr
+from eeg_algorithm.types import AbsoluteTimeRange, SignalBlock
 
 
-def as_contiguous_int64(a: np.ndarray) -> np.ndarray:
-    """转换为 C-contiguous ``int64``。"""
-    arr = np.asarray(a, dtype=np.int64)
-    if not arr.flags.c_contiguous:
-        arr = np.ascontiguousarray(arr)
-    return arr
+def as_float32_c(values: NDArray[np.floating]) -> NDArray[np.float32]:
+    return np.ascontiguousarray(values, dtype=np.float32)
 
 
-def check_no_nan_inf(a: np.ndarray, operation: str) -> None:
-    """输入数组不允许包含 NaN 或 Inf。"""
-    if not np.isfinite(a).all():
-        raise error(ErrorCode.INVALID_ARGUMENT, "输入数据包含 NaN 或 Inf", operation)
+def as_int64_c(values: NDArray[np.integer]) -> NDArray[np.int64]:
+    return np.ascontiguousarray(values, dtype=np.int64)
 
 
-def check_shape(a: np.ndarray, expected: tuple[int, ...] | None, operation: str) -> None:
-    """校验形状（``expected=None`` 表示仅要求非空）。"""
-    if a.ndim == 0:
-        raise error(ErrorCode.SHAPE_MISMATCH, "输入数组为空标量", operation)
-    if expected is not None and tuple(a.shape) != tuple(expected):
-        raise error(
-            ErrorCode.SHAPE_MISMATCH,
-            f"数组形状 {tuple(a.shape)} 与期望 {tuple(expected)} 不符",
-            operation,
-        )
+def block_time_range(block: SignalBlock) -> AbsoluteTimeRange:
+    return AbsoluteTimeRange(int(block.timestamps_ns[0]), int(block.timestamps_ns[-1]))
+
+
+def copy_block(block: SignalBlock, values: NDArray[np.floating] | None = None) -> SignalBlock:
+    return SignalBlock(
+        first_sequence_id=block.first_sequence_id,
+        timestamps_ns=as_int64_c(block.timestamps_ns.copy()),
+        values=as_float32_c(block.values.copy() if values is None else values),
+    )
+

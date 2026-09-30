@@ -1,65 +1,55 @@
-"""在线因果滤波链：高通/低通/陷波，状态跨调用保留。"""
-
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import sosfilt, sosfilt_zi
+from numpy.typing import NDArray
+from scipy import signal
 
-from eeg_algorithm.internal.common.filter_design import (
-    bandstop_sos,
-    highpass_sos,
-    lowpass_sos,
-)
-from eeg_algorithm.types.online import OnlineProcessingConfig
+from eeg_algorithm.errors import INVALID_ARGUMENT, algorithm_error
+from eeg_algorithm.types import OnlineProcessingConfig
+
+from eeg_algorithm.internal.common.filter_design import bandstop_sos, highpass_sos, lowpass_sos
 
 
 class OnlineFilterChain:
-    """执行顺序固定为高通/低通后陷波，使用因果 Butterworth SOS。"""
-
-    def __init__(
-        self,
-        config: OnlineProcessingConfig,
-        sample_rate_hz: float,
-        channel_count: int,
-    ) -> None:
-        self._fs = sample_rate_hz
+    def __init__(self, config: OnlineProcessingConfig, sample_rate_hz: float, channel_count: int) -> None:
+        self._sample_rate_hz = sample_rate_hz
         self._channel_count = channel_count
-        self._sos: list[tuple[np.ndarray, np.ndarray]] = []
-        self._build(config)
-
-    def _build(self, config: OnlineProcessingConfig) -> None:
-        sos_list: list[np.ndarray] = []
-        if config.high_pass.enabled:
-            sos_list.append(
-                highpass_sos(config.high_pass.low_hz, self._fs, config.high_pass.order)
-            )
-        if config.low_pass.enabled:
-            sos_list.append(
-                lowpass_sos(config.low_pass.high_hz, self._fs, config.low_pass.order)
-            )
-        if config.notch.enabled:
-            sos_list.append(
-                bandstop_sos(config.notch.low_hz, config.notch.high_hz, self._fs, config.notch.order)
-            )
-        self._sos = [(s, self._init_zi(s)) for s in sos_list]
-
-    def _init_zi(self, sos: np.ndarray) -> np.ndarray:
-        zi = sosfilt_zi(sos)  # (n_sections, 2)
-        return np.repeat(zi[:, None, :], self._channel_count, axis=1)  # (n_sections, C, 2)
+        self._stages: list[tuple[NDArray[np.float64], NDArray[np.float64]]] = []
+        self.reconfigure(config)
 
     def reconfigure(self, config: OnlineProcessingConfig) -> None:
-        self._build(config)
+        stages: list[NDArray[np.float64]] = []
+        for item in (config.high_pass, config.low_pass, config.notch):
+            if item.order != 4:
+                raise algorithm_error(INVALID_ARGUMENT, "v1滤波器阶数必须为4", "OnlineFilterChain.reconfigure")
+        if config.high_pass.enabled:
+            if config.high_pass.low_hz is None:
+                raise algorithm_error(INVALID_ARGUMENT, "高通启用时必须提供low_hz", "OnlineFilterChain.reconfigure")
+            stages.append(highpass_sos(config.high_pass.low_hz, self._sample_rate_hz))
+        if config.low_pass.enabled:
+            if config.low_pass.high_hz is None:
+                raise algorithm_error(INVALID_ARGUMENT, "低通启用时必须提供high_hz", "OnlineFilterChain.reconfigure")
+            stages.append(lowpass_sos(config.low_pass.high_hz, self._sample_rate_hz))
+        if config.notch.enabled:
+            if config.notch.low_hz is None or config.notch.high_hz is None:
+                raise algorithm_error(INVALID_ARGUMENT, "陷波启用时必须提供low_hz和high_hz", "OnlineFilterChain.reconfigure")
+            stages.append(bandstop_sos(config.notch.low_hz, config.notch.high_hz, self._sample_rate_hz))
+        self._stages = [
+            (sos, np.zeros((sos.shape[0], self._channel_count, 2), dtype=np.float64)) for sos in stages
+        ]
 
-    def process_block(self, values: np.ndarray) -> np.ndarray:
-        y = np.asarray(values, dtype=np.float64)
-        for i, (sos, zi) in enumerate(self._sos):
-            y, zf = sosfilt(sos, y, axis=1, zi=zi)
-            self._sos[i] = (sos, zf)
-        return y.astype(np.float32)
+    def process_sample(self, values: NDArray[np.float32]) -> NDArray[np.float32]:
+        return self.process_block(np.ascontiguousarray(values[:, None], dtype=np.float32))[:, 0]
 
-    def process_sample(self, values: np.ndarray) -> np.ndarray:
-        y = self.process_block(values[:, None])
-        return y[:, 0]
+    def process_block(self, values: NDArray[np.float32]) -> NDArray[np.float32]:
+        output = np.asarray(values, dtype=np.float64)
+        new_stages: list[tuple[NDArray[np.float64], NDArray[np.float64]]] = []
+        for sos, zi in self._stages:
+            output, next_zi = signal.sosfilt(sos, output, axis=1, zi=zi)
+            new_stages.append((sos, next_zi))
+        self._stages = new_stages
+        return np.ascontiguousarray(output, dtype=np.float32)
 
     def reset(self) -> None:
-        self._sos = [(s, self._init_zi(s)) for s, _ in self._sos]
+        self._stages = [(sos, np.zeros_like(zi)) for sos, zi in self._stages]
+

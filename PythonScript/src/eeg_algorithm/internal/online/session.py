@@ -1,314 +1,315 @@
-"""在线会话：校验、编排在线流水线、序列连续性与状态原子提交。"""
-
 from __future__ import annotations
 
+import logging
 import time
+from threading import RLock
 
 import numpy as np
 
-from eeg_algorithm.errors import AlgorithmError, AlgorithmErrorInfo, ErrorCode, error
-from eeg_algorithm.internal.online.asr import OnlineAsrProcessor
-from eeg_algorithm.internal.online.filter_chain import OnlineFilterChain
-from eeg_algorithm.internal.online.phase_decoder import PhaseDecoder
-from eeg_algorithm.internal.online.rereference import ReReferencer
-from eeg_algorithm.internal.online.rolling_buffer import RollingSignalBuffer
-from eeg_algorithm.internal.online.spectrum import SpectrumAnalyzer
-from eeg_algorithm.internal.online.topography import TopographyAnalyzer
-from eeg_algorithm.internal.observability import get_logger, record_performance
-from eeg_algorithm.internal.validation import (
-    validate_channel_layout,
-    validate_channel_name,
-    validate_values,
+from eeg_algorithm.errors import (
+    INVALID_ARGUMENT,
+    INVALID_STATE,
+    TIME_SEQUENCE_DISCONTINUITY,
+    AlgorithmErrorInfo,
+    algorithm_error,
 )
-from eeg_algorithm.types.common import AbsoluteTimeRange, ChannelLayout, GapInfo, SampleFrame, SignalBlock
-from eeg_algorithm.types.enums import QualityFlag, SessionState
-from eeg_algorithm.types.online import (
+from eeg_algorithm.types import (
     ConfigUpdateResult,
+    GapInfo,
     OnlineConfig,
     OnlineProcessingConfig,
     OnlineResult,
-    PhaseResult,
+    QualityFlag,
+    SampleFrame,
+    SessionState,
     SessionStatus,
+    SignalBlock,
     SpectrumQuery,
     SpectrumResult,
     TopographyQuery,
     TopographyResult,
 )
 
-_WARMUP_SAMPLES = 8
+from eeg_algorithm.internal.observability.context import get_logger, log_event
+from eeg_algorithm.internal.observability.performance import PerformanceAggregator
+from eeg_algorithm.internal.validation import validate_block, validate_frame, validate_layout
 
-_log = get_logger("online.session")
+from .asr import OnlineAsrProcessor
+from .filter_chain import OnlineFilterChain
+from .phase_decoder import PhaseDecoder
+from .rereference import ReReferencer
+from .rolling_buffer import RollingSignalBuffer
+from .spectrum import compute_online_spectrum
+from .topography import compute_online_topography
 
 
 class OnlineSession:
-    def __init__(self, config: OnlineConfig) -> None:
-        validate_channel_layout(config.layout)
-        if config.processing.config_version <= 0:
-            raise error(ErrorCode.INVALID_ARGUMENT, "config_version 必须大于 0", "create_online_session")
-        if config.rolling_window_s <= 0:
-            raise error(ErrorCode.INVALID_ARGUMENT, "rolling_window_s 必须大于 0", "create_online_session")
-
+    def __init__(self, session_id: int, config: OnlineConfig) -> None:
+        self._validate_config(config)
+        self._id = session_id
         self._config = config
-        self._layout: ChannelLayout = config.layout
-        self._config_version = config.processing.config_version
-        self._channel_count = len(config.layout.channel_names)
-        self._fs = config.layout.sample_rate_hz
-
-        self._filter_chain = OnlineFilterChain(
-            config.processing, self._fs, self._channel_count
-        )
-        self._rereferencer = ReReferencer(config.reference, self._layout)
-        self._asr = OnlineAsrProcessor(config.asr, self._layout)
+        self._filter = OnlineFilterChain(config.processing, config.layout.sample_rate_hz, len(config.layout.channel_names))
+        self._reference = ReReferencer(config.reference, config.layout)
+        self._asr = OnlineAsrProcessor(config.asr, config.layout)
         self._asr.set_enabled(config.processing.asr_enabled)
-        self._phase_decoder = PhaseDecoder(config.phase, self._layout)
-        self._buffer = RollingSignalBuffer(self._layout, config.rolling_window_s)
-
-        self._state = SessionState.WARMING_UP
-        self._warmup_remaining = _WARMUP_SAMPLES
+        self._phase = PhaseDecoder(config.phase, config.layout)
+        self._buffer = RollingSignalBuffer(config.layout, config.rolling_window_s)
+        self._buffer.clear(config.processing.config_version)
+        self._state = SessionState.WARMING_UP if config.phase.enabled else SessionState.CREATED
         self._last_sequence_id: int | None = None
-
+        self._last_timestamp_ns: int | None = None
+        self._durations_us: list[int] = []
         self._gap_count = 0
         self._timeout_count = 0
-        self._total_us = 0.0
-        self._max_us = 0.0
-        self._us_samples: list[float] = []
         self._last_error: AlgorithmErrorInfo | None = None
-        self._session_id: int | None = None
+        self._lock = RLock()
+        self._logger = get_logger(__name__)
+        self._performance = PerformanceAggregator()
+        log_event(self._logger, logging.INFO, "在线会话创建", code="ONLINE_SESSION_CREATED", session_id=self._id)
 
-        _log.info(
-            "在线会话创建",
-            extra={"session_id": None, "operation": "create_online_session",
-                   "config_version": self._config_version},
-        )
-
-    # ---- 数据流 ----
-    def push_sample(self, frame: SampleFrame) -> OnlineResult:
-        values = validate_values(np.asarray(frame.values), self._channel_count, "push_sample")
-        return self._push(values, frame.sequence_id, np.array([frame.timestamp_ns], dtype=np.int64))
-
-    def push_block(self, block: SignalBlock) -> OnlineResult:
-        values = validate_values(block.values, self._channel_count, "push_block")
-        n = values.shape[1]
-        stamps = np.ascontiguousarray(block.timestamps_ns, dtype=np.int64)
-        if stamps.shape[0] != n:
-            raise error(ErrorCode.SHAPE_MISMATCH, "timestamps_ns 长度与样本数不符", "push_block")
-        return self._push(values, block.first_sequence_id, stamps)
-
-    def _push(self, values: np.ndarray, first_seq: int, stamps: np.ndarray) -> OnlineResult:
-        self._ensure_operable("push")
-
-        # 序列连续性检查
-        expected = self._last_sequence_id + 1 if self._last_sequence_id is not None else None
-        if expected is not None and first_seq != expected:
-            self._handle_discontinuity(first_seq, stamps)
-
-        start = time.perf_counter()
-        try:
-            filtered = self._filter_chain.process_block(values)
-            reref = self._rereferencer.process_block(filtered)
-            asr = self._asr.process_block(reref)
-
-            if self._config.phase.enabled:
-                phase_results = self._phase_decoder.update_block(asr, first_seq, stamps)
-            else:
-                phase_results: tuple[PhaseResult, ...] = ()
-
-            block = SignalBlock(
-                first_sequence_id=first_seq,
-                timestamps_ns=stamps,
-                values=np.ascontiguousarray(asr, dtype=np.float32),
-            )
-            self._buffer.append(block, self._config_version)
-        except AlgorithmError:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            info = AlgorithmErrorInfo(
-                code=ErrorCode.ALGORITHM_RUNTIME_ERROR,
-                message=str(exc),
-                operation="push",
-                session_id=self._session_id,
-                sequence_id=first_seq,
-            )
-            self._last_error = info
-            self._state = SessionState.ERROR
-            raise error(
-                info.code, info.message, info.operation, info.session_id, info.sequence_id
-            ) from exc
-
-        elapsed_us = (time.perf_counter() - start) * 1e6
-        self._record_timing(elapsed_us)
-        record_performance("push", elapsed_us)
-
-        n = values.shape[1]
-        self._last_sequence_id = first_seq + n - 1
-        self._advance_warmup(n)
-
-        flags = self._current_flags()
-        processed = block if self._config.return_processed_signal else None
-        return OnlineResult(
-            config_version=self._config_version,
-            first_sequence_id=first_seq,
-            last_sequence_id=self._last_sequence_id,
-            processed_signal=processed,
-            phase_results=phase_results,
-            quality_flags=flags,
-            processing_time_us=int(elapsed_us),
-        )
-
-    # ---- 配置 ----
     def set_asr_reference(self, reference: SignalBlock) -> None:
-        self._asr.fit_reference(reference)
+        with self._lock:
+            self._ensure_open("set_asr_reference")
+            validate_block(reference, len(self._config.layout.channel_names), "set_asr_reference")
+            duration_s = reference.values.shape[1] / self._config.layout.sample_rate_hz
+            if duration_s < 60.0 or duration_s > 180.0:
+                raise algorithm_error(
+                    INVALID_ARGUMENT,
+                    "ASR参考数据时长必须为60到180秒",
+                    "set_asr_reference",
+                    session_id=self._id,
+                )
+            fresh_filter = OnlineFilterChain(
+                self._config.processing,
+                self._config.layout.sample_rate_hz,
+                len(self._config.layout.channel_names),
+            )
+            processed = self._reference.process_block(fresh_filter.process_block(reference.values))
+            self._asr.fit_processed_reference(reference, processed)
+            log_event(
+                self._logger,
+                logging.INFO,
+                "在线ASR参考数据已设置",
+                code="ASR_REFERENCE_SET",
+                operation="set_asr_reference",
+                session_id=self._id,
+            )
 
     def update_processing_config(self, config: OnlineProcessingConfig) -> ConfigUpdateResult:
-        if config.config_version <= self._config_version:
-            raise error(ErrorCode.INVALID_ARGUMENT, "新的 config_version 必须更大", "update_processing_config")
-        self._filter_chain.reconfigure(config)
-        self._asr.set_enabled(config.asr_enabled)
-        self._buffer.clear(config.config_version)
-        self._config_version = config.config_version
-        self._warmup_remaining = _WARMUP_SAMPLES
-        self._state = SessionState.WARMING_UP
+        with self._lock:
+            self._ensure_open("update_processing_config")
+            if config.config_version <= self._config.processing.config_version:
+                raise algorithm_error(INVALID_ARGUMENT, "新配置版本必须大于当前版本", "update_processing_config")
+            old = self._config.processing
+            self._filter.reconfigure(config)
+            self._asr.set_enabled(config.asr_enabled)
+            asr_refit_required = False
+            filters_changed = (old.high_pass, old.low_pass, old.notch) != (
+                config.high_pass,
+                config.low_pass,
+                config.notch,
+            )
+            if filters_changed and self._asr.original_reference is not None:
+                reference = self._asr.original_reference
+                fresh_filter = OnlineFilterChain(config, self._config.layout.sample_rate_hz, len(self._config.layout.channel_names))
+                processed = self._reference.process_block(fresh_filter.process_block(reference.values))
+                self._asr.fit_processed_reference(reference, processed)
+            elif filters_changed and config.asr_enabled:
+                asr_refit_required = True
+            self._config = OnlineConfig(
+                layout=self._config.layout,
+                processing=config,
+                reference=self._config.reference,
+                asr=self._config.asr,
+                phase=self._config.phase,
+                rolling_window_s=self._config.rolling_window_s,
+                return_processed_signal=self._config.return_processed_signal,
+            )
+            effective = 0 if self._last_sequence_id is None else self._last_sequence_id + 1
+            self._reset_stream_state(config.config_version)
+            log_event(
+                self._logger,
+                logging.INFO,
+                "在线处理配置更新",
+                code="ONLINE_CONFIG_UPDATED",
+                operation="update_processing_config",
+                session_id=self._id,
+                sequence_id=effective,
+                config_version=config.config_version,
+            )
+            return ConfigUpdateResult(config.config_version, effective, True, asr_refit_required, True)
 
-        refit_required = config.asr_enabled and self._asr._reference_data is not None
-        effective = self._last_sequence_id + 1 if self._last_sequence_id is not None else 0
-
-        _log.info(
-            "在线处理配置更新",
-            extra={"operation": "update_processing_config", "config_version": config.config_version},
+    def push_sample(self, frame: SampleFrame) -> OnlineResult:
+        validate_frame(frame, len(self._config.layout.channel_names), "push_sample")
+        block = SignalBlock(
+            frame.sequence_id,
+            np.ascontiguousarray([frame.timestamp_ns], dtype=np.int64),
+            np.ascontiguousarray(frame.values[:, None], dtype=np.float32),
         )
-        return ConfigUpdateResult(
-            config_version=config.config_version,
-            effective_sequence_id=effective,
-            rolling_buffer_cleared=True,
-            asr_refit_required=refit_required,
-            warmup_required=True,
-        )
+        return self.push_block(block)
 
-    # ---- 缺口与重置 ----
+    def push_block(self, block: SignalBlock) -> OnlineResult:
+        with self._lock:
+            self._ensure_open("push_block")
+            validate_block(block, len(self._config.layout.channel_names), "push_block")
+            self._validate_continuity(block)
+            if self._config.processing.asr_enabled and not self._asr.has_reference:
+                from eeg_algorithm.errors import ASR_REFERENCE_REQUIRED
+
+                raise algorithm_error(
+                    ASR_REFERENCE_REQUIRED,
+                    "ASR已启用但尚未设置参考数据",
+                    "push_block",
+                    session_id=self._id,
+                    sequence_id=block.first_sequence_id,
+                )
+            started = time.perf_counter_ns()
+            try:
+                filtered = self._filter.process_block(block.values)
+                referenced = self._reference.process_block(filtered)
+                cleaned = self._asr.process_block(referenced)
+                processed = SignalBlock(block.first_sequence_id, block.timestamps_ns, cleaned)
+                phase_results = self._phase.update_block(
+                    cleaned, block.first_sequence_id, block.timestamps_ns
+                )
+                self._buffer.append(processed, self._config.processing.config_version)
+            except Exception:
+                log_event(
+                    self._logger,
+                    logging.ERROR,
+                    "在线数据处理失败",
+                    code="ONLINE_PROCESSING_FAILED",
+                    operation="push_block",
+                    session_id=self._id,
+                    sequence_id=block.first_sequence_id,
+                    exc_info=True,
+                )
+                raise
+            duration_us = (time.perf_counter_ns() - started) // 1000
+            last_sequence = block.first_sequence_id + block.values.shape[1] - 1
+            self._last_sequence_id = last_sequence
+            self._last_timestamp_ns = int(block.timestamps_ns[-1])
+            self._durations_us.append(int(duration_us))
+            self._performance.record("push_block", int(duration_us), session_id=self._id)
+            warmup = self._phase.warmup_remaining_samples
+            self._state = SessionState.WARMING_UP if warmup else SessionState.RUNNING
+            flags = (QualityFlag.WARMING_UP,) if warmup else (QualityFlag.OK,)
+            return OnlineResult(
+                config_version=self._config.processing.config_version,
+                first_sequence_id=block.first_sequence_id,
+                last_sequence_id=last_sequence,
+                processed_signal=processed if self._config.return_processed_signal else None,
+                phase_results=phase_results,
+                quality_flags=flags,
+                processing_time_us=int(duration_us),
+            )
+
     def notify_gap(self, gap: GapInfo) -> None:
-        self._gap_count += 1
-        self._filter_chain.reset()
-        self._asr.reset_stream_state()
-        self._phase_decoder.reset()
-        self._buffer.clear(self._config_version)
-        self._warmup_remaining = _WARMUP_SAMPLES
-        self._state = SessionState.WARMING_UP
-        _log.warning(
-            "检测到在线数据缺口，流式状态已重置",
-            extra={"operation": "notify_gap", "code": ErrorCode.TIME_SEQUENCE_DISCONTINUITY},
-        )
+        with self._lock:
+            self._ensure_open("notify_gap")
+            if gap.first_missing_sequence_id > gap.last_missing_sequence_id:
+                raise algorithm_error(INVALID_ARGUMENT, "数据缺口序列范围非法", "notify_gap")
+            self._gap_count += 1
+            self._reset_stream_state(self._config.processing.config_version)
+            self._last_sequence_id = gap.last_missing_sequence_id
+            self._last_timestamp_ns = gap.end_timestamp_ns
+            self._state = SessionState.WARMING_UP
+            log_event(
+                self._logger,
+                logging.WARNING,
+                f"检测到数据缺口: {gap.reason}",
+                code="TIME_SEQUENCE_DISCONTINUITY",
+                operation="notify_gap",
+                session_id=self._id,
+                sequence_id=gap.first_missing_sequence_id,
+            )
 
-    def reset(self) -> None:
-        self._filter_chain.reset()
-        self._asr.reset_stream_state()
-        self._phase_decoder.reset()
-        self._buffer.clear(self._config_version)
-        self._warmup_remaining = _WARMUP_SAMPLES
-        self._state = SessionState.WARMING_UP
-        self._last_error = None
-
-    # ---- 查询 ----
     def query_topography(self, query: TopographyQuery) -> TopographyResult:
-        self._validate_topography_query(query)
-        snapshot = self._buffer.snapshot_multichannel(
-            query.window_s, query.time_range, self._config_version
-        )
-        return TopographyAnalyzer().compute(snapshot, self._layout, query, self._config_version)
+        with self._lock:
+            self._ensure_open("query_topography")
+            snapshot = self._buffer.snapshot_multichannel(
+                query.window_s, query.time_range, self._config.processing.config_version
+            )
+            return compute_online_topography(snapshot, self._config.layout, query, self._config.processing.config_version)
 
     def query_spectrum(self, query: SpectrumQuery) -> SpectrumResult:
-        validate_channel_name(self._layout, query.channel_name, "query_spectrum")
-        if query.window_s <= 0:
-            raise error(ErrorCode.INVALID_ARGUMENT, "window_s 必须大于 0", "query_spectrum")
-        snapshot = self._buffer.snapshot_channel(
-            query.channel_name, query.window_s, self._config_version
-        )
-        return SpectrumAnalyzer().compute(snapshot, self._layout, query, self._config_version)
-
-    def _validate_topography_query(self, query: TopographyQuery) -> None:
-        if (query.window_s is None) == (query.time_range is None):
-            raise error(
-                ErrorCode.INVALID_ARGUMENT,
-                "window_s 与 time_range 必须且只能提供一个",
-                "query_topography",
+        with self._lock:
+            self._ensure_open("query_spectrum")
+            snapshot = self._buffer.snapshot_channel(
+                query.channel_name, query.window_s, self._config.processing.config_version
             )
+            return compute_online_spectrum(snapshot, self._config.layout, query, self._config.processing.config_version)
 
-    # ---- 状态 ----
+    def reset(self) -> None:
+        with self._lock:
+            self._ensure_open("reset")
+            self._reset_stream_state(self._config.processing.config_version)
+            self._last_sequence_id = None
+            self._last_timestamp_ns = None
+            self._state = SessionState.WARMING_UP if self._config.phase.enabled else SessionState.CREATED
+            log_event(self._logger, logging.INFO, "在线会话已重置", code="ONLINE_SESSION_RESET", session_id=self._id)
+
     def status(self) -> SessionStatus:
-        avg_us = self._total_us / len(self._us_samples) if self._us_samples else 0.0
-        return SessionStatus(
-            state=self._state,
-            config_version=self._config_version,
-            last_processed_sequence_id=self._last_sequence_id,
-            average_processing_time_us=avg_us,
-            p99_processing_time_us=self._p99(),
-            max_processing_time_us=int(self._max_us),
-            gap_count=self._gap_count,
-            timeout_count=self._timeout_count,
-            warmup_remaining_samples=self._warmup_remaining,
-            rolling_buffer_duration_s=self._buffer.available_duration_s(),
-            last_error=self._last_error,
-        )
+        with self._lock:
+            durations = np.asarray(self._durations_us, dtype=np.float64)
+            return SessionStatus(
+                state=self._state,
+                config_version=self._config.processing.config_version,
+                last_processed_sequence_id=self._last_sequence_id,
+                average_processing_time_us=float(durations.mean()) if durations.size else 0.0,
+                p99_processing_time_us=float(np.percentile(durations, 99)) if durations.size else 0.0,
+                max_processing_time_us=int(durations.max()) if durations.size else 0,
+                gap_count=self._gap_count,
+                timeout_count=self._timeout_count,
+                warmup_remaining_samples=self._phase.warmup_remaining_samples,
+                rolling_buffer_duration_s=self._buffer.available_duration_s(),
+                last_error=self._last_error,
+            )
 
     def close(self) -> None:
-        if self._state == SessionState.CLOSED:
-            return
-        self._phase_decoder.close()
-        self._state = SessionState.CLOSED
-        _log.info(
-            "在线会话关闭",
-            extra={"operation": "close_online_session", "session_id": self._session_id},
-        )
+        with self._lock:
+            if self._state is SessionState.CLOSED:
+                return
+            self._phase.close()
+            self._buffer.clear(self._config.processing.config_version)
+            self._state = SessionState.CLOSED
+            log_event(self._logger, logging.INFO, "在线会话关闭", code="ONLINE_SESSION_CLOSED", session_id=self._id)
 
-    def _set_session_id(self, session_id: int) -> None:
-        self._session_id = session_id
+    def _reset_stream_state(self, config_version: int) -> None:
+        self._filter.reset()
+        self._asr.reset_stream_state()
+        self._phase.reset()
+        self._buffer.clear(config_version)
 
-    # ---- 内部 ----
-    def _ensure_operable(self, operation: str) -> None:
-        if self._state == SessionState.CLOSED:
-            raise error(ErrorCode.INVALID_STATE, "会话已关闭", operation)
-        if self._state == SessionState.ERROR:
-            raise error(
-                ErrorCode.INVALID_STATE,
-                "会话处于 ERROR 状态，仅允许 reset/get_online_status/close",
-                operation,
+    def _validate_continuity(self, block: SignalBlock) -> None:
+        if self._last_sequence_id is not None and block.first_sequence_id != self._last_sequence_id + 1:
+            raise algorithm_error(
+                TIME_SEQUENCE_DISCONTINUITY,
+                "序列号不连续，请先调用notify_gap",
+                "push_block",
+                session_id=self._id,
+                sequence_id=block.first_sequence_id,
+            )
+        if self._last_timestamp_ns is not None and int(block.timestamps_ns[0]) <= self._last_timestamp_ns:
+            raise algorithm_error(
+                TIME_SEQUENCE_DISCONTINUITY,
+                "时间戳重复或倒退",
+                "push_block",
+                session_id=self._id,
+                sequence_id=block.first_sequence_id,
             )
 
-    def _handle_discontinuity(self, first_seq: int, stamps: np.ndarray) -> None:
-        self._gap_count += 1
-        self._filter_chain.reset()
-        self._asr.reset_stream_state()
-        self._phase_decoder.reset()
-        self._buffer.clear(self._config_version)
-        self._warmup_remaining = _WARMUP_SAMPLES
-        self._state = SessionState.WARMING_UP
-        _log.warning(
-            "在线序列断裂，流式状态已重置",
-            extra={
-                "operation": "push",
-                "code": ErrorCode.TIME_SEQUENCE_DISCONTINUITY,
-                "session_id": self._session_id,
-            },
-        )
+    def _ensure_open(self, operation: str) -> None:
+        if self._state is SessionState.CLOSED:
+            raise algorithm_error(INVALID_STATE, "在线会话已经关闭", operation, session_id=self._id)
 
-    def _advance_warmup(self, n: int) -> None:
-        if self._state == SessionState.WARMING_UP:
-            self._warmup_remaining = max(0, self._warmup_remaining - n)
-            if self._warmup_remaining == 0:
-                self._state = SessionState.RUNNING
-
-    def _current_flags(self) -> tuple[QualityFlag, ...]:
-        if self._state == SessionState.WARMING_UP:
-            return (QualityFlag.WARMING_UP,)
-        return (QualityFlag.OK,)
-
-    def _record_timing(self, us: float) -> None:
-        self._total_us += us
-        self._max_us = max(self._max_us, us)
-        self._us_samples.append(us)
-
-    def _p99(self) -> float:
-        if not self._us_samples:
-            return 0.0
-        values = sorted(self._us_samples)
-        k = int((len(values) - 1) * 0.99)
-        return values[k]
+    @staticmethod
+    def _validate_config(config: OnlineConfig) -> None:
+        validate_layout(config.layout, "create_online_session")
+        if config.rolling_window_s <= 0:
+            raise algorithm_error(INVALID_ARGUMENT, "rolling_window_s必须大于0", "create_online_session")
+        if config.processing.asr_enabled:
+            if config.asr.window_s is None or config.asr.window_s <= 0:
+                raise algorithm_error(INVALID_ARGUMENT, "启用ASR时window_s必须大于0", "create_online_session")
+            if config.asr.overlap_ratio is None or not 0 <= config.asr.overlap_ratio < 1:
+                raise algorithm_error(INVALID_ARGUMENT, "启用ASR时overlap_ratio必须在[0,1)内", "create_online_session")

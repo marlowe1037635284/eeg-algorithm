@@ -1,45 +1,41 @@
-"""Welch PSD 计算，供在线频谱与离线频谱复用。"""
-
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy import signal
+
+from eeg_algorithm.errors import INSUFFICIENT_WINDOW_DATA, algorithm_error
 
 
 def welch_psd(
-    x: np.ndarray,
-    fs: float,
-    freq_range_hz: tuple[float, float] | None = None,
-    nperseg: int | None = None,
-    overlap: float = 0.5,
-) -> tuple[np.ndarray, np.ndarray]:
-    """计算单边 Welch PSD。
-
-    参数：
-        x: 一维信号。
-        fs: 采样率（Hz）。
-        freq_range_hz: 返回频点范围；``None`` 表示返回全部有效频率。
-        nperseg: 每段长度；``None`` 表示由 scipy 自动选择。
-        overlap: 分段重叠比例，默认 0.5。
-
-    返回：
-        ``(frequencies_hz, psd)``，均为 ``float32``。
-    """
-    if nperseg is None:
-        nperseg = min(len(x), 256)
-
-    freqs, psd = signal.welch(
-        x,
-        fs=fs,
+    values: NDArray[np.float32],
+    sample_rate_hz: float,
+) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+    samples = int(values.shape[-1])
+    if samples < 4:
+        raise algorithm_error(INSUFFICIENT_WINDOW_DATA, "频谱计算至少需要4个采样点", "welch_psd")
+    nperseg = min(samples, max(4, int(round(sample_rate_hz * 2.0))))
+    frequencies, psd = signal.welch(
+        values,
+        fs=sample_rate_hz,
         nperseg=nperseg,
-        noverlap=int(nperseg * overlap),
+        noverlap=nperseg // 2,
+        detrend="constant",
         scaling="density",
+        axis=-1,
+    )
+    return (
+        np.ascontiguousarray(frequencies, dtype=np.float32),
+        np.ascontiguousarray(psd, dtype=np.float32),
     )
 
-    if freq_range_hz is not None:
-        lo, hi = freq_range_hz
-        mask = (freqs >= lo) & (freqs <= hi)
-        freqs = freqs[mask]
-        psd = psd[mask]
 
-    return freqs.astype(np.float32), psd.astype(np.float32)
+def select_frequency_range(
+    frequencies: NDArray[np.float32],
+    psd: NDArray[np.float32],
+    low_hz: float,
+    high_hz: float,
+) -> tuple[NDArray[np.float32], NDArray[np.float32]]:
+    mask = (frequencies >= low_hz) & (frequencies <= high_hz)
+    return np.ascontiguousarray(frequencies[mask]), np.ascontiguousarray(psd[..., mask])
+

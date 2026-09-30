@@ -1,10 +1,9 @@
-"""离线频谱：对选定的单导联数据计算 Welch PSD。"""
-
 from __future__ import annotations
 
-from eeg_algorithm.internal.common.spectrum_core import welch_psd
-from eeg_algorithm.types.common import ChannelLayout, SignalBlock
-from eeg_algorithm.types.offline import OfflineSpectrumQuery, OfflineSpectrumResult
+from eeg_algorithm.errors import FREQUENCY_OUT_OF_RANGE, algorithm_error
+from eeg_algorithm.types import ChannelLayout, OfflineSpectrumQuery, OfflineSpectrumResult, SignalBlock
+
+from eeg_algorithm.internal.common.spectrum_core import select_frequency_range, welch_psd
 
 
 def compute_offline_spectrum(
@@ -12,18 +11,18 @@ def compute_offline_spectrum(
     layout: ChannelLayout,
     query: OfflineSpectrumQuery,
 ) -> OfflineSpectrumResult:
-    """接收 ``select_channel_segment()`` 返回的 ``[1, K]`` 数据，计算单边 PSD。"""
-    x = channel_signal.values[0]
-    freqs, psd = welch_psd(
-        x,
-        layout.sample_rate_hz,
-        freq_range_hz=query.frequency_range_hz,
-    )
+    frequencies, psd = welch_psd(channel_signal.values[0], layout.sample_rate_hz)
+    if query.frequency_range_hz is not None:
+        low, high = query.frequency_range_hz
+        if not 0 <= low < high <= layout.sample_rate_hz / 2:
+            raise algorithm_error(FREQUENCY_OUT_OF_RANGE, "离线频谱范围非法", "compute_offline_spectrum")
+        frequencies, psd = select_frequency_range(frequencies, psd, low, high)
     return OfflineSpectrumResult(
         request_id=query.request_id,
         preprocess_version=query.preprocess_version,
         channel_name=query.channel_name,
         selected_range=query.selected_range,
-        frequencies_hz=freqs,
+        frequencies_hz=frequencies,
         psd=psd,
     )
+

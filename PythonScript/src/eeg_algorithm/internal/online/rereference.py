@@ -1,42 +1,33 @@
-"""在线重参考：OFF、双侧乳突、全脑平均。"""
-
 from __future__ import annotations
 
 import numpy as np
+from numpy.typing import NDArray
 
-from eeg_algorithm.types.common import ChannelLayout
-from eeg_algorithm.types.enums import ReferenceMethod
-from eeg_algorithm.types.online import ReferenceConfig
+from eeg_algorithm.errors import CHANNEL_LAYOUT_MISMATCH, algorithm_error
+from eeg_algorithm.types import ChannelLayout, ReferenceConfig, ReferenceMethod
 
 
 class ReReferencer:
-    """无历史状态。单点与数据块处理必须产生一致的逐采样结果。"""
-
     def __init__(self, config: ReferenceConfig, layout: ChannelLayout) -> None:
-        self._config = config
-        self._mastoid_indices: list[int] = []
-        if config.method == ReferenceMethod.BILATERAL_MASTOIDS:
-            names = set(config.mastoid_channels)
-            self._mastoid_indices = [
-                i for i, name in enumerate(layout.channel_names) if name in names
-            ]
+        self._method = config.method
+        self._mastoid_indices: tuple[int, ...] = ()
+        if config.method is ReferenceMethod.BILATERAL_MASTOIDS:
+            if len(config.mastoid_channels) != 2:
+                raise algorithm_error(CHANNEL_LAYOUT_MISMATCH, "双侧乳突重参考必须指定两个通道", "ReReferencer")
+            try:
+                self._mastoid_indices = tuple(layout.channel_names.index(name) for name in config.mastoid_channels)
+            except ValueError as exc:
+                raise algorithm_error(CHANNEL_LAYOUT_MISMATCH, "乳突通道不存在", "ReReferencer") from exc
 
-    def process_sample(self, values: np.ndarray) -> np.ndarray:
-        return self._apply(values)
+    def process_sample(self, values: NDArray[np.float32]) -> NDArray[np.float32]:
+        return self.process_block(values[:, None])[:, 0]
 
-    def process_block(self, values: np.ndarray) -> np.ndarray:
-        return self._apply(values)
+    def process_block(self, values: NDArray[np.float32]) -> NDArray[np.float32]:
+        if self._method is ReferenceMethod.OFF:
+            return np.ascontiguousarray(values, dtype=np.float32)
+        if self._method is ReferenceMethod.COMMON_AVERAGE:
+            reference = np.mean(values, axis=0, keepdims=True)
+        else:
+            reference = np.mean(values[list(self._mastoid_indices), :], axis=0, keepdims=True)
+        return np.ascontiguousarray(values - reference, dtype=np.float32)
 
-    def _apply(self, values: np.ndarray) -> np.ndarray:
-        method = self._config.method
-        if method == ReferenceMethod.OFF:
-            return values
-        if method == ReferenceMethod.COMMON_AVERAGE:
-            ref = values.mean(axis=0, keepdims=True)
-            return values - ref
-        if method == ReferenceMethod.BILATERAL_MASTOIDS:
-            if not self._mastoid_indices:
-                return values
-            ref = values[self._mastoid_indices].mean(axis=0, keepdims=True)
-            return values - ref
-        return values

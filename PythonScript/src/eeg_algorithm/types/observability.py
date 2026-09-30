@@ -1,7 +1,3 @@
-"""可观测性 DTO：日志配置、日志事件与日志状态。"""
-
-from __future__ import annotations
-
 from dataclasses import dataclass
 from enum import Enum
 
@@ -46,3 +42,4 @@ class LoggingStatus:
     dropped_file_records: int
     dropped_ui_events: int
     last_logging_error: str | None
+

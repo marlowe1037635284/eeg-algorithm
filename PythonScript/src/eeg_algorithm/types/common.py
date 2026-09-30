@@ -1,13 +1,7 @@
-"""通用 DTO：通道、采样数据、时间范围与数据缺口。"""
-
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import numpy as np
 from numpy.typing import NDArray
-
-from eeg_algorithm.types.enums import BandPreset
 
 
 @dataclass(frozen=True)
@@ -31,14 +25,14 @@ class ChannelLayout:
 class SampleFrame:
     sequence_id: int
     timestamp_ns: int
-    values: NDArray[np.float32]  # [C]
+    values: NDArray[np.float32]
 
 
 @dataclass(frozen=True)
 class SignalBlock:
     first_sequence_id: int
-    timestamps_ns: NDArray[np.int64]  # [N]
-    values: NDArray[np.float32]       # [C, N]
+    timestamps_ns: NDArray[np.int64]
+    values: NDArray[np.float32]
 
 
 @dataclass(frozen=True)
@@ -55,11 +49,3 @@ class GapInfo:
     end_timestamp_ns: int
     reason: str
 
-
-@dataclass(frozen=True)
-class FrequencyBand:
-    """频段查询参数，被在线与离线查询共用。"""
-
-    preset: BandPreset
-    low_hz: float
-    high_hz: float

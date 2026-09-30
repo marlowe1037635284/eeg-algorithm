@@ -116,21 +116,36 @@ Item {
     }
 
     // 通道下拉列表（盖在面板内容之上）
+    //
+    // 面板总共就 280 高、列表从 y=40 起，而 16 个通道按每项 26 撑开要 424px，
+    // 会一路画到窗口外，尾部通道根本点不到。所以这里限高（最多到面板底边
+    // 留 8px）并在内部滚动：内容没超时和以前完全一样，超了就能滚。
     Rectangle {
+        id: channelMenu
+
         x: 248
         y: 40
         width: 71
-        height: Acq.channelNames.length * 26 + 8
+        height: Math.min(contentHeight, 232)
         radius: 8
         color: "#ffffff"
         border.width: 1
         border.color: Design.panelBorder
         visible: root.channelMenuOpen
+        clip: true
         z: 10
 
+        readonly property int contentHeight: Acq.channelNames.length * 26 + 8
+        readonly property int maxScroll: Math.max(0, contentHeight - height)
+        property int scroll: 0
+
+        // 每次重新展开都回到顶部
+        onVisibleChanged: if (visible) scroll = 0
+
         Column {
-            anchors.fill: parent
-            anchors.margins: 4
+            x: 4
+            y: 4 - channelMenu.scroll
+            width: channelMenu.width - 8
             spacing: 0
 
             Repeater {
@@ -167,6 +182,43 @@ Item {
                     }
                 }
             }
+        }
+
+        // 这个 MouseArea 只为滚轮而存在，声明在列表之后、层级更高。
+        // 默认它会吞掉按下事件，所以主动放弃 press（滚轮不走这条路径，
+        // onWheel 照常生效），点击才能落到下面各通道上
+        MouseArea {
+            anchors.fill: parent
+            onPressed: (mouse) => { mouse.accepted = false }
+            onWheel: (wheel) => {
+                var step = wheel.angleDelta.y > 0 ? -26 : 26
+                channelMenu.scroll = Math.max(0, Math.min(channelMenu.maxScroll,
+                                                          channelMenu.scroll + step))
+            }
+        }
+
+        // ---------- 滚动条 ----------
+        // 内容没超（maxScroll = 0）时整条隐藏，不留一根空轨道
+        Rectangle {
+            x: channelMenu.width - 7
+            y: 4
+            width: 3
+            height: channelMenu.height - 8
+            radius: 1.5
+            color: Qt.rgba(0.478, 0.478, 0.478, 0.10)
+            visible: channelMenu.maxScroll > 0
+        }
+
+        Rectangle {
+            x: channelMenu.width - 7
+            width: 3
+            height: channelMenu.maxScroll > 0
+                    ? Math.max(24, (channelMenu.height - 8) * channelMenu.height / channelMenu.contentHeight)
+                    : 0
+            radius: 1.5
+            color: Qt.rgba(0.478, 0.478, 0.478, 0.35)
+            visible: channelMenu.maxScroll > 0
+            y: 4 + (channelMenu.height - 8 - height) * channelMenu.scroll / channelMenu.maxScroll
         }
     }
 

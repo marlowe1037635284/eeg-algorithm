@@ -104,6 +104,42 @@ Item {
         return filteredRecords.slice(start, start + pageSize)
     }
 
+    // 患者下拉的选项：第一项固定是「全部患者」（病案号用空串表示不过滤），
+    // 后面按库里患者的顺序排
+    readonly property var patientOptions: {
+        revision
+        var rows = database ? database.patients() : []
+        var result = [{ no: "", label: qsTr("全部患者") }]
+        for (var i = 0; i < rows.length; ++i)
+            result.push({ no: rows[i].no, label: rows[i].name })
+        return result
+    }
+
+    readonly property var patientOptionLabels: {
+        var labels = []
+        for (var i = 0; i < patientOptions.length; ++i)
+            labels.push(patientOptions[i].label)
+        return labels
+    }
+
+    // 当前过滤对应的下拉下标；从患者管理页带病历号进来时也要能对上
+    readonly property int patientFilterIndex: {
+        for (var i = 0; i < patientOptions.length; ++i) {
+            if (patientOptions[i].no === patientFilter)
+                return i
+        }
+        return 0
+    }
+
+    // 下拉里选患者：0 是「全部患者」，其余按病案号过筛
+    function applyPatientIndex(index) {
+        if (index <= 0 || index >= patientOptions.length) {
+            clearPatientFilter()
+            return
+        }
+        applyPatientFilter(patientOptions[index].no)
+    }
+
     // 清掉过滤，回到全部记录
     function clearPatientFilter() {
         patientFilter = ""
@@ -300,52 +336,24 @@ Item {
         onTextChanged: root.searchText = text
     }
 
-    Rectangle {
+    // 患者筛选：与右边「全部通道」用同一个 ChoiceField —— 之前这个是手画的色块，
+    // 箭头贴在 x=116.5（比 ChoiceField 的 width-24 靠右一截），而且只能「点一下
+    // 回到全部患者」，选不了具体某位。现在点开列表挑，第一项是「全部患者」
+    ChoiceField {
+        id: patientField
+
         x: 1601
         y: 79
         width: 126
         height: 43
-        radius: 12
-        color: Design.primarySoft
-
-        Text {
-            x: 10
-            y: 0
-            width: parent.width - 30
-            height: parent.height
-            verticalAlignment: Text.AlignVCenter
-            elide: Text.ElideRight
-            // 有过滤时显示这位患者，否则是「全部患者」。设计稿只有后者的样子
-            text: root.patientFilter.length > 0
-                  ? (root.patientFilterName.length > 0 ? root.patientFilterName : root.patientFilter)
-                  : qsTr("全部患者")
-            color: root.patientFilter.length > 0 ? Design.primary : "#3b3b3b"
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
-
-        Image {
-            x: 116.5
-            anchors.verticalCenter: parent.verticalCenter
-            width: 7.47
-            height: 7
-            rotation: 90
-            source: Design.assetRoot + "icons/icon-arrow-down.svg"
-            visible: root.patientFilter.length === 0
-        }
-
-        MouseArea {
-            anchors.fill: parent
-            enabled: root.patientFilter.length > 0
-            cursorShape: Qt.PointingHandCursor
-            onClicked: root.clearPatientFilter()
-
-            ToolTip.visible: containsMouse
-            ToolTip.text: qsTr("点一下回到全部患者")
-            ToolTip.delay: 300
-        }
+        choices: root.patientOptionLabels
+        currentIndex: root.patientFilterIndex
+        onActivated: (index) => root.applyPatientIndex(index)
     }
+
+    // ChoiceField 点选时会直接改自己的 currentIndex，把上面的绑定冲掉；
+    // 这里在过滤条件真正变化后补一次，保证从患者管理页带病历号进来时也能对上
+    onPatientFilterIndexChanged: patientField.currentIndex = patientFilterIndex
 
     ChoiceField {
         x: 1739

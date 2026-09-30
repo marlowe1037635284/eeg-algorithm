@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Effects
 import KSCEEGClient
 
 // 「实时脑电地形图」面板。
@@ -85,21 +86,31 @@ Item {
         width: 321
     }
 
-    // 地形图圆（渐变底色 + 主色描边，直接用了设计稿导出的矢量）
+    // 头型底盘（设计稿导出的矢量：一个圆 + 顶部鼻尖 + 两侧耳突，带主色描边）。
+    //
+    // 用**空白**的 head-outline.svg 而不是 topo-circle.svg：后者自带一条彩虹渐变，
+    // 是设计稿里那张「示意地形图」。而热力图是按同一个头型掩膜裁的、且完全不透明，
+    // 所以只要热力图在，底盘就被整张盖住 —— 也就是说这块底盘**只在还没出图的时候
+    // 才看得见**。之前贴 topo-circle.svg，等于刚进界面、一条数据都没有，
+    // 就已经顶着一颗画满颜色的头，看着像已经有地形图了。
+    // 换成空白头型后，出图前是一颗干净的空头，出图后照旧被热力图盖住
     Image {
+        id: topoBase
         x: 54
         y: 61
         width: 224
         height: 223
-        source: Design.assetRoot + "icons/topo-circle.svg"
+        source: Design.assetRoot + "icons/head-outline.svg"
         fillMode: Image.Stretch
     }
 
-    // 热力图。**必须夹在底盘与白环/电极点之间**：盖在底盘之上才有底色可叠，
-    // 压在电极点之下才不会把导联名挡住。
-    // 图由 C++ 画好（头型掩膜外是透明的），这里只管贴；
+    // 热力图源图。C++ 侧画出来的是**标准圆**（原设计想按头型掩膜裁，但那边
+    // 的掩膜是网格坐标下的圆、会被裁成八边形，照它裁会变成方块，只好退成画圆）。
+    // 所以这里不能直接贴出来 —— 圆比头型大一圈，会把鼻尖和耳突盖掉，
+    // 看上去就是个纯圆盘。改为隐藏源图，交给下面的 MultiEffect 按头型裁切。
     // revision 变化只是用来制造新 URL，否则 Image 会按 URL 缓存，图永远不更新
     Image {
+        id: topoHeatmap
         x: 54
         y: 61
         width: 224
@@ -108,7 +119,34 @@ Item {
         cache: false
         asynchronous: false
         smooth: true
+        visible: false
         source: "image://topography/render/" + Acq.topoRevision
+    }
+
+    // 遮罩源用同一张 topo-circle.svg：它头型内部 alpha 恒为 1、外部为 0，
+    // 正是 MultiEffect 要的 alpha 遮罩。layer.enabled 是取纹理的前提。
+    Image {
+        id: topoMask
+        x: 54
+        y: 61
+        width: 224
+        height: 223
+        source: Design.assetRoot + "icons/topo-circle.svg"
+        fillMode: Image.Stretch
+        visible: false
+        layer.enabled: true
+    }
+
+    // 按头型裁切后的热力图。**必须夹在底盘与白环/电极点之间**：
+    // 盖在底盘之上才有底色可叠，压在电极点之下才不会把导联名挡住
+    MultiEffect {
+        x: 54
+        y: 61
+        width: 224
+        height: 223
+        source: topoHeatmap
+        maskEnabled: true
+        maskSource: topoMask
     }
 
     // 关注点白环（画在圆点下面）
@@ -196,53 +234,63 @@ Item {
     }
 
     // 色值一律从 Acq.topoPalette 取 —— 与 C++ 画热力图是同一份表。
-    // 设计稿那张 16 段色标和实际渲染用的色标是两套色值，抄任何一套都会与图对不上
-    Row {
-        x: 30
+    // 设计稿的色标是**贯穿整宽的连续渐变**（刻度 0 / 中值 / 最大值都落在同一条上），
+    // 原来写成 7 个 17px 的离散方块，只铺到一半宽，和刻度根本对不齐。
+    // 这里按 C++ LUT 的停靠点位置（0、1/6 … 1）铺 7 个停靠点做横向渐变，
+    // 停靠点之间的插值方式与 C++ 的 palette_lut() 一致
+    Rectangle {
+        id: colorBar
+        x: 26
         y: 308
+        width: 276
+        height: 17
 
-        Repeater {
-            model: Acq.topoPalette
-
-            delegate: Rectangle {
-                required property string modelData
-                width: 17
-                height: 17
-                color: modelData
-            }
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0.0000; color: Acq.topoPalette[0] }
+            GradientStop { position: 0.1667; color: Acq.topoPalette[1] }
+            GradientStop { position: 0.3333; color: Acq.topoPalette[2] }
+            GradientStop { position: 0.5000; color: Acq.topoPalette[3] }
+            GradientStop { position: 0.6667; color: Acq.topoPalette[4] }
+            GradientStop { position: 0.8333; color: Acq.topoPalette[5] }
+            GradientStop { position: 1.0000; color: Acq.topoPalette[6] }
         }
-    }
 
-    // 刻度。右端**不能写死**：图是按每帧峰值归一化配色的，写死的话
-    // 数字和实际配色对不上，读出来的值就是错的
-    Text {
-        x: 27
-        y: 324
-        text: "0"
-        color: Design.textSecondary
-        font.family: Design.fontFamily
-        font.styleName: Design.styleRegular
-        font.pixelSize: 14
-    }
+        // 刻度。右端**不能写死**：图是按每帧峰值归一化配色的，写死的话
+        // 数字和实际配色对不上，读出来的值就是错的。
+        // 三个刻度分别贴着色条左端 / 居中 / 右端，才和色条是同一条标尺
+        Text {
+            anchors.left: parent.left
+            anchors.top: parent.bottom
+            anchors.topMargin: -1
+            text: "0"
+            color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 14
+        }
 
-    Text {
-        x: 159
-        y: 324
-        text: (Acq.topoScaleMax / 2).toFixed(1)
-        color: Design.textSecondary
-        font.family: Design.fontFamily
-        font.styleName: Design.styleRegular
-        font.pixelSize: 14
-    }
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            anchors.top: parent.bottom
+            anchors.topMargin: -1
+            text: (Acq.topoScaleMax / 2).toFixed(1)
+            color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 14
+        }
 
-    Text {
-        x: 294
-        y: 324
-        text: Acq.topoScaleMax.toFixed(1)
-        color: Design.textSecondary
-        font.family: Design.fontFamily
-        font.styleName: Design.styleRegular
-        font.pixelSize: 14
+        Text {
+            anchors.right: parent.right
+            anchors.top: parent.bottom
+            anchors.topMargin: -1
+            text: Acq.topoScaleMax.toFixed(1)
+            color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 14
+        }
     }
 
     // ---------- 频段选择块 ----------

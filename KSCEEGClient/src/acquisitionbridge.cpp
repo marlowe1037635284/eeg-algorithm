@@ -219,16 +219,13 @@ AcquisitionBridge::AcquisitionBridge(PythonEngine *engine, QObject *parent)
 
     reset_channels(m_channel_count);
 
-    // ==================== 调试：显示原始波形 ====================
-    // 排查实时显示问题时，暂时关掉全部预处理，让算法回传的 processed_signal
-    // 基本等同采集到的原始样本：
-    //   * 高通 / 低通 / 陷波 三项全关
-    //   * 重参考设为 off（不做共同平均 / 乳突参考）
-    //   * ASR 默认即关（m_asr_enabled = false）
-    // 恢复常态时：把三项改回 true，并把 m_reference_method 改回 "common_average"
-    m_processing.high_pass_enabled = false;
-    m_processing.low_pass_enabled = false;
-    m_processing.notch_enabled = false;
+    // ==================== 调试：逐级放开预处理 ====================
+    // 排查实时显示问题：先只开带通（高通 + 低通）与陷波，重参考仍设为 off，
+    // 便于确认「带通 + 陷波」这一段是否正常；ASR 默认即关（m_asr_enabled = false）
+    // 恢复常态时：把 m_reference_method 改回 "common_average"
+    m_processing.high_pass_enabled = true;
+    m_processing.low_pass_enabled = true;
+    m_processing.notch_enabled = true;
     m_reference_method = QStringLiteral("off");
 
     // 算法线程与采集线程的创建顺序不重要，但**析构顺序很重要**：

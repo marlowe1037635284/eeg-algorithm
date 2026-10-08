@@ -30,7 +30,10 @@ Item {
         fillMode: Image.Stretch
         cache: false
         asynchronous: false
-        source: "image://analysis/spectrum/" + Analysis.revision
+        // revision 为 0（无结果 / 已 close）时不请求，避免 provider 返回空图报警
+        source: Analysis.revision > 0
+                ? "image://analysis/spectrum/" + Analysis.revision
+                : ""
     }
 
     // ---------- Y 轴（功率谱密度，dB）----------

@@ -74,7 +74,12 @@ Item {
             fillMode: Image.Stretch
             cache: false
             asynchronous: false
-            source: "image://analysis/wave/" + Analysis.revision
+            // revision 为 0 表示还没有结果（未算出 / 已 close）。这时若仍按
+            // "wave/0" 去取图，provider 只能返回空图，Qt 就打
+            // "Failed to get image from provider"。空串 = 不请求
+            source: Analysis.revision > 0
+                    ? "image://analysis/wave/" + Analysis.revision
+                    : ""
         }
     }
 

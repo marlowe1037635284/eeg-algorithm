@@ -20,7 +20,12 @@ from __future__ import annotations
 from typing import Any, Iterable, Mapping, Sequence
 
 from eeg_algorithm import api
-from eeg_algorithm.errors import ErrorCode, error
+from eeg_algorithm.errors import (
+    INVALID_ARGUMENT,
+    NOT_INITIALIZED,
+    SESSION_NOT_FOUND,
+    algorithm_error,
+)
 from eeg_algorithm.types import (
     AsrConfig,
     BandPreset,
@@ -63,6 +68,12 @@ PROCESSING_KEYS: tuple[str, ...] = tuple(DEFAULT_PROCESSING.keys())
 
 _api: Any = None
 
+# 受支持的接口主版本。次版本（1.2、1.3 …）之间 DTO 字段与语义保持向后兼容，
+# 主版本一变则可能整体不兼容 —— 那时继续建会话只会在运行期以难懂的
+# TypeError / AttributeError 暴露。策略只在这里定义一处，C++ 侧不再各自比对
+# 版本号（见 :func:`ensure_api_compatible`）。
+SUPPORTED_API_MAJOR = 1
+
 # 会话 id → 采样率。仅用于在适配层做频率范围校验（见 _validate_processing）。
 # 算法侧的校验在滤波系数设计那一步才发生，那时抛的是 scipy 的裸 ValueError，
 # 经 describe_error 会退化成 INTERNAL_ERROR —— 错误码不可分类，界面只能把它
@@ -87,8 +98,35 @@ def configure_logging(directory: str, enabled: bool = True, min_level: str = "IN
 
 
 def api_version() -> str:
-    """返回接口版本。C++ 必须在建会话之前校验主版本号。"""
+    """返回接口版本字符串，不做任何校验。"""
     return api.get_api_version()
+
+
+def ensure_api_compatible() -> str:
+    """校验接口主版本，通过则返回完整版本号，否则抛结构化错误。
+
+    这是版本策略的**唯一**落点：C++ 不再自己比对版本号，避免「C++ 认 1.x、
+    适配层认别的」这种两处逻辑漂移。算法包升级到不兼容主版本时，这里把
+    「接口不可用」变成一个带错误码的 ``AlgorithmError``，C++ 侧统一按
+    ``NOT_INITIALIZED`` 处理，而不是在运行期撞上 `AttributeError`。
+    """
+    version = api.get_api_version()
+    major_text = str(version).split(".", 1)[0]
+    try:
+        major = int(major_text)
+    except ValueError as exc:
+        raise algorithm_error(
+            NOT_INITIALIZED,
+            f"无法解析算法接口版本号: {version!r}",
+            "ensure_api_compatible",
+        ) from exc
+    if major != SUPPORTED_API_MAJOR:
+        raise algorithm_error(
+            NOT_INITIALIZED,
+            f"算法接口主版本不受支持：期望 {SUPPORTED_API_MAJOR}.x，实际 {version}",
+            "ensure_api_compatible",
+        )
+    return str(version)
 
 
 def processing_defaults() -> dict[str, Any]:
@@ -102,7 +140,11 @@ def open_api() -> None:
     C++ 的算法线程在启动时调一次，把「导入失败 / 建门面失败」这类问题提前
     暴露在启动阶段，而不是等第一块数据到了才在那里报错 —— 那时报错会被
     「数据处理失败」的表象盖住，排查要从线程那头开始。
+
+    顺带做一次主版本校验：门面可用但接口版本不兼容时同样属于「不可用」，
+    应当在这里就失败，而不是等到第一次建会话。
     """
+    ensure_api_compatible()
     _get_api()
 
 
@@ -164,7 +206,7 @@ def _validate_processing(processing: Mapping[str, Any], sample_rate_hz: float, o
 
     def require(condition: bool, message: str) -> None:
         if not condition:
-            raise error(ErrorCode.INVALID_ARGUMENT, message, operation)
+            raise algorithm_error(INVALID_ARGUMENT, message, operation)
 
     for key in ("high_pass_order", "low_pass_order", "notch_order"):
         require(int(processing[key]) == 4, f"{key} 必须为 4（v1 固定四阶 Butterworth）")
@@ -286,8 +328,9 @@ def update_processing_config(
     session_id = int(session_id)
     sample_rate_hz = _session_sample_rate.get(session_id)
     if sample_rate_hz is None:
-        raise error(ErrorCode.SESSION_NOT_FOUND,
-                    f"会话 {session_id} 不存在或已经关闭", "update_processing_config")
+        raise algorithm_error(SESSION_NOT_FOUND,
+                              f"会话 {session_id} 不存在或已经关闭",
+                              "update_processing_config")
     _validate_processing(processing, sample_rate_hz, "update_processing_config")
 
     result = _get_api().update_processing_config(session_id, _parse_processing(processing))
@@ -571,6 +614,7 @@ __all__ = [
     "create_online_session",
     "describe_error",
     "drain_log_events",
+    "ensure_api_compatible",
     "notify_gap",
     "online_status",
     "open_api",

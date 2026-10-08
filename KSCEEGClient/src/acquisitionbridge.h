@@ -25,26 +25,20 @@ class PythonEngine;
 // 采集工作台对 QML 暴露的唯一门面（在 main.cpp 里用 setContextProperty 注入成 Acq）。
 //
 // 线程约定：本对象常驻 GUI 线程。它同时是 ChunkSink，所以 deliver() 是在**采集线程**
-// 上调用的 —— 那里只做两件不碰界面的事：把原始样本写进原始环形缓冲（供 ASR 用）、
-// 把原始块压进显示待处理队列，然后把块转交给算法线程。
-// 所有 Q_PROPERTY 与信号都只在 GUI 线程上产生。
+// 上调用的 —— 那里只做两件不碰界面的事：把原始样本写进原始环形缓冲（供 ASR 用），
+// 然后把块转交给算法线程。所有 Q_PROPERTY 与信号都只在 GUI 线程上产生。
 //
-// 数据通路（显示与算法**完全分开**）：
-//   采集线程 ──deliver()──▶ 本对象 ──┬──▶ 显示待处理队列 ──(GUI 定时器)──▶ 显示独立 Python 滤波
-//                                   │                                                    │
-//                                   │                                                    ▼
-//                                   │                                              显示环形缓冲 → 波形
+// 数据通路（显示直接复用算法线程的处理结果）：
+//   采集线程 ──deliver()──▶ 本对象 ──┬──▶ 原始环形缓冲（供 ASR 拟合参考矩阵）
 //                                   └──▶ PythonWorker（有界队列，不可丢）
+//   算法线程 ──block_processed──(QueuedConnection)──▶ 本对象 → 显示待处理队列
+//                                                          ──(GUI 定时器)──▶ 显示环形缓冲 → 波形
 //   算法线程 ──topography_ready / spectrum_ready / status_updated──▶ 本对象 → QML
 //
-// **波形显示的是显示通路自己的 Python 滤波结果，不复用算法线程的处理结果**。
-// 原因：算法侧滤波器状态是按「输入恒为直流偏置」的稳态初始化的，用真实信号一启动
-// （或一改参数）状态与信号不匹配，就会冲出与直流偏置同量级的瞬变、要几秒才衰减。
-// 显示侧改用 Realtime_IIR.py：C++ 侧拿本块首个样本把它的历史 buffer 预热到稳态
-// （思路同参考实现的 _zi_seed），启动与改参都不会有瞬变 —— 参考项目 pybindwithqt 就是这么做的。
-//
-// 代价：波形不含重参考与 ASR（它们是算法侧的后处理）。这是刻意的取舍 ——
-// 波形要的是「看得清、不跳」，而重参考/ASR 是给地形图与频谱用的
+// **波形显示的就是算法线程处理后的结果**：与地形图、频谱走的是同一条通路
+// （高通/低通 → 陷波 → 重参考 → ASR），三者天然完全一致，也不再需要第二遍 Python 滤波。
+// 显示待处理队列与 GUI 定时器只是把「算法出块」与「界面重绘」解耦，
+// 避免每来一块就单独触发一次绘制
 class AcquisitionBridge : public QObject, public ChunkSink
 {
     Q_OBJECT
@@ -353,6 +347,9 @@ private:
     void on_session_state_changed(const QString &state);
     void on_notice(const QString &message);
     void on_log_event(const AlgorithmLogEvent &event);
+    // 算法线程每处理完一块就投递过来（QueuedConnection，落在 GUI 线程）。
+    // 这里只把结果压进显示待处理队列，实际写缓冲/重绘交给 m_display_timer 的 pump_display
+    void on_block_processed(const SignalChunk &chunk);
 
     void set_error(const QString &message);
     void set_status(const QString &message);
@@ -362,15 +359,11 @@ private:
 
     // 按当前通道数重建显示缓冲，并把显隐掩码重置为「全部可见」
     void reset_channels(int channels);
-    // 把采集线程压进待处理队列的块取出来，逐块做显示滤波后写进显示缓冲，最后重画。
-    // 由 m_display_timer 驱动（GUI 线程）—— 它同时把「显示滤波」与「绘制」合并在
+    // 把 on_block_processed 攒进待处理队列的算法结果取出来，逐块写进显示缓冲，最后重画。
+    // 由 m_display_timer 驱动（GUI 线程）—— 它把「消费算法结果」与「绘制」合并在
     // 一次调用里，形状上就是参考项目的 on_wave_chunk
     void pump_display();
-    // 对一块样本做显示通路滤波。失败返回 false（调用方据此关掉显示滤波、回退原始值）
-    bool apply_display_filter(SignalChunk &chunk);
-    // 按当前滤波参数重建显示侧滤波状态。参数没变时直接返回，不重复配置
-    void refresh_display_filter();
-    // 往显示缓冲追加一块样本（已滤波）。加锁
+    // 往显示缓冲追加一块样本（算法线程处理后的结果）。加锁
     void append_to_display(const SignalChunk &chunk);
     // 清空显示缓冲与还没处理完的待处理块，并立即把波形重画成空图。
     // 「开始采集」时调用：不清的话上一段的样本还在缓冲里，新样本只是接在
@@ -406,26 +399,14 @@ private:
     int m_channel_count = 16;
     QVector<bool> m_channel_visible;
 
-    // 显示待处理队列：采集线程 deliver() 压入原始块，GUI 线程的显示定时器取出、
-    // 滤波、写缓冲。**必须用队列解耦**：采集线程不能直接调 Python（那会在采集线程里
-    // 取 GIL，且滤波耗时不定，会把串口收包拖垮）；而显示定时器是 33ms 一次、
-    // 一批可能攒下好几块，逐块处理完再统一重画
+    // 显示待处理队列：算法线程的 block_processed 经队列投递落在 GUI 线程，
+    // 由 on_block_processed 压入；GUI 线程的显示定时器取出后写缓冲、重画。
+    // **必须用队列解耦**：显示定时器是 33ms 一次，一批可能攒下好几块，
+    // 逐块写进缓冲再统一重画。生产与消费都在 GUI 线程，故无需加锁
     QVector<SignalChunk> m_display_pending;
-    mutable QMutex m_display_pending_mutex;
-    // 队列满时是否丢过最旧的块。丢块意味着滤波状态与信号之间出现时间断层，
-    // GUI 线程据此重建一次滤波状态，避免断层处出现小瞬变
-    std::atomic<bool> m_display_dropped{false};
 
-    // 显示通路独立的 Python 滤波。ready 为真表示状态已按 m_display_filter_params
-    // 配置好、可以逐块调用；任何一步失败都置假，波形回退成未滤波的原始值
-    //（参考项目 apply_python_filter 失败时也是这么兜底的）
-    bool m_display_filter_ready = false;
-    ProcessingParams m_display_filter_params;
-    // m_display_filter_params 是否有效。丢块后置假，强制下一次 refresh 重新配置
-    bool m_display_filter_params_valid = false;
-
-    // 显示缓冲：环形，帧优先交错。喂进去的是**显示侧 Python 滤波后**的数据；
-    // 显示滤波不可用时回退成原始数据，保证「设备还在采」这件事在界面上始终看得见
+    // 显示缓冲：环形，帧优先交错。喂进去的是**算法线程处理后的数据**
+    //（高通/低通 → 陷波 → 重参考 → ASR），与地形图、频谱同源
     QVector<float> m_display_data;
     int m_display_capacity = 0;
     int m_display_head = 0;
@@ -438,10 +419,11 @@ private:
     int m_wave_revision = 0;
     double m_time_window = 2.0;
     int m_y_range_uv = 100;
-    // 显示去直流，**默认开**：显示滤波只做带通/陷波、不做重参考也不做 ASR，
-    // 而关掉高通（或三个滤波器全关）时结果里仍带着电极的半电池电位
-    //（几百 ~ 几千 µV），脑电只有几十 µV。固定量程下不去直流，整段波形会被钳到
-    // 泳道上下边界、看着就像「没显示」。
+    // 显示去直流，**默认开**：每帧按本窗口均值现算，是无状态的 AC 耦合。
+    // 算法侧高通虽然也去直流，但它是有状态因果滤波；这里再叠一层无状态去均值，
+    // 能在算法侧高通关闭（或三滤波器全关）时仍把电极的半电池电位
+    //（几百 ~ 几千 µV）从画面里去掉 —— 否则脑电那几十 µV 会被钳到泳道上下边界、
+    // 看着就像「没显示」。
     //
     // 它是示波器上的 AC 耦合：每帧按本窗口均值现算，**没有跨帧状态**，
     // 所以不会像算法侧那个因果高通一样在启动时产生几秒的瞬变

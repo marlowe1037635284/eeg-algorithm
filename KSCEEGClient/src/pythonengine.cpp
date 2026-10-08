@@ -38,16 +38,9 @@ namespace py = pybind11;
 #endif
 
 // 算法包源码根目录。注意它是 **src 布局**（源码在 <PythonScript>/src/eeg_algorithm），
-// 而 venv 里并没有装 eeg_algorithm，所以必须把 src 这一层加进 sys.path，
-// 不能像参考实现那样只加项目根目录（它的实时滤波模块是平铺在顶层的）。
+// 而 venv 里并没有装 eeg_algorithm，所以必须把 src 这一层加进 sys.path
 #ifndef EEG_ALGO_SRC_DIR
 #  define EEG_ALGO_SRC_DIR "D:/myproject/eeg-algorithm/PythonScript/src"
-#endif
-
-// Python 项目根目录。实时滤波模块 Realtime_IIR.py 平铺在这里（不在 src 那一层），
-// 显示通路要直接 import 它，所以这一层也得进 sys.path
-#ifndef PYTHON_PROJECT_DIR
-#  define PYTHON_PROJECT_DIR "D:/myproject/eeg-algorithm/PythonScript"
 #endif
 
 // 宿主侧适配层 eeg_bridge.py 所在目录
@@ -98,11 +91,6 @@ QString resolve_venv_dir()
 QString resolve_algo_src_dir()
 {
     return resolve_dir("EEG_ALGO_SRC_DIR", "app", QStringLiteral(EEG_ALGO_SRC_DIR));
-}
-
-QString resolve_python_project_dir()
-{
-    return resolve_dir("PYTHON_PROJECT_DIR", "project", QStringLiteral(PYTHON_PROJECT_DIR));
 }
 
 QString resolve_bridge_dir()
@@ -180,15 +168,13 @@ void prepare_python_config(PyConfig &config)
     }
 }
 
-// 把算法包源码目录、Python 项目根目录与适配层目录加进 sys.path。
+// 把算法包源码目录与适配层目录加进 sys.path。
 // venv / 用户级 / 系统级的 site-packages 都不在这里管 —— 那些由 venv 身份决定。
 //
-// 项目根目录是给显示通路的实时滤波模块 Realtime_IIR.py 用的（它平铺在顶层）；
 // 顺序上适配层放最前：它是最不可能与别的模块重名的那个名字。
 void setup_python_path()
 {
-    const QStringList dirs = {resolve_bridge_dir(), resolve_python_project_dir(),
-                              resolve_algo_src_dir()};
+    const QStringList dirs = {resolve_bridge_dir(), resolve_algo_src_dir()};
 
     try
     {
@@ -226,8 +212,7 @@ void log_python_environment()
                           << QString::fromStdString(sys.attr("base_prefix").cast<std::string>());
 
         const QStringList modules = {QStringLiteral("numpy"), QStringLiteral("scipy"),
-                                     QStringLiteral("eeg_algorithm"), QStringLiteral("eeg_bridge"),
-                                     QStringLiteral("Realtime_IIR")};
+                                     QStringLiteral("eeg_algorithm"), QStringLiteral("eeg_bridge")};
         for (const QString &name : modules)
         {
             try
@@ -266,10 +251,6 @@ struct PythonEngine::Impl
     QString resolved_project_dir;
     QString resolved_bridge_dir;
     QString resolved_venv_dir;
-
-    // 显示滤波的「待预热」标记：参数刚配置好、历史状态刚清空时为 true。
-    // 下一块数据进来时用它的首帧把状态填到稳态（思路同参考实现的 _zi_seed）
-    bool display_filter_seed_pending = false;
 };
 
 PythonEngine::PythonEngine()
@@ -319,8 +300,12 @@ bool PythonEngine::start(QString *error_message)
         try
         {
             const py::object bridge = py::module_::import("eeg_bridge");
+            // 主版本校验集中在适配层（eeg_bridge.ensure_api_compatible）：不匹配时
+            // 抛结构化错误，C++ 侧不再自行比对版本号，避免策略在两处漂移。
+            // 这里仍按「接口不可用」处理：解释器照常留着，把原因写进 error_message
+            // 交给 main 打日志，界面继续起来
             m_impl->api_version = QString::fromStdString(
-                bridge.attr("api_version")().cast<std::string>());
+                bridge.attr("ensure_api_compatible")().cast<std::string>());
         }
         catch (const std::exception &exc)
         {
@@ -328,7 +313,7 @@ bool PythonEngine::start(QString *error_message)
             {
                 *error_message = QString::fromUtf8(exc.what());
             }
-            qWarning().noquote() << "[python] 读取算法接口版本失败:" << QString::fromUtf8(exc.what());
+            qWarning().noquote() << "[python] 算法接口校验失败:" << QString::fromUtf8(exc.what());
         }
     }
 
@@ -399,214 +384,6 @@ QString PythonEngine::bridge_dir() const
 QString PythonEngine::venv_dir() const
 {
     return m_impl->resolved_venv_dir;
-}
-
-// ==================== 显示通路的独立滤波 ====================
-
-namespace
-{
-
-// 显示侧滤波器阶数与采样率。采样率必须与 Realtime_IIR.py 的模块级 fs 一致（也是 1000），
-// 否则同一个 [低, 高] 区间两边算出的归一化截止频率不同、系数也就对不上。
-//
-// 阶数取 2：显示只要求「看起来是被滤过的」，阶数越低启动瞬态越短。
-// 模块自己的 order（4）是它独立跑时的默认值，显示通路不用它
-constexpr int kDisplayFilterOrder = 2;
-constexpr double kDisplayFilterFs = 1000.0;
-
-// 用本块的首帧把 Realtime_IIR 的历史 buffer 填到稳态，免得波形在启动/改参瞬间
-// 冲出一个要衰减好几秒的包（思路同参考实现的 _zi_seed）。
-//
-// 依据：输入恒为 x0 时，滤波器稳态输出就是直流增益 x0 * H(0) = x0 * sum(b) / sum(a)。
-// Realtime_IIR 的 x_buffer[ch, :] 是「越靠后越新」的输入历史（内部做 ::-1 取用），
-// 所以整行填 x0 就等价于「过去一直是 x0」；y_buffer 同理整行填那个稳态输出
-void seed_display_filter_history(const py::module_ &np, const py::module_ &iir,
-                                 const py::array_t<float> &input, int channels)
-{
-    const py::object b = iir.attr("b");
-    const py::object a = iir.attr("a");
-
-    // 首帧，形状 (channels, 1)，后面按列广播
-    const py::object first_frame = input.attr("__getitem__")(py::slice(0, channels, 1))
-                                       .attr("reshape")(py::make_tuple(channels, 1));
-
-    const py::object dc_gain = np.attr("divide")(np.attr("sum")(b), np.attr("sum")(a));
-
-    iir.attr("x_buffer") = np.attr("tile")(first_frame, py::make_tuple(1, py::len(b)));
-    iir.attr("y_buffer") =
-        np.attr("tile")(first_frame, py::make_tuple(1, py::len(a) - 1)).attr("__mul__")(dc_gain);
-}
-
-} // namespace
-
-bool PythonEngine::configure_display_filter(const ProcessingParams &params, int channels,
-                                            QString *error_message)
-{
-    if (m_impl->interpreter == nullptr)
-    {
-        if (error_message != nullptr)
-        {
-            *error_message = QStringLiteral("Python 解释器未启动");
-        }
-        return false;
-    }
-    if (channels <= 0)
-    {
-        if (error_message != nullptr)
-        {
-            *error_message = QStringLiteral("通道数非法");
-        }
-        return false;
-    }
-
-    const py::gil_scoped_acquire gil;
-    try
-    {
-        using namespace py::literals;   // btype_a / fs_a 这些字面量
-
-        const py::module_ np = py::module_::import("numpy");
-        const py::module_ signal = py::module_::import("scipy.signal");
-        const py::module_ iir = py::module_::import("Realtime_IIR");
-
-        // ---- 主滤波：高通 / 低通 → 一个 butter 系数对 ----
-        // Realtime_IIR 只提供 IIR_weights()（带通），所以这里自己决定 btype：
-        //   两个都开 → bandpass(低, 高)；只开一个 → highpass / lowpass；全关 → 直通
-        const bool has_high = params.high_pass_enabled;
-        const bool has_low = params.low_pass_enabled;
-        const double high_hz = params.high_pass_low_hz;
-        const double low_hz = params.low_pass_high_hz;
-
-        py::object b;
-        py::object a;
-        if (has_high && has_low && high_hz < low_hz)
-        {
-            const py::tuple coeffs = signal.attr("butter")(
-                kDisplayFilterOrder, py::make_tuple(high_hz, low_hz), "btype"_a = "bandpass",
-                "fs"_a = kDisplayFilterFs);
-            b = coeffs[0];
-            a = coeffs[1];
-        }
-        else if (has_high)
-        {
-            const py::tuple coeffs = signal.attr("butter")(
-                kDisplayFilterOrder, high_hz, "btype"_a = "highpass", "fs"_a = kDisplayFilterFs);
-            b = coeffs[0];
-            a = coeffs[1];
-        }
-        else if (has_low)
-        {
-            const py::tuple coeffs = signal.attr("butter")(
-                kDisplayFilterOrder, low_hz, "btype"_a = "lowpass", "fs"_a = kDisplayFilterFs);
-            b = coeffs[0];
-            a = coeffs[1];
-        }
-        else
-        {
-            // 直通：b = a = [1] 时差分方程退化成 y = x
-            b = np.attr("array")(py::make_tuple(1.0));
-            a = np.attr("array")(py::make_tuple(1.0));
-        }
-
-        // ---- 陷波：由 [低, 高] 区间反推中心频率与 Q ----
-        // 界面给的是区间而不是 Q，这里按 Q = 中心频率 / 带宽 换算，区间越窄陷波越尖锐
-        const bool has_notch = params.notch_enabled;
-        const double notch_center = (params.notch_low_hz + params.notch_high_hz) / 2.0;
-        const double notch_width = params.notch_high_hz - params.notch_low_hz;
-
-        if (has_notch && notch_width > 0.0 && notch_center > 0.0)
-        {
-            const py::tuple coeffs = signal.attr("iirnotch")(
-                notch_center, notch_center / notch_width, "fs"_a = kDisplayFilterFs);
-            // Realtime_IIR 只认一对 b/a，串联两个滤波器等于把系数做多项式相乘：
-            // H_total(z) = H_main(z) * H_notch(z)
-            b = np.attr("convolve")(b, coeffs[0]);
-            a = np.attr("convolve")(a, coeffs[1]);
-        }
-
-        // 系数写回模块级全局 —— Realtime_IIR.process_frame 在调用时读的就是 b / a
-        iir.attr("b") = b;
-        iir.attr("a") = a;
-
-        // 清掉历史 buffer：下一块数据进来时 process_frame_iir 会按新系数的长度
-        // 重新 IIR_init()，随后由 C++ 侧用该块首帧把状态填到稳态
-        iir.attr("x_buffer") = py::none();
-        iir.attr("y_buffer") = py::none();
-        m_impl->display_filter_seed_pending = true;
-        return true;
-    }
-    catch (const std::exception &exc)
-    {
-        if (error_message != nullptr)
-        {
-            *error_message = QString::fromUtf8(exc.what());
-        }
-        return false;
-    }
-}
-
-bool PythonEngine::process_display_filter(const float *samples, int total_samples, int channels,
-                                          QVector<float> *out, QString *error_message)
-{
-    if (out == nullptr)
-    {
-        return false;
-    }
-    if (m_impl->interpreter == nullptr)
-    {
-        if (error_message != nullptr)
-        {
-            *error_message = QStringLiteral("Python 解释器未启动");
-        }
-        return false;
-    }
-    if (samples == nullptr || total_samples <= 0 || channels <= 0
-        || total_samples % channels != 0)
-    {
-        if (error_message != nullptr)
-        {
-            *error_message = QStringLiteral("样本数与通道数不匹配");
-        }
-        return false;
-    }
-
-    const py::gil_scoped_acquire gil;
-    try
-    {
-        const py::module_ np = py::module_::import("numpy");
-        const py::module_ iir = py::module_::import("Realtime_IIR");
-
-        // 交错样本原样拷进 numpy 数组：Realtime_IIR.process_frame 的输入就是这个布局
-        py::array_t<float> input(total_samples);
-        std::memcpy(input.mutable_data(), samples,
-                    static_cast<size_t>(total_samples) * sizeof(float));
-
-        if (m_impl->display_filter_seed_pending)
-        {
-            seed_display_filter_history(np, iir, input, channels);
-            m_impl->display_filter_seed_pending = false;
-        }
-
-        const py::object result = iir.attr("process_frame")(input, channels);
-        // 输出是一维 float32。copy_py_float_array 内部 forcecast，
-        // Python 侧若换了 dtype 会自动拷一份而不是按错误类型读内存
-        if (!pytypes::copy_py_float_array(result, out, total_samples))
-        {
-            if (error_message != nullptr)
-            {
-                *error_message = QStringLiteral("显示滤波返回值长度不符");
-            }
-            return false;
-        }
-        return true;
-    }
-    catch (const std::exception &exc)
-    {
-        if (error_message != nullptr)
-        {
-            *error_message = QString::fromUtf8(exc.what());
-        }
-        return false;
-    }
 }
 
 // ==================== 自检 ====================
@@ -707,10 +484,11 @@ int run_python_selfcheck(PythonEngine &engine)
         {
             const py::module_ bridge = py::module_::import("eeg_bridge");
 
+            // 主版本校验同样交给适配层：不兼容时它就抛错，自检走到这里即通过
             const QString version =
-                QString::fromStdString(bridge.attr("api_version")().cast<std::string>());
-            check(version.startsWith(QLatin1String("1.")),
-                  QStringLiteral("接口主版本号为 1.x（实际 %1）").arg(version));
+                QString::fromStdString(bridge.attr("ensure_api_compatible")().cast<std::string>());
+            check(!version.isEmpty(),
+                  QStringLiteral("接口主版本受支持（实际 %1）").arg(version));
 
             // 自检不写日志文件，只看接口通不通
             bridge.attr("configure_logging")(log_dir().toStdString(), false, "INFO");

@@ -1223,6 +1223,22 @@ void PostProcess::set_qc_signal_enabled(bool value)
     invalidate();
 }
 
+void PostProcess::set_qc_range_enabled(bool value)
+{
+    if (m_params.qc_range_enabled == value)
+        return;
+    m_params.qc_range_enabled = value;
+    invalidate();
+}
+
+void PostProcess::set_qc_correlation_enabled(bool value)
+{
+    if (m_params.qc_correlation_enabled == value)
+        return;
+    m_params.qc_correlation_enabled = value;
+    invalidate();
+}
+
 void PostProcess::set_qc_amplitude_ratio(double value)
 {
     const double clamped = std::clamp(value, 0.0, 1.0);
@@ -1396,6 +1412,8 @@ void PostProcess::run_recompute()
     job.artifact_detection_enabled = m_params.artifact_detection_enabled;
     job.wave_amplitude_uv = m_params.wave_amplitude_uv;
     job.qc_signal_enabled = m_params.qc_signal_enabled;
+    job.qc_range_enabled = m_params.qc_range_enabled;
+    job.qc_correlation_enabled = m_params.qc_correlation_enabled;
     job.qc_amplitude_ratio = m_params.qc_amplitude_ratio;
     job.qc_correlation = m_params.qc_correlation;
     job.qc_repair_index = m_params.qc_repair_index;
@@ -1880,10 +1898,13 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             weak_names.append(eeg_montage::channel_name(channel));
         }
         const double *row = data.at(channel).constData() + first;
-        for (int i = 0; i < count; ++i)
+        if (job.qc_range_enabled)
         {
-            if (std::abs(row[i]) > 300.0)
-                ++outlier_samples;
+            for (int i = 0; i < count; ++i)
+            {
+                if (std::abs(row[i]) > 300.0)
+                    ++outlier_samples;
+            }
         }
     }
     const double outlier_ratio =
@@ -1893,16 +1914,19 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     const bool out_of_range_alarm = outlier_ratio > job.qc_amplitude_ratio;
 
     QStringList low_correlation;
-    for (int channel = 0; channel < channels; ++channel)
+    if (job.qc_correlation_enabled)
     {
-        double best = 0.0;
-        for (int other = 0; other < channels; ++other)
+        for (int channel = 0; channel < channels; ++channel)
         {
-            if (other != channel)
-                best = std::max(best, std::abs(correlation.at(channel).at(other)));
+            double best = 0.0;
+            for (int other = 0; other < channels; ++other)
+            {
+                if (other != channel)
+                    best = std::max(best, std::abs(correlation.at(channel).at(other)));
+            }
+            if (best < job.qc_correlation)
+                low_correlation.append(eeg_montage::channel_name(channel));
         }
-        if (best < job.qc_correlation)
-            low_correlation.append(eeg_montage::channel_name(channel));
     }
 
     // ---------- 13. 波形图 ----------
@@ -2154,28 +2178,30 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         QVariantList qc_rows;
         if (job.qc_signal_enabled)
             qc_rows.append(QVariantMap{
-                {QStringLiteral("label"), tr("坏信号和空值")},
+                {QStringLiteral("label"), tr("弱信号和空值")},
                 {QStringLiteral("value"),
                  tr("%1 个通道（RMS < 5 μV）").arg(weak_channels)},
             });
-        qc_rows.append(QVariantMap{
-            {QStringLiteral("label"), tr("异常 EEG 范围外值")},
-            {QStringLiteral("value"),
-             tr("%1 点（占比 %2%，阈值 %3%）")
-                 .arg(outlier_samples)
-                 .arg(outlier_ratio * 100.0, 0, 'f', 2)
-                 .arg(job.qc_amplitude_ratio * 100.0, 0, 'f', 2)},
-        });
-        qc_rows.append(QVariantMap{
-            {QStringLiteral("label"), tr("低相关性导联")},
-            {QStringLiteral("value"),
-             low_correlation.isEmpty()
-                 ? tr("无（阈值 %1）").arg(job.qc_correlation, 0, 'f', 2)
-                 : tr("%1 个（阈值 %2）：%3")
-                       .arg(low_correlation.size())
-                       .arg(job.qc_correlation, 0, 'f', 2)
-                       .arg(low_correlation.join(QStringLiteral("、")))},
-        });
+        if (job.qc_range_enabled)
+            qc_rows.append(QVariantMap{
+                {QStringLiteral("label"), tr("异常 EEG 范围外值")},
+                {QStringLiteral("value"),
+                 tr("%1 点（占比 %2%，阈值 %3%）")
+                     .arg(outlier_samples)
+                     .arg(outlier_ratio * 100.0, 0, 'f', 2)
+                     .arg(job.qc_amplitude_ratio * 100.0, 0, 'f', 2)},
+            });
+        if (job.qc_correlation_enabled)
+            qc_rows.append(QVariantMap{
+                {QStringLiteral("label"), tr("低相关性导联")},
+                {QStringLiteral("value"),
+                 low_correlation.isEmpty()
+                     ? tr("无（阈值 %1）").arg(job.qc_correlation, 0, 'f', 2)
+                     : tr("%1 个（阈值 %2）：%3")
+                           .arg(low_correlation.size())
+                           .arg(job.qc_correlation, 0, 'f', 2)
+                           .arg(low_correlation.join(QStringLiteral("、")))},
+            });
         const QString repair_note = job.qc_repair_index > 0
             ? tr("修复：限幅修复（超出 ±300 μV 的样本压回边界）")
             : tr("修复：off");
@@ -2213,8 +2239,8 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                          : tr("伪差检测: 关"))
                 .arg(chain.isEmpty() ? tr("未启用") : chain.join(QStringLiteral(" → ")))
                 .arg(job.qc_signal_enabled ? QString::number(weak_channels) : tr("关"))
-                .arg(outlier_samples)
-                .arg(low_correlation.size());
+                .arg(job.qc_range_enabled ? QString::number(outlier_samples) : tr("关"))
+                .arg(job.qc_correlation_enabled ? QString::number(low_correlation.size()) : tr("关"));
     }
 
     result.ok = true;

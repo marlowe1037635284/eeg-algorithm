@@ -89,6 +89,10 @@ class PostProcess : public QObject
     // 质检与修复。三个检测项的阈值都可调，改完报告与底栏的数字一起变
     Q_PROPERTY(bool qcSignalEnabled READ qc_signal_enabled WRITE set_qc_signal_enabled
                    NOTIFY paramsChanged)
+    Q_PROPERTY(bool qcRangeEnabled READ qc_range_enabled WRITE set_qc_range_enabled
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(bool qcCorrelationEnabled READ qc_correlation_enabled
+                   WRITE set_qc_correlation_enabled NOTIFY paramsChanged)
     Q_PROPERTY(double qcAmplitudeRatio READ qc_amplitude_ratio WRITE set_qc_amplitude_ratio
                    NOTIFY paramsChanged)
     Q_PROPERTY(double qcCorrelation READ qc_correlation WRITE set_qc_correlation
@@ -219,6 +223,8 @@ public:
     bool artifact_detection_enabled() const { return m_params.artifact_detection_enabled; }
     double wave_amplitude_uv() const { return m_params.wave_amplitude_uv; }
     bool qc_signal_enabled() const { return m_params.qc_signal_enabled; }
+    bool qc_range_enabled() const { return m_params.qc_range_enabled; }
+    bool qc_correlation_enabled() const { return m_params.qc_correlation_enabled; }
     double qc_amplitude_ratio() const { return m_params.qc_amplitude_ratio; }
     double qc_correlation() const { return m_params.qc_correlation; }
     int qc_repair_index() const { return m_params.qc_repair_index; }
@@ -287,6 +293,8 @@ public slots:
     void set_artifact_detection_enabled(bool value);
     void set_wave_amplitude_uv(double value);
     void set_qc_signal_enabled(bool value);
+    void set_qc_range_enabled(bool value);
+    void set_qc_correlation_enabled(bool value);
     void set_qc_amplitude_ratio(double value);
     void set_qc_correlation(double value);
     void set_qc_repair_index(int value);
@@ -327,6 +335,8 @@ private:
         bool artifact_detection_enabled = false;
         double wave_amplitude_uv = 0.0;
         bool qc_signal_enabled = true;
+        bool qc_range_enabled = true;
+        bool qc_correlation_enabled = true;
         double qc_amplitude_ratio = 0.1;
         double qc_correlation = 0.1;
         int qc_repair_index = 0;
@@ -452,6 +462,8 @@ private:
         bool artifact_detection_enabled = false;
         double wave_amplitude_uv = 0.0;   // 0 = 自动
         bool qc_signal_enabled = true;
+        bool qc_range_enabled = true;
+        bool qc_correlation_enabled = true;
         double qc_amplitude_ratio = 0.1;
         double qc_correlation = 0.1;
         int qc_repair_index = 0;          // 0=off, 1=限幅修复

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import KSCEEGClient
 
 // 「数据分析与后处理」页左侧的参数面板。
@@ -33,11 +34,34 @@ Item {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
 
+        // 竖直滚动条。这一栏九块分区总深远超面板高度，没有滑块时用户看不出
+        // 下面还接着内容。常显（AlwaysOn）而非常规的「需要时才出现」——它在这里
+        // 就是个提示。上下各留 14px 的 padding，避开面板 16px 的圆角；
+        // 不画底槽，只留滑块，免得底槽在圆角处露出方角
+        ScrollBar.vertical: ScrollBar {
+            id: verticalScrollBar
+
+            policy: ScrollBar.AlwaysOn
+            width: 8
+            topPadding: 14
+            bottomPadding: 14
+            leftPadding: 1
+            rightPadding: 1
+
+            contentItem: Rectangle {
+                implicitWidth: 6
+                radius: 3
+                color: verticalScrollBar.pressed
+                       ? Design.primary
+                       : Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.45)
+            }
+        }
+
         Item {
             id: content
             width: parent.width
-            // 最后一块（脑电数据导出）落在 y ≈ 1451，底部再留一点余量
-            height: 1476
+            // 最后一块（脑电数据导出）落在 y ≈ 1319，底部再留一点余量
+            height: 1344
 
             // ---------- 基本信息 ----------
             SectionTitle { x: 25; y: 14; text: qsTr("基本信息") }
@@ -54,8 +78,9 @@ Item {
                     width: root.width
                     height: 24
 
-                    // 标签定宽、值左对齐紧跟其后。原来值右对齐到面板最右（x=390），
-                    // 短标签（「采集时间」）和值之间空出一大片，整栏看着像漏了东西
+                    // 标签定宽、值右对齐到内容右边缘（x=390），与设计稿一致：
+                    // 记录号 / 时间 / 采样率这些长短不一的值靠在同一条右边线上，
+                    // 竖着扫一遍就能对齐比较
                     RowLabel {
                         x: 25
                         width: 120
@@ -69,6 +94,7 @@ Item {
                         x: 150
                         width: 240
                         height: parent.height
+                        horizontalAlignment: Text.AlignRight
                         elide: Text.ElideRight
                         verticalAlignment: Text.AlignVCenter
                         text: modelData.value
@@ -133,7 +159,7 @@ Item {
             // ---------- 重参考 ----------
             SectionTitle { x: 25; y: 447; text: qsTr("重参考") }
             ChoiceField {
-                x: 25; y: 483; width: 398; height: 38
+                x: 25; y: 483; width: 365; height: 38
                 pixelSize: 15
                 fieldRadius: 10
                 choices: Analysis.referenceChoices
@@ -144,7 +170,7 @@ Item {
             // ---------- 降采样 ----------
             SectionTitle { x: 25; y: 553; text: qsTr("降采样") }
             ChoiceField {
-                x: 25; y: 589; width: 398; height: 38
+                x: 25; y: 589; width: 365; height: 38
                 pixelSize: 15
                 fieldRadius: 10
                 // 档位按记录的**实际采样率**算（能整除才给），
@@ -154,63 +180,19 @@ Item {
                 onActivated: (index) => Analysis.downsampleIndex = index
             }
 
-            // ---------- 基线校正 ----------
-            SectionTitle { x: 25; y: 652; text: qsTr("基线校正") }
+            // ---------- ASR 去伪迹 ----------
+            SectionTitle { x: 25; y: 652; text: qsTr("ASR 去伪迹") }
             SwitchPill {
                 x: 340; y: 648
-                on_: Analysis.baselineEnabled
-                onToggled: Analysis.baselineEnabled = !Analysis.baselineEnabled
-            }
-
-            // ---------- 片段选取 ----------
-            SectionTitle { x: 25; y: 700; text: qsTr("片段选取") }
-            ChoiceField {
-                x: 130; y: 690; width: 293; height: 34
-                pixelSize: 14
-                fieldRadius: 9
-                // 前三项是固定的「整段记录 / 前 10 秒 / 前 30 秒」，
-                // 其后是这条记录里真实出现过的事件标签
-                choices: Analysis.segmentChoices
-                currentIndex: Analysis.segmentIndex
-                onActivated: (index) => Analysis.segmentIndex = index
-            }
-
-            // 前后范围。设计稿写的是「前 -0.2 s -- 后 0.8 s」：前值是**负数**，
-            // 表示从事件时刻往前推 0.2 秒。这里照这个语义做；只有选了具体事件
-            // 标签时才生效，所以非事件片段下压暗
-            RowLabel { x: 25; y: 738; text: qsTr("前后范围") }
-            RowLabel { x: 122; y: 738; text: qsTr("前") }
-            ValueField {
-                x: 150; y: 732
-                width: 90
-                value: Analysis.beforeSeconds
-                suffix: "s"
-                enabled: Analysis.segmentIndex >= 3
-                onEdited: (value) => Analysis.beforeSeconds = value
-            }
-            RowLabel { x: 248; y: 738; text: qsTr("后") }
-            ValueField {
-                x: 276; y: 732
-                width: 90
-                value: Analysis.afterSeconds
-                suffix: "s"
-                enabled: Analysis.segmentIndex >= 3
-                onEdited: (value) => Analysis.afterSeconds = value
-            }
-
-            // ---------- ASR 去伪迹 ----------
-            SectionTitle { x: 25; y: 784; text: qsTr("ASR 去伪迹") }
-            SwitchPill {
-                x: 340; y: 780
                 on_: Analysis.asrEnabled
                 onToggled: Analysis.asrEnabled = !Analysis.asrEnabled
             }
 
-            RowLabel { x: 25; y: 828; text: qsTr("Cutoff 程度") }
+            RowLabel { x: 25; y: 696; text: qsTr("Cutoff 程度") }
 
             // 滑块：值域 5~100，与 C++ 侧 set_asr_cutoff 的夹取范围一致
             Item {
-                x: 150; y: 820
+                x: 150; y: 688
                 width: 200
                 height: 30
                 opacity: Analysis.asrEnabled ? 1.0 : 0.45
@@ -256,9 +238,9 @@ Item {
             }
 
             Text {
-                x: 360
-                y: 825
-                width: 45
+                x: 352
+                y: 693
+                width: 38
                 height: 20
                 horizontalAlignment: Text.AlignRight
                 verticalAlignment: Text.AlignVCenter
@@ -269,91 +251,103 @@ Item {
                 font.pixelSize: 15
             }
 
-            PanelDivider { x: 21; y: 866; width: 373 }
+            PanelDivider { x: 21; y: 734; width: 373 }
 
             // ---------- 伪迹检测 ----------
-            SectionTitle { x: 25; y: 878; text: qsTr("伪迹检测") }
+            SectionTitle { x: 25; y: 746; text: qsTr("伪迹检测") }
             SwitchPill {
-                x: 340; y: 874
+                x: 340; y: 742
                 on_: Analysis.artifactDetectionEnabled
                 onToggled: Analysis.artifactDetectionEnabled = !Analysis.artifactDetectionEnabled
             }
 
-            PanelDivider { x: 21; y: 918; width: 373 }
+            PanelDivider { x: 21; y: 786; width: 373 }
 
             // ---------- 窗口和缩放 ----------
             // 位移 / 窗口长度改的是时间轴上那扇窗（Analysis.windowStartSeconds /
             // windowSeconds），幅度是波形每一格的 µV 标尺，0 表示「自动」
-            SectionTitle { x: 25; y: 930; text: qsTr("窗口和缩放") }
+            SectionTitle { x: 25; y: 798; text: qsTr("窗口和缩放") }
 
-            RowLabel { x: 25; y: 969; text: qsTr("位移") }
+            RowLabel { x: 25; y: 837; text: qsTr("位移") }
             Slider {
-                x: 150; y: 961
+                x: 150; y: 829
                 from: 0
                 to: Math.max(0.5, Analysis.durationSeconds - Analysis.windowSeconds)
                 value: Analysis.windowStartSeconds
                 onMoved: (v) => Analysis.windowStartSeconds = v
             }
-            RowValue { x: 352; y: 966; text: Analysis.windowStartSeconds.toFixed(1) + " s" }
+            RowValue { x: 352; y: 834; text: Analysis.windowStartSeconds.toFixed(1) + " s" }
 
-            RowLabel { x: 25; y: 1005; text: qsTr("窗口长度") }
+            RowLabel { x: 25; y: 873; text: qsTr("窗口长度") }
             Slider {
-                x: 150; y: 997
+                x: 150; y: 865
                 from: 0.5
                 to: Math.max(1.0, Analysis.durationSeconds)
                 value: Analysis.windowSeconds
                 onMoved: (v) => Analysis.windowSeconds = v
             }
-            RowValue { x: 352; y: 1002; text: Analysis.windowSeconds.toFixed(1) + " s" }
+            RowValue { x: 352; y: 870; text: Analysis.windowSeconds.toFixed(1) + " s" }
 
-            RowLabel { x: 25; y: 1041; text: qsTr("幅度") }
+            RowLabel { x: 25; y: 909; text: qsTr("幅度") }
             Slider {
-                x: 150; y: 1033
+                x: 150; y: 901
                 from: 0
                 to: 500
                 value: Analysis.waveAmplitudeUV
                 onMoved: (v) => Analysis.waveAmplitudeUV = Math.round(v)
             }
             RowValue {
-                x: 352; y: 1038
+                x: 352; y: 906
                 text: Analysis.waveAmplitudeUV > 0 ? Analysis.waveAmplitudeUV + " μV" : qsTr("自动")
             }
 
-            PanelDivider { x: 21; y: 1081; width: 373 }
+            PanelDivider { x: 21; y: 949; width: 373 }
 
             // ---------- 质检与修复 ----------
-            SectionTitle { x: 25; y: 1093; text: qsTr("质检与修复") }
+            SectionTitle { x: 25; y: 961; text: qsTr("质检与修复") }
 
-            RowLabel { x: 25; y: 1125; text: qsTr("检测") }
+            RowLabel { x: 25; y: 993; text: qsTr("检测") }
 
-            RowLabel { x: 25; y: 1160; text: qsTr("坏信号和空值") }
-            SwitchPill {
-                x: 340; y: 1156
+            // 三项检测各自一个独立的圆形开关（左），阈值输入在其右侧。
+            // 关掉某一项，报告页与底栏就不再统计它
+            RoundToggle {
+                x: 25; y: 1027
                 on_: Analysis.qcSignalEnabled
                 onToggled: Analysis.qcSignalEnabled = !Analysis.qcSignalEnabled
             }
+            RowLabel { x: 51; y: 1028; text: qsTr("弱信号和空值") }
 
-            RowLabel { x: 25; y: 1196; text: qsTr("异常 EEG 范围外值") }
-            RowLabel { x: 160; y: 1196; text: qsTr("幅度占比") }
+            RoundToggle {
+                x: 25; y: 1063
+                on_: Analysis.qcRangeEnabled
+                onToggled: Analysis.qcRangeEnabled = !Analysis.qcRangeEnabled
+            }
+            RowLabel { x: 51; y: 1064; text: qsTr("异常 EEG 范围外值") }
+            RowLabel { x: 160; y: 1064; text: qsTr("幅度占比") }
             ValueField {
-                x: 231; y: 1188
-                opacity: Analysis.qcSignalEnabled ? 1.0 : 0.45
+                x: 231; y: 1056
+                opacity: Analysis.qcRangeEnabled ? 1.0 : 0.45
                 value: Analysis.qcAmplitudeRatio
                 onEdited: (value) => Analysis.qcAmplitudeRatio = value
             }
 
-            RowLabel { x: 25; y: 1232; text: qsTr("低相关性导联") }
-            RowLabel { x: 160; y: 1232; text: qsTr("相关性") }
+            RoundToggle {
+                x: 25; y: 1099
+                on_: Analysis.qcCorrelationEnabled
+                onToggled: Analysis.qcCorrelationEnabled = !Analysis.qcCorrelationEnabled
+            }
+            RowLabel { x: 51; y: 1100; text: qsTr("低相关性导联") }
+            RowLabel { x: 160; y: 1100; text: qsTr("相关性") }
             ValueField {
-                x: 231; y: 1224
-                opacity: Analysis.qcSignalEnabled ? 1.0 : 0.45
+                x: 231; y: 1092
+                opacity: Analysis.qcCorrelationEnabled ? 1.0 : 0.45
                 value: Analysis.qcCorrelation
                 onEdited: (value) => Analysis.qcCorrelation = value
             }
 
-            RowLabel { x: 25; y: 1276; text: qsTr("修复") }
+            RowLabel { x: 25; y: 1144; text: qsTr("修复") }
             ChoiceField {
-                x: 231; y: 1265; width: 152; height: 30
+                x: 231; y: 1133; width: 152; height: 30
                 pixelSize: 14
                 fieldRadius: 8
                 choices: Analysis.qcRepairChoices
@@ -361,15 +355,15 @@ Item {
                 onActivated: (index) => Analysis.qcRepairIndex = index
             }
 
-            PanelDivider { x: 21; y: 1316; width: 373 }
+            PanelDivider { x: 21; y: 1184; width: 373 }
 
             // ---------- 脑电数据导出 ----------
             // 三个下拉决定页面底部「导出数据」按钮写出的内容
-            SectionTitle { x: 25; y: 1328; text: qsTr("脑电数据导出") }
+            SectionTitle { x: 25; y: 1196; text: qsTr("脑电数据导出") }
 
-            RowLabel { x: 25; y: 1366; text: qsTr("格式") }
+            RowLabel { x: 25; y: 1234; text: qsTr("格式") }
             ChoiceField {
-                x: 231; y: 1355; width: 152; height: 30
+                x: 231; y: 1223; width: 152; height: 30
                 pixelSize: 14
                 fieldRadius: 8
                 choices: Analysis.exportFormatChoices
@@ -377,9 +371,9 @@ Item {
                 onActivated: (index) => Analysis.exportFormatIndex = index
             }
 
-            RowLabel { x: 25; y: 1403; text: qsTr("类型") }
+            RowLabel { x: 25; y: 1271; text: qsTr("类型") }
             ChoiceField {
-                x: 231; y: 1392; width: 152; height: 30
+                x: 231; y: 1260; width: 152; height: 30
                 pixelSize: 14
                 fieldRadius: 8
                 choices: Analysis.exportTypeChoices
@@ -387,9 +381,9 @@ Item {
                 onActivated: (index) => Analysis.exportTypeIndex = index
             }
 
-            RowLabel { x: 25; y: 1440; text: qsTr("范围") }
+            RowLabel { x: 25; y: 1308; text: qsTr("范围") }
             ChoiceField {
-                x: 231; y: 1429; width: 152; height: 30
+                x: 231; y: 1297; width: 152; height: 30
                 pixelSize: 14
                 fieldRadius: 8
                 choices: Analysis.exportRangeChoices
@@ -417,7 +411,7 @@ Item {
 
     // 滑块右侧显示的当前值
     component RowValue: Text {
-        width: 53
+        width: 38
         height: 20
         horizontalAlignment: Text.AlignRight
         verticalAlignment: Text.AlignVCenter
@@ -591,6 +585,41 @@ Item {
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
             onClicked: switchPill.toggled()
+        }
+    }
+
+    // 「质检与修复 → 检测」三项左侧的圆形开关：开着是蓝色实心点，关掉是灰色空圈。
+    // 与右侧那排长条开关（SwitchPill）区分开 —— 这里问的是「要不要查这一项」，
+    // 圆点更像勾选；三项各自独立，互不影响
+    component RoundToggle: Item {
+        id: roundToggle
+
+        property bool on_: false
+        signal toggled()
+
+        width: 16
+        height: 16
+
+        Rectangle {
+            anchors.fill: parent
+            radius: width / 2
+            color: "transparent"
+            border.width: 1
+            border.color: roundToggle.on_ ? Design.primary : "#919191"
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: 8
+                height: 8
+                radius: 4
+                color: roundToggle.on_ ? Design.primary : "transparent"
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: roundToggle.toggled()
         }
     }
 }

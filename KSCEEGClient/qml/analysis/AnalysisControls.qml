@@ -109,47 +109,48 @@ Item {
             PanelDivider { x: 21; y: 238; width: 373 }
 
             // ---------- 滤波 ----------
+            // 三个滤波器各占一行、各自一个开关。关掉只是不生效，输入框仍可编辑 ——
+            // 灰掉会让人以为控件坏了
             SectionTitle { x: 25; y: 250; text: qsTr("滤波") }
 
-            // 带通滤波器：一个总开关（自定义 = 开）。关掉之后下面三个输入框
-            // 仍可编辑，只是不生效 —— 灰掉会让人以为控件坏了
-            RowLabel { x: 25; y: 288; text: qsTr("带通滤波器") }
-            ChoiceField {
-                x: 231; y: 277; width: 152; height: 30
-                pixelSize: 14
-                fieldRadius: 8
-                choices: [qsTr("自定义"), qsTr("关闭")]
-                currentIndex: Analysis.bandPassEnabled ? 0 : 1
-                onActivated: (index) => Analysis.bandPassEnabled = (index === 0)
-            }
-
-            RowLabel { x: 25; y: 322; text: qsTr("高通滤波器") }
+            RowLabel { x: 25; y: 294; text: qsTr("高通滤波") }
             ValueField {
-                x: 231; y: 311
+                x: 231; y: 283
+                width: 86
                 value: Analysis.highPassHz
                 suffix: "Hz"
                 onEdited: (value) => Analysis.highPassHz = value
             }
+            SwitchPill {
+                x: 333; y: 286
+                on_: Analysis.highPassEnabled
+                onToggled: Analysis.highPassEnabled = !Analysis.highPassEnabled
+            }
 
-            RowLabel { x: 25; y: 355; text: qsTr("低通滤波器") }
+            RowLabel { x: 25; y: 334; text: qsTr("低通滤波") }
             ValueField {
-                x: 231; y: 344
+                x: 231; y: 323
+                width: 86
                 value: Analysis.lowPassHz
                 suffix: "Hz"
                 onEdited: (value) => Analysis.lowPassHz = value
             }
+            SwitchPill {
+                x: 333; y: 326
+                on_: Analysis.lowPassEnabled
+                onToggled: Analysis.lowPassEnabled = !Analysis.lowPassEnabled
+            }
 
-            RowLabel { x: 25; y: 388; text: qsTr("陷波滤波器") }
+            RowLabel { x: 25; y: 374; text: qsTr("陷波滤波") }
             ValueField {
-                id: notchField
-                x: 231; y: 377
+                x: 231; y: 363
                 width: 86
                 value: Analysis.notchHz
                 suffix: "Hz"
                 onEdited: (value) => Analysis.notchHz = value
             }
             SwitchPill {
-                x: 333; y: 380
+                x: 333; y: 366
                 on_: Analysis.notchEnabled
                 onToggled: Analysis.notchEnabled = !Analysis.notchEnabled
             }

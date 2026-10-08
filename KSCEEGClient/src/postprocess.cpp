@@ -1155,11 +1155,11 @@ void PostProcess::invalidate()
     schedule_recompute();
 }
 
-void PostProcess::set_band_pass_enabled(bool value)
+void PostProcess::set_high_pass_enabled(bool value)
 {
-    if (m_params.band_pass_enabled == value)
+    if (m_params.high_pass_enabled == value)
         return;
-    m_params.band_pass_enabled = value;
+    m_params.high_pass_enabled = value;
     invalidate();
 }
 
@@ -1171,6 +1171,14 @@ void PostProcess::set_high_pass_hz(double value)
     if (qFuzzyCompare(m_params.high_pass_hz, clamped))
         return;
     m_params.high_pass_hz = clamped;
+    invalidate();
+}
+
+void PostProcess::set_low_pass_enabled(bool value)
+{
+    if (m_params.low_pass_enabled == value)
+        return;
+    m_params.low_pass_enabled = value;
     invalidate();
 }
 
@@ -1455,8 +1463,9 @@ void PostProcess::run_recompute()
 
     Job job;
     job.generation = ++m_generation;
-    job.band_pass_enabled = m_params.band_pass_enabled;
+    job.high_pass_enabled = m_params.high_pass_enabled;
     job.high_pass_hz = m_params.high_pass_hz;
+    job.low_pass_enabled = m_params.low_pass_enabled;
     job.low_pass_hz = m_params.low_pass_hz;
     job.notch_enabled = m_params.notch_enabled;
     job.notch_hz = m_params.notch_hz;
@@ -1593,8 +1602,9 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     // 这一轮「窗口无关」输入的指纹。拖动时间轴只动 window_start/seconds，指纹不变，
     // 于是下面可以直接复用上一轮结果；改参数（滤波、重参考、片段、质检…）则指纹必变
     Fingerprint fingerprint;
-    fingerprint.band_pass_enabled = job.band_pass_enabled;
+    fingerprint.high_pass_enabled = job.high_pass_enabled;
     fingerprint.high_pass_hz = job.high_pass_hz;
+    fingerprint.low_pass_enabled = job.low_pass_enabled;
     fingerprint.low_pass_hz = job.low_pass_hz;
     fingerprint.notch_enabled = job.notch_enabled;
     fingerprint.notch_hz = job.notch_hz;
@@ -1659,7 +1669,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     double sample_rate = source_rate;
     QStringList chain;
 
-    // ---------- 2. 带通 + 陷波 ----------
+    // ---------- 2. 高通 / 低通 + 陷波 ----------
     // 合成**一条**级联（高通两节 → 低通两节 → 陷波一节）只做一次零相位滤波。
     // 分成三次各做一遍前向-反向数值上等价，代价是三倍的边界延拓与内存搬运
     {
@@ -1669,8 +1679,8 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         //（放大器的零点，与脑电无关）。0.1 Hz 高通要从这个台阶上「爬」回零，
         // 而它的时间常数是秒级的 —— 整段分析片段都会被这条爬升曲线占满，真实的
         // 脑电被压成一条直线。扣直流**正是高通本来要做的事**，提前做只是让滤波器
-        // 不必从饱和状态启动。带通关掉时不扣：那时用户要的就是原始波形
-        if (job.band_pass_enabled)
+        // 不必从饱和状态启动。高通关掉时不扣：那时用户要的就是原始波形
+        if (job.high_pass_enabled)
         {
             for (QVector<double> &row : data)
             {
@@ -1681,16 +1691,19 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                 for (double &value : row)
                     value -= mean;
             }
+            chain.prepend(tr("去直流"));
         }
 
         QVector<Biquad> sos;
-        if (job.band_pass_enabled)
+        if (job.high_pass_enabled)
+        {
+            sos += butter_sos(job.high_pass_hz, sample_rate, true);
+            chain.append(tr("高通 %1 Hz").arg(job.high_pass_hz, 0, 'g', 4));
+        }
+        if (job.low_pass_enabled)
         {
             const double low_pass = std::min(job.low_pass_hz, sample_rate / 2.0 - 1.0);
-            sos += butter_sos(job.high_pass_hz, sample_rate, true);
             sos += butter_sos(low_pass, sample_rate, false);
-            chain.prepend(tr("去直流"));
-            chain.append(tr("高通 %1 Hz").arg(job.high_pass_hz, 0, 'g', 4));
             chain.append(tr("低通 %1 Hz").arg(job.low_pass_hz, 0, 'g', 4));
         }
         if (job.notch_enabled)
@@ -2193,7 +2206,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         sections.append(QVariantMap{
             {QStringLiteral("title"), tr("处理链")},
             {QStringLiteral("chips"), chain_chips},
-            {QStringLiteral("note"), tr("顺序：带通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正")},
+            {QStringLiteral("note"), tr("顺序：高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正")},
         });
 
         double rms_sum = 0.0;

@@ -25,7 +25,7 @@
 // 打开就是一片「算法模块不可用」。
 //
 // 因此离线流水线按接口文档里那套**固定顺序**在本类里实现：
-//   带通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正
+//   高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正
 // 与 eeg_algorithm.internal.offline.pipeline.run_preprocessing_pipeline 逐段对应，
 // 数值口径尽量取齐（Butterworth 4 阶、零相位、Welch 512 点 / 50% 重叠 / 密度谱）。
 // 将来 Python 通路可用时，把 compute_pipeline() 换成一次跨语言调用即可 ——
@@ -57,9 +57,11 @@ class PostProcess : public QObject
     Q_PROPERTY(QVariantList events READ events NOTIFY recordChanged)
 
     // ---------- 预处理参数 ----------
-    Q_PROPERTY(bool bandPassEnabled READ band_pass_enabled WRITE set_band_pass_enabled
+    Q_PROPERTY(bool highPassEnabled READ high_pass_enabled WRITE set_high_pass_enabled
                    NOTIFY paramsChanged)
     Q_PROPERTY(double highPassHz READ high_pass_hz WRITE set_high_pass_hz NOTIFY paramsChanged)
+    Q_PROPERTY(bool lowPassEnabled READ low_pass_enabled WRITE set_low_pass_enabled
+                   NOTIFY paramsChanged)
     Q_PROPERTY(double lowPassHz READ low_pass_hz WRITE set_low_pass_hz NOTIFY paramsChanged)
     Q_PROPERTY(bool notchEnabled READ notch_enabled WRITE set_notch_enabled NOTIFY paramsChanged)
     Q_PROPERTY(double notchHz READ notch_hz WRITE set_notch_hz NOTIFY paramsChanged)
@@ -209,8 +211,9 @@ public:
     QVariantList record_info() const { return m_record_info; }
     QVariantList events() const { return m_events; }
 
-    bool band_pass_enabled() const { return m_params.band_pass_enabled; }
+    bool high_pass_enabled() const { return m_params.high_pass_enabled; }
     double high_pass_hz() const { return m_params.high_pass_hz; }
+    bool low_pass_enabled() const { return m_params.low_pass_enabled; }
     double low_pass_hz() const { return m_params.low_pass_hz; }
     bool notch_enabled() const { return m_params.notch_enabled; }
     double notch_hz() const { return m_params.notch_hz; }
@@ -280,8 +283,9 @@ public:
     QQuickImageProvider *create_image_provider();
 
 public slots:
-    void set_band_pass_enabled(bool value);
+    void set_high_pass_enabled(bool value);
     void set_high_pass_hz(double value);
+    void set_low_pass_enabled(bool value);
     void set_low_pass_hz(double value);
     void set_notch_enabled(bool value);
     void set_notch_hz(double value);
@@ -325,8 +329,9 @@ private:
     // 幅度标尺、波形绘制区尺寸、事件都不算在内，因为它们只进波形图那一张
     struct Fingerprint
     {
-        bool band_pass_enabled = true;
+        bool high_pass_enabled = true;
         double high_pass_hz = 0.0;
+        bool low_pass_enabled = true;
         double low_pass_hz = 0.0;
         bool notch_enabled = true;
         double notch_hz = 0.0;
@@ -354,8 +359,9 @@ private:
 
         bool operator==(const Fingerprint &other) const
         {
-            return band_pass_enabled == other.band_pass_enabled
+            return high_pass_enabled == other.high_pass_enabled
                 && high_pass_hz == other.high_pass_hz
+                && low_pass_enabled == other.low_pass_enabled
                 && low_pass_hz == other.low_pass_hz
                 && notch_enabled == other.notch_enabled
                 && notch_hz == other.notch_hz
@@ -385,8 +391,9 @@ private:
     struct Job
     {
         int generation = 0;
-        bool band_pass_enabled = true;
+        bool high_pass_enabled = true;
         double high_pass_hz = 0.1;
+        bool low_pass_enabled = true;
         double low_pass_hz = 49.0;
         bool notch_enabled = true;
         double notch_hz = 50.0;
@@ -528,8 +535,9 @@ private:
 
     struct Params
     {
-        bool band_pass_enabled = true;
+        bool high_pass_enabled = true;
         double high_pass_hz = 0.1;
+        bool low_pass_enabled = true;
         double low_pass_hz = 49.0;
         bool notch_enabled = true;
         double notch_hz = 50.0;

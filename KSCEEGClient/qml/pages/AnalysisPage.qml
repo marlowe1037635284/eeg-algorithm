@@ -375,6 +375,13 @@ Item {
                 height: 62
                 visible: root.tabHasChannelStrip
 
+                // 图例行底板（设计稿 002：1272×61、圆角 12、#D9D9D9 35%）
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 12
+                    color: Design.panelFill
+                }
+
                 Flickable {
                     anchors.fill: parent
                     contentWidth: Analysis.channelCount * 109
@@ -397,7 +404,7 @@ Item {
 
                                 width: 96
                                 height: 40
-                                radius: 8
+                                radius: 10
                                 color: active ? Design.primarySoft
                                               : Qt.rgba(0xba / 255, 0xba / 255, 0xba / 255, 0.14)
                                 border.width: active ? 1 : 0
@@ -424,30 +431,70 @@ Item {
             }
 
             // ---------- 时间轴：整段记录的导航条 ----------
+            // 自上而下：圆角容器 → 刻度尺（主/次刻度）→ mm:ss 标签 → 浅灰轨道
+            // → 当前窗口的蓝色长条。刻度按**等距时间步长**生成（不是四等分），
+            // 步长从 1/2/5×10ⁿ 与常用的「整分」里挑，保证主刻度不超过 10 条
             Item {
                 id: timeline
 
                 x: root.contentX
-                y: 765
+                y: 754
                 width: root.contentWidth
-                height: 67
+                height: 62
 
                 readonly property real duration: Math.max(0.5, Analysis.durationSeconds)
-                readonly property real trackX: 26
-                readonly property real trackWidth: width - 52
+                readonly property real majorStep: root.niceStep(duration)
+                readonly property int majorCount:
+                    Math.max(1, Math.floor(duration / majorStep + 1e-6))
+                // 末格是主刻度，所以次刻度总数正好是 5 的整数倍
+                readonly property int minorCount: majorCount * 5
+                // 刻度尺左右各留 12；刻度从容器顶下方 13 起向下垂
+                readonly property real rulerX: 12
+                readonly property real rulerWidth: width - 24
+                readonly property real tickTop: 13
+                // 轨道贴容器底边、几乎铺满整个宽度；拖动/定位都按它算
+                readonly property real trackX: 1
+                readonly property real trackWidth: width - 2
 
-                // 刻度：整段记录按四等分标绝对时刻，与回放预览同一口径
+                // 容器本身不填色（设计稿 019：1273×62、圆角 12.5、主色 20% 描边），
+                // 底就是舞台面板的浅灰；填白会在这条上压出一块比周围更亮的底
+                Rectangle {
+                    anchors.fill: parent
+                    radius: 12.5
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Design.panelBorder
+                }
+
                 Repeater {
-                    model: 5
+                    model: timeline.minorCount + 1
+
+                    delegate: Rectangle {
+                        required property int index
+
+                        readonly property bool major: index % 5 === 0
+
+                        x: timeline.rulerX + timeline.rulerWidth * index / timeline.minorCount
+                        y: timeline.tickTop
+                        width: 1
+                        height: major ? 14 : 9
+                        color: major ? Qt.rgba(0, 0, 0, 0.62) : Qt.rgba(0, 0, 0, 0.42)
+                    }
+                }
+
+                // mm:ss 标签：**左边缘对齐主刻度**（不是居中），末端夹住不越界
+                Repeater {
+                    model: timeline.majorCount + 1
 
                     delegate: Text {
                         required property int index
 
-                        readonly property real seconds: timeline.duration * index / 4
+                        readonly property real seconds: index * timeline.majorStep
 
-                        x: Math.min(timeline.trackX + timeline.trackWidth * index / 4 - width / 2,
-                                    timeline.trackX + timeline.trackWidth - width)
-                        y: 0
+                        x: Math.min(timeline.rulerX
+                                    + timeline.rulerWidth * index / timeline.majorCount,
+                                    timeline.rulerX + timeline.rulerWidth - width)
+                        y: 25
                         text: root.formatClock(seconds)
                         color: Qt.rgba(0, 0, 0, 0.45)
                         font.family: Design.fontFamily
@@ -456,47 +503,27 @@ Item {
                     }
                 }
 
+                // 浅灰轨道：整段记录的范围
                 Rectangle {
                     x: timeline.trackX
-                    y: 28
+                    y: timeline.height - 18
                     width: timeline.trackWidth
-                    height: 16
-                    radius: 8
-                    color: Qt.rgba(0, 0, 0, 0.07)
-                }
-
-                // 事件位置的小色点，钉在轨道上
-                Repeater {
-                    model: Analysis.events
-
-                    delegate: Rectangle {
-                        required property var modelData
-
-                        readonly property real ratio:
-                            Math.max(0, Math.min(1, modelData.offsetSeconds / timeline.duration))
-
-                        x: timeline.trackX + timeline.trackWidth * ratio - 3
-                        y: 33
-                        width: 6
-                        height: 6
-                        radius: 3
-                        color: modelData.color !== undefined && String(modelData.color).length > 0
-                               ? modelData.color : "#7c3aed"
-                    }
+                    height: 18
+                    color: "#dad9d9"
                 }
 
                 // 当前显示窗口在整段记录里的位置。拖它就是换波形窗口
                 Rectangle {
                     readonly property real ratio:
                         Math.max(0, Math.min(1, Analysis.windowStartSeconds / timeline.duration))
+                    readonly property real windowRatio:
+                        Math.max(0, Math.min(1, Analysis.windowSeconds / timeline.duration))
 
                     x: timeline.trackX + timeline.trackWidth * ratio
-                    y: 28
-                    width: Math.max(12, timeline.trackWidth
-                                    * Math.min(1, Analysis.windowSeconds / timeline.duration))
-                    height: 16
-                    radius: 8
-                    color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.55)
+                    y: timeline.height - 18
+                    width: Math.max(12, timeline.trackWidth * windowRatio)
+                    height: 18
+                    color: Design.primary
                 }
 
                 MouseArea {
@@ -609,6 +636,17 @@ Item {
         const total = Math.max(0, Math.round(seconds))
         const minutes = Math.floor(total / 60)
         return String(minutes).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0")
+    }
+
+    // 时间条主刻度的步长：从 1/2/5×10ⁿ 与几个常用的「整分」里挑最小的一档，
+    // 使主刻度不超过 10 条。直接取 duration/4 会得到 01:07 这种读不出来的时刻
+    function niceStep(duration) {
+        const candidates = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600]
+        for (let i = 0; i < candidates.length; ++i) {
+            if (duration / candidates[i] <= 10)
+                return candidates[i]
+        }
+        return duration / 10
     }
 
     // ---------- 标签页图标 ----------

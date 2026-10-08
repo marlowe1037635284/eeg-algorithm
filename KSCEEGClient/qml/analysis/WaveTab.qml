@@ -43,6 +43,15 @@ Item {
         view.contentY = target
     }
 
+    // 绘图区底板（设计稿 003：1272×682、圆角 12、#D9D9D9 35%）。波形图由 C++
+    // 画成透明底，没有这层底板波形就浮在舞台底色上；它同时兜住左侧通道名列与
+    // 底部秒数刻度，是整个波形页的范围
+    Rectangle {
+        anchors.fill: parent
+        radius: 12
+        color: Design.panelFill
+    }
+
     Flickable {
         id: view
 
@@ -90,7 +99,7 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 text: Analysis.channelNames[index]
                 color: index === Analysis.currentChannel
-                       ? Analysis.channelColors[index % Analysis.channelColors.length]
+                       ? Design.waveCurrent
                        : Design.textSecondary
                 font.family: Design.fontFamily
                 font.styleName: index === Analysis.currentChannel
@@ -134,7 +143,7 @@ Item {
                 y: parent.height / 2 - height
                 visible: index === Analysis.currentChannel
                 text: "+" + Math.round(Analysis.waveRangeUV)
-                color: Design.textSecondary
+                color: Design.waveCurrent
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 11
@@ -145,7 +154,7 @@ Item {
                 y: parent.height / 2 - height / 2
                 visible: index === Analysis.currentChannel
                 text: "0"
-                color: Design.textSecondary
+                color: Design.waveCurrent
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 11
@@ -156,7 +165,7 @@ Item {
                 y: parent.height / 2 + 2
                 visible: index === Analysis.currentChannel
                 text: "−" + Math.round(Analysis.waveRangeUV)
-                color: Design.textSecondary
+                color: Design.waveCurrent
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 11
@@ -165,33 +174,26 @@ Item {
     }
 
     // ---------- 时间轴 ----------
-    // 刻度写的是**记录内的绝对时刻**（与回放预览同一口径），不是窗口内的相对秒数：
-    // 相对秒数在拖动窗口时不变，看不出「现在看的是记录的哪一段」
+    // 写的是**窗口内的相对秒数**（0.0s 不画）：它标的是横轴刻度，拖窗口时要跟着
+    // 窗口一起走才对得上波形；记录内的绝对时刻交给底部的整段导航条去标
     Repeater {
-        model: 5
+        model: 4
 
         delegate: Text {
             required property int index
 
             readonly property real seconds:
-                Analysis.windowStartSeconds + Analysis.windowSeconds * index / 4
+                Analysis.windowSeconds * (index + 1) / 4
 
             // 末刻度不居中：它的中心就在轨迹右端，半个字宽会探到绘制区外面
-            x: root.nameWidth + Math.min(root.traceWidth * index / 4 - width / 2,
+            x: root.nameWidth + Math.min(root.traceWidth * (index + 1) / 4 - width / 2,
                                          root.traceWidth - 12 - width)
             y: root.height - root.axisHeight + 4
-            text: root.formatClock(seconds)
+            text: seconds.toFixed(1) + "s"
             color: Qt.rgba(0, 0, 0, 0.40)
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 12
         }
-    }
-
-    // 秒 → mm:ss
-    function formatClock(seconds) {
-        const total = Math.max(0, Math.round(seconds))
-        const minutes = Math.floor(total / 60)
-        return String(minutes).padStart(2, "0") + ":" + String(total % 60).padStart(2, "0")
     }
 }

@@ -31,6 +31,10 @@ QtObject {
     // 「停止采集」按钮的底色。设计稿里它和滑块高亮、警告色是同一个橙，
     // 但语义完全不同，单独给个名字 —— 免得以后调滑块配色时把按钮一起改掉
     readonly property color stopButton: "#fea85d"
+    // 波形页当前导联的高亮色（波形本体、通道名、±量程标注共用）。
+    // 数值与状态色 bad 恰好相同，但语义无关，各留各的名字 —— 以后调警告色
+    // 不该顺手把波形也改掉
+    readonly property color waveCurrent: "#d65a5d"
 
     // ---------- 面板与文字 ----------
     readonly property color panelFill: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.35)     // 面板底

@@ -629,6 +629,15 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
 
     painter.setRenderHint(QPainter::Antialiasing, false);
 
+    // 时间网格线：与 WaveTab 底部 4 个相对秒数刻度（1/4、2/4、3/4、4/4）对齐，
+    // 和泳道居中线一样画在所有波形之下。设计稿里是极淡的竖线
+    painter.setPen(QPen(QColor(0, 0, 0, 12), 1.0));
+    for (int i = 1; i <= 4; ++i)
+    {
+        const double x = width * i / 4.0;
+        painter.drawLine(QPointF(x, 0.0), QPointF(x, height));
+    }
+
     const double half_lane = PostProcess::lane_height() * 0.5;
     const double scale = half_lane / std::max(1.0, range_uv);
 
@@ -640,9 +649,9 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
 
         const double centre = channel * PostProcess::lane_height() + half_lane;
         const bool active = channel == current_channel;
-        // 当前导联用它的配色，其余压成灰 —— 设计稿图例写的就是「当前通道 / 其余通道」
-        QColor color = active ? QColor(eeg_montage::channel_colors().value(channel))
-                              : QColor(150, 158, 168);
+        // 当前导联用设计稿的红色（与 QML 侧的 Design.waveCurrent 同值），
+        // 其余压成灰 —— 设计稿图例写的就是「当前通道 / 其余通道」
+        QColor color = active ? QColor(0xd6, 0x5a, 0x5d) : QColor(150, 158, 168);
 
         QPolygonF polyline;
         polyline.reserve(std::max(2, width) * 2);
@@ -1450,8 +1459,10 @@ void PostProcess::run_recompute()
     job.segment_start = start;
     job.segment_seconds = seconds;
 
-    // 波形绘制区宽度：视口宽度减掉左边的通道名列（56）
-    job.wave_width = std::max(64, m_view_size.width() - 56);
+    // 波形/频谱绘制区宽度：QML 那边报过来的 view_size 已经是**绘制区**尺寸
+    //（通道名列与量程列都已扣掉），这里不能再减一次 —— 图比 Image 窄的话，
+    // Image.Stretch 会把波形横向拉伸约 5%
+    job.wave_width = std::max(64, m_view_size.width());
     job.wave_height = m_view_size.height();
     job.spectrum_width = std::max(64, m_view_size.width());
     job.spectrum_height = std::max(64, m_view_size.height());
@@ -1932,17 +1943,45 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     // ---------- 13. 波形图 ----------
     {
         // 幅值标尺：用户在「窗口和缩放」里拖过幅度滑块就用他的值，
-        // 否则（0 = 自动）按**这一屏的实际范围**自动定，向上取整到 1/2/5×10ⁿ。
-        // 写死 ±100 μV 的话，幅度小的记录会是一条平线，幅度大的会削顶
-        double robust = 0.0;
+        // 否则（0 = 自动）按**这一屏的稳健幅度**自动定，向上取整到 1/2/5×10ⁿ。
+        // 稳健做法：逐通道取 |value| 的 P95（单点伪差尖峰影响不到它），再取各通道的
+        // 中位数当总标尺 —— 直接取全通道最大值的话，少数几路大幅度噪声会把标尺
+        // 顶到 ±1000，整屏波形被压成平线
         const int window_first = std::clamp(
             static_cast<int>(std::lround(job.window_start * sample_rate)), 0, frames - 1);
         const int window_last = std::clamp(
             window_first + static_cast<int>(std::lround(job.window_seconds * sample_rate)),
             window_first + 1, frames);
+
+        QVector<double> channel_p95;
+        channel_p95.reserve(channels);
+        QVector<double> magnitudes;
         for (int channel = 0; channel < channels; ++channel)
-            for (int i = window_first; i < window_last; ++i)
-                robust = std::max(robust, std::abs(data.at(channel).at(i)));
+        {
+            const QVector<double> &row = data.at(channel);
+            const int stop = std::min(window_last, static_cast<int>(row.size()));
+            magnitudes.clear();
+            magnitudes.reserve(std::max(0, stop - window_first));
+            for (int i = window_first; i < stop; ++i)
+                magnitudes.append(std::abs(row.at(i)));
+            if (magnitudes.isEmpty())
+                continue;
+
+            const int count = static_cast<int>(magnitudes.size());
+            const int rank = std::clamp(
+                static_cast<int>(std::lround(0.95 * (count - 1))), 0, count - 1);
+            std::nth_element(magnitudes.begin(), magnitudes.begin() + rank, magnitudes.end());
+            channel_p95.append(magnitudes.at(rank));
+        }
+
+        double robust = 0.0;
+        if (!channel_p95.isEmpty())
+        {
+            // 偶数个通道时取上中位，够用且不必求平均
+            const int mid = static_cast<int>(channel_p95.size()) / 2;
+            std::nth_element(channel_p95.begin(), channel_p95.begin() + mid, channel_p95.end());
+            robust = channel_p95.at(mid);
+        }
 
         if (job.wave_amplitude_uv > 0.0)
         {

@@ -198,14 +198,30 @@ void zero_phase_filter(QVector<double> &x, const QVector<Biquad> &sos, double sa
     const int pad = std::min(n / 2, std::max(8, static_cast<int>(std::lround(3.0 * sample_rate))));
     const int total = n + 2 * pad;
 
+    // 镜像轴取**边界处的局部基线**（约 0.5 秒窗口均值），而不是边界那一个采样点。
+    // 直接以 x[0]/x[-1] 为轴会在接缝处注入一个直流台阶：本项目原始数据被 ~50Hz
+    // 伪迹主导，x[0] 往往是工频的一个峰值（远离真实基线），延拓段的均值随之偏离，
+    // 接缝一跳变就被 0.1 Hz 高通响应成开头几秒的假斜坡 —— 而默认分析片段正好是
+    // 开头这几秒。0.5 秒窗口含 ~25 个工频周期，均值对相位不敏感，又能跟随慢漂移
+    const int base_win = std::min(pad, std::max(8, static_cast<int>(std::lround(0.5 * sample_rate))));
+    double left_base = 0.0;
+    double right_base = 0.0;
+    for (int i = 0; i < base_win; ++i)
+    {
+        left_base += x[i];
+        right_base += x[n - 1 - i];
+    }
+    left_base /= base_win;
+    right_base /= base_win;
+
     QVector<double> buffer(total);
-    // 奇数延拓：左端 = 2*x[0] - x[pad..1]，右端同理。这样接缝处值连续、
+    // 奇数延拓：左端 = 2*left_base - x[pad..1]，右端同理。这样接缝处值连续、
     // 一阶差分也连续，滤波器的启动瞬变被推到接缝以外
     for (int i = 0; i < pad; ++i)
-        buffer[i] = 2.0 * x.first() - x[pad - i];
+        buffer[i] = 2.0 * left_base - x[pad - i];
     std::copy(x.begin(), x.end(), buffer.begin() + pad);
     for (int i = 0; i < pad; ++i)
-        buffer[pad + n + i] = 2.0 * x.last() - x[n - 2 - i];
+        buffer[pad + n + i] = 2.0 * right_base - x[n - 2 - i];
 
     filter_forward(buffer, sos);
     std::reverse(buffer.begin(), buffer.end());
@@ -585,7 +601,8 @@ namespace
 // 所以整张图比视口高，由 QML 那边滚动着看 —— 这样滚动不必重算一遍分析
 QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rate,
                          double window_start, double window_seconds, int current_channel,
-                         double range_uv, int width, const QVariantList &events)
+                         const QVector<double> &channel_range_uv, int width,
+                         const QVariantList &events)
 {
     const int channels = data.size();
     const int height = channels * PostProcess::lane_height();
@@ -639,13 +656,18 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
     }
 
     const double half_lane = PostProcess::lane_height() * 0.5;
-    const double scale = half_lane / std::max(1.0, range_uv);
 
     for (int channel = 0; channel < channels; ++channel)
     {
         const QVector<double> &row = data.at(channel);
         if (row.isEmpty())
             continue;
+
+        // 每一路用各自的标尺：脑电通道幅度小、噪声通道幅度大，统一标尺时
+        // 总有一头受委屈（要么脑电被压平，要么噪声被削成方块）
+        const double range_uv = channel < channel_range_uv.size()
+                                    ? channel_range_uv.at(channel) : 25.0;
+        const double scale = half_lane / std::max(1.0, range_uv);
 
         const double centre = channel * PostProcess::lane_height() + half_lane;
         const bool active = channel == current_channel;
@@ -656,6 +678,20 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         QPolygonF polyline;
         polyline.reserve(std::max(2, width) * 2);
         const int samples = static_cast<int>(row.size());
+
+        // 显示用去直流（AC 耦合）：减去本窗口内该通道的均值。
+        // 与实时波形（AcquisitionBridge 的 m_dc_removal）和预览弹窗
+        // （RecordingPreview::render_window）同一套约定：每帧现算、没有跨帧状态，
+        // 所以不会像算法侧的因果高通那样在启动后拖出几秒的漂移。
+        // 不减掉的话，电极直流偏置与启动漂移会把整条波形抬离泳道中线（甚至压到
+        // 相邻泳道上），同时把自动量程顶到 ±1000，几十 µV 的脑电被压成一条平线
+        const int offset_from = std::clamp(static_cast<int>(first_sample), 0, samples - 1);
+        const int offset_to = std::clamp(static_cast<int>(last_sample), offset_from + 1, samples);
+        double offset = 0.0;
+        for (int i = offset_from; i < offset_to; ++i)
+            offset += row.at(i);
+        offset /= static_cast<double>(offset_to - offset_from);
+
         for (int x = 0; x < width; ++x)
         {
             const int from = static_cast<int>(first_sample + span * x / width);
@@ -674,8 +710,8 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
                 highest = std::max(highest, row.at(i));
             }
 
-            const double y_low = centre - std::clamp(lowest * scale, -half_lane, half_lane);
-            const double y_high = centre - std::clamp(highest * scale, -half_lane, half_lane);
+            const double y_low = centre - std::clamp((lowest - offset) * scale, -half_lane, half_lane);
+            const double y_high = centre - std::clamp((highest - offset) * scale, -half_lane, half_lane);
             polyline.append(QPointF(x, y_low));
             polyline.append(QPointF(x, y_high));
         }
@@ -806,7 +842,9 @@ PostProcess::PostProcess(QObject *parent)
 {
     m_debounce = new QTimer(this);
     m_debounce->setSingleShot(true);
-    m_debounce->setInterval(180);
+    // 拖动时间轴时按这个节拍更新。命中指纹的话一轮只剩出图，几十毫秒就够；
+    // 再大就变成明显的「跟手但不跟手」了
+    m_debounce->setInterval(40);
     QObject::connect(m_debounce, &QTimer::timeout, this, &PostProcess::run_recompute);
 
     QObject::connect(&m_watcher, &QFutureWatcher<Result>::finished,
@@ -963,6 +1001,9 @@ void PostProcess::close()
     }
     ++m_generation;
     m_busy = false;
+    // 增量重算的底子是上一份结果，换记录后必须丢；否则会拿旧记录的数据去拼波形
+    m_previous.reset();
+    m_pending_recompute = false;
     emit busyChanged();
     emit recordChanged();
     emit resultChanged();
@@ -1389,8 +1430,11 @@ void PostProcess::schedule_recompute()
 {
     if (!m_loaded)
         return;
-    // 防抖：拖滑块会连投十几个改动，只算最后一次
-    m_debounce->start();
+    // 拖动滑块会连投十几个改动：定时器已经在跑就别再重启它。要是每来一个新值都
+    // start() 一遍，单次防抖会被一直往后推，滑块不停手就永远不触发 —— 表现成
+    //「松手才刷新」。让已排上的那一拍自然到期，拖动过程中也能按节拍更新
+    if (!m_debounce->isActive())
+        m_debounce->start();
 }
 
 void PostProcess::run_recompute()
@@ -1400,11 +1444,14 @@ void PostProcess::run_recompute()
 
     if (m_watcher.isRunning())
     {
-        // 上一轮还没回来。再等一拍 —— 不等的话任务会排队堆起来，
-        // 而每一轮都是几百毫秒的全量计算
-        m_debounce->start();
+        // 上一轮还没回来。只记一笔「还有新参数没算」，等它一结束由
+        // on_recompute_finished 立刻补跑 —— 不在这里重启定时器（那等于再白等
+        // 一个防抖周期，拖动时每帧都叠加这个延迟）
+        m_pending_recompute = true;
         return;
     }
+
+    m_pending_recompute = false;
 
     Job job;
     job.generation = ++m_generation;
@@ -1468,6 +1515,8 @@ void PostProcess::run_recompute()
     job.spectrum_height = std::max(64, m_view_size.height());
     job.events = m_events;
     job.record_info = m_record_info;
+    // 把最近一份结果一并交给工作线程：窗口类改动命中指纹时，它只重画波形
+    job.previous = m_previous;
 
     m_busy = true;
     emit busyChanged();
@@ -1495,6 +1544,9 @@ void PostProcess::on_recompute_finished()
         const QMutexLocker locker(&m_mutex);
         m_result = result;
     }
+    // 留一份给下一轮做增量重算：窗口类改动（拖时间轴）只要指纹一致，
+    // 下一轮就整份复用它、只重画波形，省掉滤波/Welch/相关性那一整条流水线
+    m_previous = std::make_shared<const Result>(result);
     m_busy = false;
 
     // 采样率可能被降采样改过，界面上的「片段」读数要用改过之后的
@@ -1505,6 +1557,10 @@ void PostProcess::on_recompute_finished()
     m_status_text = result.ok ? QString() : result.error;
     emit busyChanged();
     emit resultChanged();
+
+    // 计算期间滑块又动过：立刻用最新参数补跑一轮，别让画面停在中间的位置
+    if (m_pending_recompute && !m_debounce->isActive())
+        m_debounce->start(0);
 }
 
 int PostProcess::revision() const
@@ -1533,6 +1589,61 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     const int channels = raw->channels;
     const int source_rate = raw->sample_rate;
     const int source_frames = raw->frames;
+
+    // 这一轮「窗口无关」输入的指纹。拖动时间轴只动 window_start/seconds，指纹不变，
+    // 于是下面可以直接复用上一轮结果；改参数（滤波、重参考、片段、质检…）则指纹必变
+    Fingerprint fingerprint;
+    fingerprint.band_pass_enabled = job.band_pass_enabled;
+    fingerprint.high_pass_hz = job.high_pass_hz;
+    fingerprint.low_pass_hz = job.low_pass_hz;
+    fingerprint.notch_enabled = job.notch_enabled;
+    fingerprint.notch_hz = job.notch_hz;
+    fingerprint.reference_index = job.reference_index;
+    fingerprint.downsample_index = job.downsample_index;
+    fingerprint.baseline_enabled = job.baseline_enabled;
+    fingerprint.asr_enabled = job.asr_enabled;
+    fingerprint.asr_cutoff = job.asr_cutoff;
+    fingerprint.artifact_detection_enabled = job.artifact_detection_enabled;
+    fingerprint.qc_signal_enabled = job.qc_signal_enabled;
+    fingerprint.qc_range_enabled = job.qc_range_enabled;
+    fingerprint.qc_correlation_enabled = job.qc_correlation_enabled;
+    fingerprint.qc_amplitude_ratio = job.qc_amplitude_ratio;
+    fingerprint.qc_correlation = job.qc_correlation;
+    fingerprint.qc_repair_index = job.qc_repair_index;
+    fingerprint.segment_start = job.segment_start;
+    fingerprint.segment_seconds = job.segment_seconds;
+    fingerprint.current_channel = job.current_channel;
+    fingerprint.spectrum_width = job.spectrum_width;
+    fingerprint.spectrum_height = job.spectrum_height;
+    fingerprint.raw = raw.get();
+    result.fingerprint = fingerprint;
+
+    // 指纹命中 = 这一轮只有窗口/幅度标尺/事件这类「只进波形图」的输入变了。
+    // 直接拿上一轮的结果当底子，只重画波形 —— 拖时间轴时真正卡住的滤波、Welch、
+    // 相关性那一整条流水线（步骤 1–12、15–17）全部跳过
+    if (job.previous && job.previous->ok && job.previous->fingerprint == fingerprint
+        && job.previous->channels == channels && job.previous->processed_channels == channels)
+    {
+        Result reused = *job.previous;
+        reused.generation = job.generation;
+
+        // 上一轮留了预处理后的整段数据（帧优先交错），反交错回逐通道即可，
+        // 不必再跑一遍预处理。float→double 的舍入远小于一个像素，看不出差别
+        const int frames = static_cast<int>(reused.processed.size() / channels);
+        QVector<QVector<double>> data(channels);
+        for (int channel = 0; channel < channels; ++channel)
+            data[channel].resize(frames);
+        const QVector<float> &processed = reused.processed;
+        for (int i = 0; i < frames; ++i)
+        {
+            const qsizetype base = static_cast<qsizetype>(i) * channels;
+            for (int channel = 0; channel < channels; ++channel)
+                data[channel][i] = processed.at(base + channel);
+        }
+
+        compute_wave(reused, data, reused.processed_rate, job);
+        return reused;
+    }
 
     // ---------- 1. 交错样本 → 逐通道 double ----------
     // 后面每一步都是逐通道的整段运算，先转置一次，比每步都去乘一次索引便宜
@@ -1941,68 +2052,9 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     }
 
     // ---------- 13. 波形图 ----------
-    {
-        // 幅值标尺：用户在「窗口和缩放」里拖过幅度滑块就用他的值，
-        // 否则（0 = 自动）按**这一屏的稳健幅度**自动定，向上取整到 1/2/5×10ⁿ。
-        // 稳健做法：逐通道取 |value| 的 P95（单点伪差尖峰影响不到它），再取各通道的
-        // 中位数当总标尺 —— 直接取全通道最大值的话，少数几路大幅度噪声会把标尺
-        // 顶到 ±1000，整屏波形被压成平线
-        const int window_first = std::clamp(
-            static_cast<int>(std::lround(job.window_start * sample_rate)), 0, frames - 1);
-        const int window_last = std::clamp(
-            window_first + static_cast<int>(std::lround(job.window_seconds * sample_rate)),
-            window_first + 1, frames);
-
-        QVector<double> channel_p95;
-        channel_p95.reserve(channels);
-        QVector<double> magnitudes;
-        for (int channel = 0; channel < channels; ++channel)
-        {
-            const QVector<double> &row = data.at(channel);
-            const int stop = std::min(window_last, static_cast<int>(row.size()));
-            magnitudes.clear();
-            magnitudes.reserve(std::max(0, stop - window_first));
-            for (int i = window_first; i < stop; ++i)
-                magnitudes.append(std::abs(row.at(i)));
-            if (magnitudes.isEmpty())
-                continue;
-
-            const int count = static_cast<int>(magnitudes.size());
-            const int rank = std::clamp(
-                static_cast<int>(std::lround(0.95 * (count - 1))), 0, count - 1);
-            std::nth_element(magnitudes.begin(), magnitudes.begin() + rank, magnitudes.end());
-            channel_p95.append(magnitudes.at(rank));
-        }
-
-        double robust = 0.0;
-        if (!channel_p95.isEmpty())
-        {
-            // 偶数个通道时取上中位，够用且不必求平均
-            const int mid = static_cast<int>(channel_p95.size()) / 2;
-            std::nth_element(channel_p95.begin(), channel_p95.begin() + mid, channel_p95.end());
-            robust = channel_p95.at(mid);
-        }
-
-        if (job.wave_amplitude_uv > 0.0)
-        {
-            result.wave_range_uv = job.wave_amplitude_uv;
-        }
-        else
-        {
-            const double exponent =
-                robust > 0.0 ? std::pow(10.0, std::floor(std::log10(robust))) : 1.0;
-            const double normalized = exponent > 0.0 ? robust / exponent : 1.0;
-            // 1 / 2 / 5 / 10 四档。**不能只给到 5**：归一化值落在 (5,10) 时取 5 会
-            // 算出一个比实际峰值还小的标尺，波形顶部会被削平
-            const double step = normalized <= 1.0 ? 1.0
-                              : (normalized <= 2.0 ? 2.0 : (normalized <= 5.0 ? 5.0 : 10.0));
-            result.wave_range_uv = std::max(25.0, step * exponent);
-        }
-
-        result.wave_image = render_wave_image(data, sample_rate, job.window_start,
-                                              job.window_seconds, job.current_channel,
-                                              result.wave_range_uv, job.wave_width, job.events);
-    }
+    // 只进本图的那部分输入（窗口、当前导联、幅度标尺、事件）全交给 compute_wave：
+    // 拖动时间轴命中指纹的增量重算走的也是它，两条路径共用同一份出图逻辑
+    compute_wave(result, data, sample_rate, job);
 
     // ---------- 14. 频谱图 ----------
     if (job.current_channel >= 0 && job.current_channel < spectra.size())
@@ -2284,6 +2336,93 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
 
     result.ok = true;
     return result;
+}
+
+// 波形图那一张的出图。原来是 compute() 里的步骤 13，提出来是为了让「命中指纹」
+// 的增量重算能跳过整条流水线、只调这一个函数。窗口、当前导联、幅度标尺、事件
+// 都只进这一张图，所以只重画它
+void PostProcess::compute_wave(Result &result, const QVector<QVector<double>> &data,
+                               double sample_rate, const Job &job)
+{
+    const int channels = data.size();
+    if (channels <= 0 || data.first().isEmpty() || sample_rate <= 0.0)
+        return;
+
+    const int frames = data.first().size();
+
+    // 幅值标尺：用户在「窗口和缩放」里拖过幅度滑块就用他的值，
+    // 否则（0 = 自动）按**这一屏的稳健幅度**自动定，向上取整到 1/2/5×10ⁿ。
+    // 稳健做法：逐通道取 |value| 的 P95（单点伪差尖峰影响不到它），再逐通道各自定尺
+    // —— 直接取全通道最大值的话，少数几路大幅度噪声会把标尺顶到 ±1000，整屏波形
+    // 被压成平线
+    const int window_first = std::clamp(
+        static_cast<int>(std::lround(job.window_start * sample_rate)), 0, frames - 1);
+    const int window_last = std::clamp(
+        window_first + static_cast<int>(std::lround(job.window_seconds * sample_rate)),
+        window_first + 1, frames);
+
+    QVector<double> channel_p95(channels, 0.0);
+    QVector<double> magnitudes;
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        const QVector<double> &row = data.at(channel);
+        const int stop = std::min(window_last, static_cast<int>(row.size()));
+        if (stop <= window_first)
+            continue;
+
+        // 与画图时一致：先减掉本窗口均值（显示用去直流）再取幅度。
+        // 不减的话，直流偏置与启动漂移会主导 P95，标尺被顶到 ±1000，
+        // 脑电被压成一条平线（正是上面那段注释想避免的情况）
+        double offset = 0.0;
+        for (int i = window_first; i < stop; ++i)
+            offset += row.at(i);
+        offset /= static_cast<double>(stop - window_first);
+
+        magnitudes.clear();
+        magnitudes.reserve(stop - window_first);
+        for (int i = window_first; i < stop; ++i)
+            magnitudes.append(std::abs(row.at(i) - offset));
+        if (magnitudes.isEmpty())
+            continue;
+
+        const int count = static_cast<int>(magnitudes.size());
+        const int rank = std::clamp(
+            static_cast<int>(std::lround(0.95 * (count - 1))), 0, count - 1);
+        std::nth_element(magnitudes.begin(), magnitudes.begin() + rank, magnitudes.end());
+        channel_p95[channel] = magnitudes.at(rank);
+    }
+
+    // 逐通道独立标尺：每一路各自向上取整到 1/2/5×10ⁿ。
+    // 统一标尺时，噪声大的通道会把标尺顶高、把脑电压平；反过来用脑电的标尺
+    // 又会让噪声通道削成方块 —— 各定各的，两种情况都不会出现
+    QVector<double> channel_range_uv;
+    channel_range_uv.reserve(channels);
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        if (job.wave_amplitude_uv > 0.0)
+        {
+            // 用户拖过幅度滑块：仍然全通道统一用他给的值
+            channel_range_uv.append(job.wave_amplitude_uv);
+            continue;
+        }
+
+        const double p95 = channel_p95.at(channel);
+        const double exponent =
+            p95 > 0.0 ? std::pow(10.0, std::floor(std::log10(p95))) : 1.0;
+        const double normalized = exponent > 0.0 ? p95 / exponent : 1.0;
+        // 1 / 2 / 5 / 10 四档。**不能只给到 5**：归一化值落在 (5,10) 时取 5 会
+        // 算出一个比实际峰值还小的标尺，波形顶部会被削平
+        const double step = normalized <= 1.0 ? 1.0
+                          : (normalized <= 2.0 ? 2.0 : (normalized <= 5.0 ? 5.0 : 10.0));
+        channel_range_uv.append(std::max(25.0, step * exponent));
+    }
+
+    // 右侧 +N/0/−N 标注只画在当前导联那条泳道上，所以取当前导联的标尺
+    result.wave_range_uv = channel_range_uv.value(job.current_channel, 25.0);
+
+    result.wave_image = render_wave_image(data, sample_rate, job.window_start,
+                                          job.window_seconds, job.current_channel,
+                                          channel_range_uv, job.wave_width, job.events);
 }
 
 // ==================== 结果读取 ====================

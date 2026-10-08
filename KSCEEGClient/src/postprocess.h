@@ -316,6 +316,70 @@ signals:
     void resultChanged();
 
 private:
+    struct Result;
+
+    // 「窗口无关」那部分输入的指纹。拖动时间轴只改变波形图那一张，整条重流水线
+    //（滤波 / 重参考 / 降采样 / Welch / 相关性 / 地形图）与窗口无关。把它们的输入
+    // 摘成一个可比对的指纹：指纹没变就说明可以整份复用上一轮结果，只重画波形 ——
+    // 拖动的延迟从「整条流水线」降到「出图」。窗口（位移/长度）、当前导联幅度、
+    // 幅度标尺、波形绘制区尺寸、事件都不算在内，因为它们只进波形图那一张
+    struct Fingerprint
+    {
+        bool band_pass_enabled = true;
+        double high_pass_hz = 0.0;
+        double low_pass_hz = 0.0;
+        bool notch_enabled = true;
+        double notch_hz = 0.0;
+        int reference_index = 2;
+        int downsample_index = 0;
+        bool baseline_enabled = false;
+        bool asr_enabled = false;
+        int asr_cutoff = 0;
+        bool artifact_detection_enabled = false;
+        bool qc_signal_enabled = true;
+        bool qc_range_enabled = true;
+        bool qc_correlation_enabled = true;
+        double qc_amplitude_ratio = 0.0;
+        double qc_correlation = 0.0;
+        int qc_repair_index = 0;
+        double segment_start = 0.0;
+        double segment_seconds = 0.0;
+        // 当前导联会进频谱、报告、底栏，所以必须算在指纹里：换导联就走整条流水线
+        int current_channel = 0;
+        // 频谱绘制区尺寸只影响频谱图那张，但那张不做增量重算，所以也算进来
+        int spectrum_width = 0;
+        int spectrum_height = 0;
+        // 原始数据身份：换记录必然换指纹
+        const void *raw = nullptr;
+
+        bool operator==(const Fingerprint &other) const
+        {
+            return band_pass_enabled == other.band_pass_enabled
+                && high_pass_hz == other.high_pass_hz
+                && low_pass_hz == other.low_pass_hz
+                && notch_enabled == other.notch_enabled
+                && notch_hz == other.notch_hz
+                && reference_index == other.reference_index
+                && downsample_index == other.downsample_index
+                && baseline_enabled == other.baseline_enabled
+                && asr_enabled == other.asr_enabled
+                && asr_cutoff == other.asr_cutoff
+                && artifact_detection_enabled == other.artifact_detection_enabled
+                && qc_signal_enabled == other.qc_signal_enabled
+                && qc_range_enabled == other.qc_range_enabled
+                && qc_correlation_enabled == other.qc_correlation_enabled
+                && qc_amplitude_ratio == other.qc_amplitude_ratio
+                && qc_correlation == other.qc_correlation
+                && qc_repair_index == other.qc_repair_index
+                && segment_start == other.segment_start
+                && segment_seconds == other.segment_seconds
+                && current_channel == other.current_channel
+                && spectrum_width == other.spectrum_width
+                && spectrum_height == other.spectrum_height
+                && raw == other.raw;
+        }
+    };
+
     // 一遍后处理要用的全部输入。在 GUI 线程上拷一份快照交给工作线程，
     // 工作线程从此不碰本对象的可变状态（只读缓存的那份原始数据）
     struct Job
@@ -326,7 +390,10 @@ private:
         double low_pass_hz = 49.0;
         bool notch_enabled = true;
         double notch_hz = 50.0;
-        int reference_index = 0;
+        // 默认不重参考。本蒙太奇没有 A1/A2，「双侧乳突」只能退化成减 0.5*(T3+T4)，
+        // 而 T3/T4 往往是全场噪声最大的两路 —— 减它们等于把噪声灌进每一条通道，
+        // 波形变成满屏一致的梳状、量程被顶到 ±500。默认关掉，让用户按记录自己决定
+        int reference_index = 2;
         int downsample_index = 0;
         bool baseline_enabled = false;
         bool asr_enabled = false;
@@ -359,6 +426,9 @@ private:
         QVariantList events;
         // 基本信息那五行。报告页的「记录信息」一节直接用它，不再从 info 重新拼一遍
         QVariantList record_info;
+        // 上一轮的结果快照。窗口类改动命中指纹时，compute 直接复用它、只重画波形，
+        // 不再重跑整条流水线。与 raw 同寿命（shared_ptr 保证在工作线程用完前不析构）
+        std::shared_ptr<const Result> previous;
     };
 
     // 工作线程产出的全部结果。**只含 POD 与 QImage**：QImage 是隐式共享的
@@ -405,6 +475,10 @@ private:
         QVector<float> processed;
         int processed_channels = 0;
         double processed_rate = 0.0;
+
+        // 这一轮窗口无关输入的指纹。下一轮拖动时间轴时与它比对：相等就直接复用
+        // 本结果的中间产物（processed / 频谱 / 统计 / 地形图…），只重画波形
+        Fingerprint fingerprint;
     };
 
     // 原始数据：打开记录时读一次，之后所有重算只读它。
@@ -420,6 +494,11 @@ private:
 
     // 在工作线程上跑。**只读 m_raw（shared_ptr 保证活着）**，不碰任何其它成员
     static Result compute(std::shared_ptr<const RawData> raw, Job job);
+
+    // 波形图那张的出图（自动标尺 + 渲染）。窗口、当前导联、幅度标尺、事件都只
+    // 影响它，所以命中指纹的增量重算也只调它，不碰整条流水线
+    static void compute_wave(Result &result, const QVector<QVector<double>> &data,
+                             double sample_rate, const Job &job);
 
     // 基本信息面板那五行，从 open() 收到的 info 拼出来
     void build_record_info();
@@ -454,7 +533,7 @@ private:
         double low_pass_hz = 49.0;
         bool notch_enabled = true;
         double notch_hz = 50.0;
-        int reference_index = 0;
+        int reference_index = 2;   // 见 Job 里的说明：默认不重参考
         int downsample_index = 0;
         bool baseline_enabled = false;
         bool asr_enabled = false;
@@ -494,6 +573,10 @@ private:
     int m_generation = 0;
     int m_applied_generation = 0;
     Result m_result;
+    // 最近一次真正落到界面上的结果。拖动时间轴时把它交给工作线程做增量重算的底子
+    std::shared_ptr<const Result> m_previous;
+    // 计算期间又来了改动：等这一轮一结束就立刻补跑最新参数，而不是再等一拍
+    bool m_pending_recompute = false;
     QFutureWatcher<Result> m_watcher;
     class QTimer *m_debounce = nullptr;
 };

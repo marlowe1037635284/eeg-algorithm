@@ -58,6 +58,9 @@ ApplicationWindow {
     property string openSessionPatient: ""
     // 从患者管理页点「记录」进来时带的历史记录页过滤条件
     property string historyPatientFilter: ""
+    // 「数据分析与后处理」要分析的那条记录号。它是**整屏替换**历史记录页的，
+    // 记录号由历史记录页的「分析」按钮交上来
+    property string analysisRecordNo: ""
 
     readonly property string defaultUserName: qsTr("管理员")
     readonly property string defaultUserRole: qsTr("管理员")
@@ -155,6 +158,11 @@ ApplicationWindow {
 
     // 导航项 → 页面标识
     function navigateTo(label) {
+        // 从后处理页离开时把记录放掉：一条十分钟的记录映射着十几 MB，
+        // 一直开着不划算。与预览弹窗关掉就 Recording.close() 是同一个理由
+        if (currentPage === "analysis")
+            Analysis.close()
+
         if (label === qsTr("采集工作台")) {
             currentPage = "workbench"
             // 等 Loader 把新页面实例化出来再回填患者卡片
@@ -176,8 +184,24 @@ ApplicationWindow {
         case "history":  return historyPageComponent
         case "user":     return userPageComponent
         case "settings": return settingsPageComponent
+        case "analysis": return analysisPageComponent
         default:         return workbenchPageComponent
         }
+    }
+
+    // 历史记录页点「分析」：记下要分析哪一条，再换到后处理页。
+    // 换页顺序不能反 —— 先把 currentPage 改了，页面在 Component.onCompleted
+    // 里读 recordNo 时才是新值
+    function openAnalysis(recordNo) {
+        analysisRecordNo = recordNo
+        currentPage = "analysis"
+    }
+
+    // 后处理页点「返回历史记录」
+    function closeAnalysis() {
+        Analysis.close()
+        analysisRecordNo = ""
+        currentPage = "history"
     }
 
     function dialogComponent() {
@@ -292,8 +316,11 @@ ApplicationWindow {
     function handleLogout() {
         currentPatientNo = ""
         historyPatientFilter = ""
+        analysisRecordNo = ""
         openSessionPatient = ""
         pendingPatientRow = null
+        // 后处理页可能开着一条记录：退出登录时把它放掉，别把文件留在手里
+        Analysis.close()
         var page = window.currentPageItem()
         if (page && page.stopCollection)
             page.stopCollection()
@@ -393,6 +420,23 @@ ApplicationWindow {
                 window.activeDialog = "confirmDeleteRecord"
             }
             onRecordExportRequested: (recordNo) => window.exportRecord(recordNo)
+            onAnalysisRequested: (recordNo) => window.openAnalysis(recordNo)
+        }
+    }
+
+    Component {
+        id: analysisPageComponent
+
+        AnalysisPage {
+            userName: window.currentUserName.length > 0 ? window.currentUserName : window.defaultUserName
+            userRole: window.currentUserRole.length > 0 ? window.currentUserRole : window.defaultUserRole
+            database: appDatabase
+            recordNo: window.analysisRecordNo
+
+            onNavRequested: (label) => window.navigateTo(label)
+            onLogoutRequested: window.handleLogout()
+            onBackRequested: window.closeAnalysis()
+            onNotifyRequested: (message, kind) => window.showToast(message, kind)
         }
     }
 

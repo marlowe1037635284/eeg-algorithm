@@ -22,6 +22,7 @@
 #include "eegmontage.h"
 #include "pythonengine.h"
 #include "serialprotocol.h"
+#include "topographypalette.h"
 #include "bridgeimageproviders.h"
 
 #include <algorithm>
@@ -73,60 +74,6 @@ QString default_record_directory()
         base = QDir::tempPath() + QStringLiteral("/EEG-KSC");
     }
     return QDir::fromNativeSeparators(base) + QStringLiteral("/records");
-}
-
-// 七个等距停靠点。QML 的色标条用的是同一份（见 topoPalette），
-// 两边手工各抄一份色值迟早会对不上，而色标是按图读值的唯一依据
-const QStringList &topography_palette()
-{
-    static const QStringList palette = {
-        QStringLiteral("#173778"), QStringLiteral("#1b6ca8"), QStringLiteral("#2fb4a8"),
-        QStringLiteral("#7ec850"), QStringLiteral("#f2d024"), QStringLiteral("#f28c28"),
-        QStringLiteral("#cd2d2d"),
-    };
-    return palette;
-}
-
-// 把 7 个停靠点插值展开成 256 项查表，只建一次。
-//
-// 为什么不在逐像素时现算：一帧 256×256 就是 6.5 万次调用、每次两次
-// QColor(QString)（要从十六进制字符串解析颜色），合计十余万次字符串解析，
-// 全部发生在 GUI 线程上且占着 m_topo_mutex —— 每 1.2 秒卡一下，
-// 而 provider 可能正在另一个线程等这把锁。
-// QML 的色标条仍然读同一份 topoPalette，两边口径不变
-const QVector<QRgb> &palette_lut()
-{
-    static const QVector<QRgb> lut = []() {
-        const QStringList &palette = topography_palette();
-        const int last = palette.size() - 1;
-
-        QVector<QRgb> table(256);
-        for (int i = 0; i < table.size(); ++i)
-        {
-            const double scaled = static_cast<double>(i) / 255.0 * last;
-            const int low = std::min(static_cast<int>(scaled), last - 1);
-            const double fraction = scaled - low;
-
-            const QColor low_color(palette.at(low));
-            const QColor high_color(palette.at(low + 1));
-            table[i] = qRgb(
-                static_cast<int>(low_color.red()
-                                 + (high_color.red() - low_color.red()) * fraction),
-                static_cast<int>(low_color.green()
-                                 + (high_color.green() - low_color.green()) * fraction),
-                static_cast<int>(low_color.blue()
-                                 + (high_color.blue() - low_color.blue()) * fraction));
-        }
-        return table;
-    }();
-    return lut;
-}
-
-// 0~1 的归一化值 → 颜色
-QRgb palette_color(double normalized)
-{
-    const int index = static_cast<int>(std::clamp(normalized, 0.0, 1.0) * 255.0 + 0.5);
-    return palette_lut().at(std::clamp(index, 0, 255));
 }
 
 // 把地形图网格画成一张方形图。
@@ -221,7 +168,7 @@ QImage render_topography(const TopographyFrame &frame, int size)
             {
                 continue;
             }
-            line[x] = palette_color(frame.grid_values.at(index) / scale_max);
+            line[x] = topography_palette::color(frame.grid_values.at(index) / scale_max);
         }
     }
     return image;
@@ -271,7 +218,7 @@ bool band_from_name(const QString &band, QString *preset, double *low_hz, double
 
 QStringList AcquisitionBridge::topo_palette()
 {
-    return topography_palette();
+    return topography_palette::stops();
 }
 
 // ==================== 构造与析构 ====================
@@ -1402,12 +1349,9 @@ QStringList AcquisitionBridge::channel_names() const
 
 QStringList AcquisitionBridge::channel_colors() const
 {
-    // 与设计稿 8 个通道的配色一致；16 通道时后 8 个沿用同一张表循环取色
-    static const QStringList palette = {
-        QStringLiteral("#0e9fbf"), QStringLiteral("#36a772"), QStringLiteral("#daa82a"),
-        QStringLiteral("#e07a2e"), QStringLiteral("#d675a4"), QStringLiteral("#876ee3"),
-        QStringLiteral("#299fbb"), QStringLiteral("#6baa40"),
-    };
+    // 配色表收在 eeg_montage 里（实时波形、回放预览、后处理三处同源）；
+    // 8 个颜色一循环，16 通道时后 8 路沿用同一张表取色
+    const QStringList palette = eeg_montage::channel_colors();
     QStringList colors;
     const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
     for (int i = 0; i < indices.size(); ++i)

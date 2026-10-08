@@ -75,6 +75,39 @@ class PostProcess : public QObject
     Q_PROPERTY(bool asrEnabled READ asr_enabled WRITE set_asr_enabled NOTIFY paramsChanged)
     Q_PROPERTY(int asrCutoff READ asr_cutoff WRITE set_asr_cutoff NOTIFY paramsChanged)
 
+    // 伪迹检测：是否统计「超出 ±300 μV 的样本」并给出偽差结论。
+    // 报告页的「伪差检测」一节与底栏的「无伪差 / 有伪差」都由它决定
+    Q_PROPERTY(bool artifactDetectionEnabled READ artifact_detection_enabled
+                   WRITE set_artifact_detection_enabled NOTIFY paramsChanged)
+
+    // 窗口和缩放里的「幅度」。0 表示**自动**（沿用原来按窗口内峰值定的标尺），
+    // 由用户拖过滑块之后才是一个固定的 ±μV 值。位移 / 窗口长度复用下面的
+    // windowStartSeconds / windowSeconds —— 它们本来就被时间轴拖着改，同一份状态
+    Q_PROPERTY(double waveAmplitudeUV READ wave_amplitude_uv WRITE set_wave_amplitude_uv
+                   NOTIFY paramsChanged)
+
+    // 质检与修复。三个检测项的阈值都可调，改完报告与底栏的数字一起变
+    Q_PROPERTY(bool qcSignalEnabled READ qc_signal_enabled WRITE set_qc_signal_enabled
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(double qcAmplitudeRatio READ qc_amplitude_ratio WRITE set_qc_amplitude_ratio
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(double qcCorrelation READ qc_correlation WRITE set_qc_correlation
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(int qcRepairIndex READ qc_repair_index WRITE set_qc_repair_index
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(QStringList qcRepairChoices READ qc_repair_choices NOTIFY recordChanged)
+
+    // 脑电数据导出：格式 / 类型 / 范围 三个下拉，决定「导出数据」按钮写出的内容
+    Q_PROPERTY(int exportFormatIndex READ export_format_index WRITE set_export_format_index
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(int exportTypeIndex READ export_type_index WRITE set_export_type_index
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(int exportRangeIndex READ export_range_index WRITE set_export_range_index
+                   NOTIFY paramsChanged)
+    Q_PROPERTY(QStringList exportFormatChoices READ export_format_choices NOTIFY recordChanged)
+    Q_PROPERTY(QStringList exportTypeChoices READ export_type_choices NOTIFY recordChanged)
+    Q_PROPERTY(QStringList exportRangeChoices READ export_range_choices NOTIFY recordChanged)
+
     Q_PROPERTY(QStringList referenceChoices READ reference_choices NOTIFY recordChanged)
     Q_PROPERTY(QStringList downsampleChoices READ downsample_choices NOTIFY recordChanged)
 
@@ -182,6 +215,17 @@ public:
     bool baseline_enabled() const { return m_params.baseline_enabled; }
     bool asr_enabled() const { return m_params.asr_enabled; }
     int asr_cutoff() const { return m_params.asr_cutoff; }
+
+    bool artifact_detection_enabled() const { return m_params.artifact_detection_enabled; }
+    double wave_amplitude_uv() const { return m_params.wave_amplitude_uv; }
+    bool qc_signal_enabled() const { return m_params.qc_signal_enabled; }
+    double qc_amplitude_ratio() const { return m_params.qc_amplitude_ratio; }
+    double qc_correlation() const { return m_params.qc_correlation; }
+    int qc_repair_index() const { return m_params.qc_repair_index; }
+    int export_format_index() const { return m_params.export_format_index; }
+    int export_type_index() const { return m_params.export_type_index; }
+    int export_range_index() const { return m_params.export_range_index; }
+
     int segment_index() const { return m_params.segment_index; }
     double before_seconds() const { return m_params.before_seconds; }
     double after_seconds() const { return m_params.after_seconds; }
@@ -189,6 +233,10 @@ public:
     QStringList reference_choices() const;
     QStringList downsample_choices() const;
     QStringList segment_choices() const;
+    QStringList qc_repair_choices() const;
+    QStringList export_format_choices() const;
+    QStringList export_type_choices() const;
+    QStringList export_range_choices() const;
 
     int current_channel() const { return m_current_channel; }
     double window_start_seconds() const { return m_window_start; }
@@ -236,6 +284,15 @@ public slots:
     void set_baseline_enabled(bool value);
     void set_asr_enabled(bool value);
     void set_asr_cutoff(int value);
+    void set_artifact_detection_enabled(bool value);
+    void set_wave_amplitude_uv(double value);
+    void set_qc_signal_enabled(bool value);
+    void set_qc_amplitude_ratio(double value);
+    void set_qc_correlation(double value);
+    void set_qc_repair_index(int value);
+    void set_export_format_index(int value);
+    void set_export_type_index(int value);
+    void set_export_range_index(int value);
     void set_segment_index(int value);
     void set_before_seconds(double value);
     void set_after_seconds(double value);
@@ -266,6 +323,13 @@ private:
         bool baseline_enabled = false;
         bool asr_enabled = false;
         int asr_cutoff = 40;
+        // 伪迹检测开关与「窗口和缩放」里的幅度（0 = 自动），以及质检三个阈值与修复方式
+        bool artifact_detection_enabled = false;
+        double wave_amplitude_uv = 0.0;
+        bool qc_signal_enabled = true;
+        double qc_amplitude_ratio = 0.1;
+        double qc_correlation = 0.1;
+        int qc_repair_index = 0;
         // 片段**在 GUI 线程上就解析成秒**再交给工作线程：片段是按事件时刻算的，
         // 而事件在库里（页面手上的 m_events）。工作线程只认「从第几秒到第几秒」，
         // 不必知道「哪条事件、前后各留多久」
@@ -385,6 +449,15 @@ private:
         bool baseline_enabled = false;
         bool asr_enabled = false;
         int asr_cutoff = 40;
+        bool artifact_detection_enabled = false;
+        double wave_amplitude_uv = 0.0;   // 0 = 自动
+        bool qc_signal_enabled = true;
+        double qc_amplitude_ratio = 0.1;
+        double qc_correlation = 0.1;
+        int qc_repair_index = 0;          // 0=off, 1=限幅修复
+        int export_format_index = 0;      // 0=EDF, 1=CSV
+        int export_type_index = 0;        // 0=预处理数据, 1=原始数据
+        int export_range_index = 0;       // 0=全记录, 1=当前片段
         // 默认「前 10 秒」。设计稿报告页写的就是「片段范围 0.0 - 10.0 s」，
         // 而且一条记录只要超过十秒，前 10 秒一定存在 —— 默认值就该是必然可用的那个
         int segment_index = 1;

@@ -808,10 +808,10 @@ PostProcess::PostProcess(QObject *parent)
 
 PostProcess::~PostProcess()
 {
-    // 工作线程可能还在跑。它只读 m_raw（shared_ptr），本对象析构后它仍安全 ——
-    // 但 m_watcher 的回调会打到已析构的 this 上，所以必须等它回来。
-    // waitForFinished 阻塞 GUI 线程最多一次分析的时间（Release 下几十毫秒）
-    m_watcher.waitForFinished();
+    // 工作线程可能还在跑，但它只读 m_raw（shared_ptr），本对象析构后它照样安全；
+    // m_watcher 的 finished 连接挂在 this 上，this 析构时 Qt 会自动断开。
+    // 所以**不在这里等**：在 GUI 线程里 waitForFinished() 会阻塞事件循环，
+    // 只要有一轮任务迟迟不返回，整个界面就假死
 }
 
 // ---------- 记录 ----------
@@ -931,7 +931,9 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
 
 void PostProcess::close()
 {
-    m_watcher.waitForFinished();
+    // 这里**不能** m_watcher.waitForFinished()：在 GUI 线程上阻塞等一个 future，
+    // 只要有一轮任务不返回（或 Qt 内部 future 状态机会话被占住），整个界面就假死。
+    // 在途的旧任务回来时靠 generation 不等而被丢弃，无需在这里等它。
     m_raw.reset();
     m_loaded = false;
     m_error_text.clear();
@@ -951,6 +953,8 @@ void PostProcess::close()
         m_result = Result();
     }
     ++m_generation;
+    m_busy = false;
+    emit busyChanged();
     emit recordChanged();
     emit resultChanged();
 }
@@ -1033,6 +1037,26 @@ QStringList PostProcess::segment_choices() const
     }
     choices.append(labels);
     return choices;
+}
+
+QStringList PostProcess::qc_repair_choices() const
+{
+    return {tr("off"), tr("限幅修复")};
+}
+
+QStringList PostProcess::export_format_choices() const
+{
+    return {tr("EDF"), tr("CSV")};
+}
+
+QStringList PostProcess::export_type_choices() const
+{
+    return {tr("预处理数据"), tr("原始数据")};
+}
+
+QStringList PostProcess::export_range_choices() const
+{
+    return {tr("全记录"), tr("当前片段")};
 }
 
 QStringList PostProcess::channel_names() const
@@ -1174,6 +1198,89 @@ void PostProcess::set_asr_cutoff(int value)
     invalidate();
 }
 
+void PostProcess::set_artifact_detection_enabled(bool value)
+{
+    if (m_params.artifact_detection_enabled == value)
+        return;
+    m_params.artifact_detection_enabled = value;
+    invalidate();
+}
+
+void PostProcess::set_wave_amplitude_uv(double value)
+{
+    const double clamped = value <= 0.0 ? 0.0 : std::clamp(value, 5.0, 5000.0);
+    if (qFuzzyCompare(m_params.wave_amplitude_uv + 1.0, clamped + 1.0))
+        return;
+    m_params.wave_amplitude_uv = clamped;
+    invalidate();
+}
+
+void PostProcess::set_qc_signal_enabled(bool value)
+{
+    if (m_params.qc_signal_enabled == value)
+        return;
+    m_params.qc_signal_enabled = value;
+    invalidate();
+}
+
+void PostProcess::set_qc_amplitude_ratio(double value)
+{
+    const double clamped = std::clamp(value, 0.0, 1.0);
+    if (qFuzzyCompare(m_params.qc_amplitude_ratio, clamped))
+        return;
+    m_params.qc_amplitude_ratio = clamped;
+    invalidate();
+}
+
+void PostProcess::set_qc_correlation(double value)
+{
+    const double clamped = std::clamp(value, 0.0, 1.0);
+    if (qFuzzyCompare(m_params.qc_correlation, clamped))
+        return;
+    m_params.qc_correlation = clamped;
+    invalidate();
+}
+
+void PostProcess::set_qc_repair_index(int value)
+{
+    const int last = static_cast<int>(qc_repair_choices().size()) - 1;
+    const int clamped = std::clamp(value, 0, std::max(0, last));
+    if (m_params.qc_repair_index == clamped)
+        return;
+    m_params.qc_repair_index = clamped;
+    invalidate();
+}
+
+void PostProcess::set_export_format_index(int value)
+{
+    const int last = static_cast<int>(export_format_choices().size()) - 1;
+    const int clamped = std::clamp(value, 0, std::max(0, last));
+    if (m_params.export_format_index == clamped)
+        return;
+    m_params.export_format_index = clamped;
+    emit paramsChanged();
+}
+
+void PostProcess::set_export_type_index(int value)
+{
+    const int last = static_cast<int>(export_type_choices().size()) - 1;
+    const int clamped = std::clamp(value, 0, std::max(0, last));
+    if (m_params.export_type_index == clamped)
+        return;
+    m_params.export_type_index = clamped;
+    emit paramsChanged();
+}
+
+void PostProcess::set_export_range_index(int value)
+{
+    const int last = static_cast<int>(export_range_choices().size()) - 1;
+    const int clamped = std::clamp(value, 0, std::max(0, last));
+    if (m_params.export_range_index == clamped)
+        return;
+    m_params.export_range_index = clamped;
+    emit paramsChanged();
+}
+
 void PostProcess::set_segment_index(int value)
 {
     const int last = static_cast<int>(segment_choices().size()) - 1;
@@ -1286,6 +1393,12 @@ void PostProcess::run_recompute()
     job.baseline_enabled = m_params.baseline_enabled;
     job.asr_enabled = m_params.asr_enabled;
     job.asr_cutoff = m_params.asr_cutoff;
+    job.artifact_detection_enabled = m_params.artifact_detection_enabled;
+    job.wave_amplitude_uv = m_params.wave_amplitude_uv;
+    job.qc_signal_enabled = m_params.qc_signal_enabled;
+    job.qc_amplitude_ratio = m_params.qc_amplitude_ratio;
+    job.qc_correlation = m_params.qc_correlation;
+    job.qc_repair_index = m_params.qc_repair_index;
     job.current_channel = m_current_channel;
     job.window_start = m_window_start;
     job.window_seconds = m_window_seconds;
@@ -1339,8 +1452,9 @@ void PostProcess::run_recompute()
 void PostProcess::on_recompute_finished()
 {
     const Result result = m_watcher.result();
-    // 过期的结果直接丢：参数又变了，这一轮算出来的已经不是用户要看的
-    if (result.generation < m_applied_generation)
+    // 只认最近派发的那一轮：close() 会 ++m_generation 但不派发新任务，
+    // 所以在途的旧结果（generation 已被超过）一律作废，不会被写回界面
+    if (result.generation != m_generation)
         return;
 
     m_applied_generation = result.generation;
@@ -1577,6 +1691,18 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         chain.prepend(tr("基线校正"));
     }
 
+    // ---------- 6.5 修复 ----------
+    // 「质检与修复」里的修复方式。目前只有「限幅修复」：把超出 ±300 μV 的样本
+    // 压回边界。这一步对后续统计/频谱/报告都生效，也会体现在处理链里
+    if (job.qc_repair_index > 0)
+    {
+        constexpr double kRepairLimitUV = 300.0;
+        for (QVector<double> &row : data)
+            for (double &value : row)
+                value = std::clamp(value, -kRepairLimitUV, kRepairLimitUV);
+        chain.append(tr("限幅修复 ±%1 μV").arg(kRepairLimitUV));
+    }
+
     // ---------- 7. 分析片段 ----------
     const int first = std::clamp(static_cast<int>(std::lround(job.segment_start * sample_rate)),
                                  0, std::max(0, frames - 16));
@@ -1741,13 +1867,14 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
 
     // ---------- 12. 质检 ----------
     // 三项都在这里一次算完：报告页与底栏读的是同一组数，
-    // 各算各的迟早会出现「报告说 3 个、底栏说 0 个」
+    // 各算各的迟早会出现「报告说 3 个、底栏说 0 个」。
+    // 三个检测项是否启用、阈值多少，都来自「质检与修复」那一块
     int weak_channels = 0;
     QStringList weak_names;
     int outlier_samples = 0;
     for (int channel = 0; channel < channels; ++channel)
     {
-        if (stats.at(channel).rms < 5.0)
+        if (job.qc_signal_enabled && stats.at(channel).rms < 5.0)
         {
             ++weak_channels;
             weak_names.append(eeg_montage::channel_name(channel));
@@ -1759,6 +1886,11 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                 ++outlier_samples;
         }
     }
+    const double outlier_ratio =
+        (count > 0 && channels > 0)
+            ? static_cast<double>(outlier_samples) / (static_cast<double>(count) * channels)
+            : 0.0;
+    const bool out_of_range_alarm = outlier_ratio > job.qc_amplitude_ratio;
 
     QStringList low_correlation;
     for (int channel = 0; channel < channels; ++channel)
@@ -1769,13 +1901,14 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             if (other != channel)
                 best = std::max(best, std::abs(correlation.at(channel).at(other)));
         }
-        if (best < 0.3)
+        if (best < job.qc_correlation)
             low_correlation.append(eeg_montage::channel_name(channel));
     }
 
     // ---------- 13. 波形图 ----------
     {
-        // 幅值标尺按**这一屏的实际范围**自动定，向上取整到 1/2/5×10ⁿ。
+        // 幅值标尺：用户在「窗口和缩放」里拖过幅度滑块就用他的值，
+        // 否则（0 = 自动）按**这一屏的实际范围**自动定，向上取整到 1/2/5×10ⁿ。
         // 写死 ±100 μV 的话，幅度小的记录会是一条平线，幅度大的会削顶
         double robust = 0.0;
         const int window_first = std::clamp(
@@ -1787,13 +1920,21 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             for (int i = window_first; i < window_last; ++i)
                 robust = std::max(robust, std::abs(data.at(channel).at(i)));
 
-        const double exponent = robust > 0.0 ? std::pow(10.0, std::floor(std::log10(robust))) : 1.0;
-        const double normalized = exponent > 0.0 ? robust / exponent : 1.0;
-        // 1 / 2 / 5 / 10 四档。**不能只给到 5**：归一化值落在 (5,10) 时取 5 会
-        // 算出一个比实际峰值还小的标尺，波形顶部会被削平
-        const double step = normalized <= 1.0 ? 1.0
-                          : (normalized <= 2.0 ? 2.0 : (normalized <= 5.0 ? 5.0 : 10.0));
-        result.wave_range_uv = std::max(25.0, step * exponent);
+        if (job.wave_amplitude_uv > 0.0)
+        {
+            result.wave_range_uv = job.wave_amplitude_uv;
+        }
+        else
+        {
+            const double exponent =
+                robust > 0.0 ? std::pow(10.0, std::floor(std::log10(robust))) : 1.0;
+            const double normalized = exponent > 0.0 ? robust / exponent : 1.0;
+            // 1 / 2 / 5 / 10 四档。**不能只给到 5**：归一化值落在 (5,10) 时取 5 会
+            // 算出一个比实际峰值还小的标尺，波形顶部会被削平
+            const double step = normalized <= 1.0 ? 1.0
+                              : (normalized <= 2.0 ? 2.0 : (normalized <= 5.0 ? 5.0 : 10.0));
+            result.wave_range_uv = std::max(25.0, step * exponent);
+        }
 
         result.wave_image = render_wave_image(data, sample_rate, job.window_start,
                                               job.window_seconds, job.current_channel,
@@ -1996,25 +2137,52 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
              tr("Welch 平均 PSD，窗函数 Hann（512 点）· 50% 重叠 · 密度谱；占比按各频段绝对功率积分算")},
         });
 
-        sections.append(QVariantMap{
-            {QStringLiteral("title"), tr("伪差检测")},
-            {QStringLiteral("note"),
-             outlier_samples == 0
-                 ? tr("所选片段未检测到超出 ±300 μV 的样本")
-                 : tr("所选片段有 %1 个样本超出 ±300 μV").arg(outlier_samples)},
-        });
+        // 伪差检测：只有开关打开时才出一节。关掉时整节不出现，
+        // 与左侧面板「伪迹检测」那块开关一致
+        if (job.artifact_detection_enabled)
+        {
+            sections.append(QVariantMap{
+                {QStringLiteral("title"), tr("伪差检测")},
+                {QStringLiteral("note"),
+                 outlier_samples == 0
+                     ? tr("所选片段未检测到超出 ±300 μV 的样本")
+                     : tr("所选片段有 %1 个样本超出 ±300 μV").arg(outlier_samples)},
+            });
+        }
 
+        // 质检结果：按「质检与修复」那块里启用的检测项拼行
+        QVariantList qc_rows;
+        if (job.qc_signal_enabled)
+            qc_rows.append(QVariantMap{
+                {QStringLiteral("label"), tr("坏信号和空值")},
+                {QStringLiteral("value"),
+                 tr("%1 个通道（RMS < 5 μV）").arg(weak_channels)},
+            });
+        qc_rows.append(QVariantMap{
+            {QStringLiteral("label"), tr("异常 EEG 范围外值")},
+            {QStringLiteral("value"),
+             tr("%1 点（占比 %2%，阈值 %3%）")
+                 .arg(outlier_samples)
+                 .arg(outlier_ratio * 100.0, 0, 'f', 2)
+                 .arg(job.qc_amplitude_ratio * 100.0, 0, 'f', 2)},
+        });
+        qc_rows.append(QVariantMap{
+            {QStringLiteral("label"), tr("低相关性导联")},
+            {QStringLiteral("value"),
+             low_correlation.isEmpty()
+                 ? tr("无（阈值 %1）").arg(job.qc_correlation, 0, 'f', 2)
+                 : tr("%1 个（阈值 %2）：%3")
+                       .arg(low_correlation.size())
+                       .arg(job.qc_correlation, 0, 'f', 2)
+                       .arg(low_correlation.join(QStringLiteral("、")))},
+        });
+        const QString repair_note = job.qc_repair_index > 0
+            ? tr("修复：限幅修复（超出 ±300 μV 的样本压回边界）")
+            : tr("修复：off");
         sections.append(QVariantMap{
             {QStringLiteral("title"), tr("质检结果")},
-            {QStringLiteral("note"),
-             tr("弱信号 %1 个通道（RMS < 5 μV）· 异常值 %2 点 · 低相关通道 %3 个%4")
-                 .arg(weak_channels)
-                 .arg(outlier_samples)
-                 .arg(low_correlation.size())
-                 .arg(low_correlation.isEmpty()
-                          ? QString()
-                          : QStringLiteral("（") + low_correlation.join(QStringLiteral("、"))
-                                + QStringLiteral("）"))},
+            {QStringLiteral("rows"), qc_rows},
+            {QStringLiteral("note"), repair_note},
         });
 
         result.report_sections = sections;
@@ -2032,7 +2200,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         }
 
         result.status_line =
-            tr("%1(第%2/%3)通道   窗口内范围: %4 ~ %5 μV   片段: %6 - %7 s   %8   处理链: %9   质检: 弱信号 %10 点 · 异常值 %11 点 · 低相关 %12 通道")
+            tr("%1(第%2/%3)通道   窗口内范围: %4 ~ %5 μV   片段: %6 - %7 s   %8   处理链: %9   质检: 弱信号 %10 · 异常值 %11 点 · 低相关 %12 通道")
                 .arg(eeg_montage::channel_name(job.current_channel))
                 .arg(job.current_channel + 1)
                 .arg(channels)
@@ -2040,9 +2208,11 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                 .arg(highest, 0, 'f', 1)
                 .arg(result.segment_start, 0, 'f', 1)
                 .arg(result.segment_start + result.segment_seconds, 0, 'f', 1)
-                .arg(outlier_samples == 0 ? tr("无伪差") : tr("有伪差"))
+                .arg(job.artifact_detection_enabled
+                         ? (outlier_samples == 0 ? tr("无伪差") : tr("有伪差"))
+                         : tr("伪差检测: 关"))
                 .arg(chain.isEmpty() ? tr("未启用") : chain.join(QStringLiteral(" → ")))
-                .arg(weak_channels)
+                .arg(job.qc_signal_enabled ? QString::number(weak_channels) : tr("关"))
                 .arg(outlier_samples)
                 .arg(low_correlation.size());
     }
@@ -2168,6 +2338,138 @@ bool prepare_directory(const QString &directory, QString *error)
     return true;
 }
 
+// EDF 的字段都是定长 ASCII：短的右侧补空格，长的截断
+QByteArray edf_field(const QString &text, int width)
+{
+    QByteArray bytes = text.toLatin1();
+    if (bytes.size() > width)
+        bytes.truncate(width);
+    while (bytes.size() < width)
+        bytes.append(' ');
+    return bytes;
+}
+
+// 写一段 EDF（非 EDF+：不额外塞注释通道）。每个 data record 固定 1 秒，
+// 每路每 record 的采样数 = 采样率，末尾不足的补零。
+// samples 为帧优先交错（与 .eegbin / Result::processed 一致），单位 µV
+bool write_edf(const QString &path, const QString &patient, const QString &recording,
+               qint64 start_utc_ms, int channels, double rate, const QVector<float> &samples,
+               qsizetype first_frame, qsizetype frames, QString *error)
+{
+    if (channels <= 0 || rate <= 0.0 || frames <= 0)
+    {
+        *error = QObject::tr("没有可导出的数据");
+        return false;
+    }
+
+    const int samples_per_record = std::max(1, static_cast<int>(std::lround(rate)));
+    const qsizetype data_records =
+        std::max<qsizetype>(1, (frames + samples_per_record - 1) / samples_per_record);
+
+    // 每路的物理量程：按导出范围的实际最小/最大值定，映射到 ±32767
+    QVector<double> phys_min(channels, 0.0);
+    QVector<double> phys_max(channels, 1.0);
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        double lo = std::numeric_limits<double>::max();
+        double hi = std::numeric_limits<double>::lowest();
+        for (qsizetype i = 0; i < frames; ++i)
+        {
+            const double value = samples.at((first_frame + i) * channels + channel);
+            lo = std::min(lo, value);
+            hi = std::max(hi, value);
+        }
+        if (!(hi > lo))
+        {
+            lo = -1.0;
+            hi = 1.0;
+        }
+        phys_min[channel] = lo;
+        phys_max[channel] = hi;
+    }
+
+    const qint64 header_bytes = static_cast<qint64>(256) * (channels + 1);
+
+    QSaveFile file(path);
+    if (!file.open(QIODevice::WriteOnly))
+    {
+        *error = QObject::tr("无法写入导出文件：%1").arg(file.errorString());
+        return false;
+    }
+
+    QDateTime start = QDateTime::fromMSecsSinceEpoch(start_utc_ms, Qt::UTC);
+
+    QByteArray header;
+    header += edf_field(QStringLiteral("0"), 8);                       // version
+    header += edf_field(patient, 80);                                  // patient id
+    header += edf_field(recording, 80);                                // recording id
+    header += edf_field(start.toString(QStringLiteral("dd.MM.yy")), 8); // start date
+    header += edf_field(start.toString(QStringLiteral("hh.mm.ss")), 8); // start time
+    header += edf_field(QString::number(header_bytes), 8);             // header bytes
+    header += edf_field(QString(44, QLatin1Char(' ')), 44);            // reserved
+    header += edf_field(QString::number(data_records), 8);             // num data records
+    header += edf_field(QStringLiteral("1"), 8);                       // record duration (s)
+    header += edf_field(QString::number(channels), 4);                 // num signals
+
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(eeg_montage::channel_name(channel), 16);
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QString(), 80);                            // transducer
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QStringLiteral("uV"), 8);                  // physical dimension
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QString::number(phys_min.at(channel), 'f', 1), 8);
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QString::number(phys_max.at(channel), 'f', 1), 8);
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QStringLiteral("-32767"), 8);              // digital min
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QStringLiteral("32767"), 8);               // digital max
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QString(), 80);                            // prefiltering
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QString::number(samples_per_record), 8);
+    for (int channel = 0; channel < channels; ++channel)
+        header += edf_field(QString(), 32);                            // reserved
+
+    // 头部必须正好 256×(ns+1) 字节，短了补齐
+    header.resize(header_bytes, ' ');
+    file.write(header);
+
+    // 数据区：按 record → 通道 → 记录内采样 交错
+    QByteArray payload;
+    payload.reserve(static_cast<qsizetype>(data_records) * channels * samples_per_record * 2);
+    for (qsizetype record = 0; record < data_records; ++record)
+    {
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            const double lo = phys_min.at(channel);
+            const double span = phys_max.at(channel) - lo;
+            for (int s = 0; s < samples_per_record; ++s)
+            {
+                const qsizetype frame = record * samples_per_record + s;
+                double value = 0.0;
+                if (frame < frames)
+                    value = samples.at((first_frame + frame) * channels + channel);
+                const double normalized = span > 0.0 ? (value - lo) / span : 0.5;
+                const int digital = std::clamp(
+                    static_cast<int>(std::lround(normalized * 65534.0 - 32767.0)), -32768, 32767);
+                const qint16 raw = static_cast<qint16>(digital);
+                payload.append(static_cast<char>(raw & 0xFF));
+                payload.append(static_cast<char>((raw >> 8) & 0xFF));
+            }
+        }
+    }
+    file.write(payload);
+
+    if (!file.commit())
+    {
+        *error = QObject::tr("无法写入导出文件：%1").arg(file.errorString());
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 QVariantMap PostProcess::export_data(const QString &directory)
@@ -2178,22 +2480,72 @@ QVariantMap PostProcess::export_data(const QString &directory)
     if (!m_loaded)
         return export_result(false, tr("还没有打开任何记录"));
 
-    // 导出的是**预处理之后**的整段数据：这一页的意义就是把原始数据按当前参数
-    // 处理一遍。只想要原始数据的话，历史记录页的「导出」给的就是原始文件
-    QVector<float> processed;
+    // 「脑电数据导出」三下选择：格式 / 类型 / 范围
+    const bool as_raw = m_params.export_type_index == 1;   // 0=预处理, 1=原始
+    const bool as_edf = m_params.export_format_index == 0; // 0=EDF, 1=CSV
+    const bool as_segment = m_params.export_range_index == 1; // 0=全记录, 1=当前片段
+
+    QVector<float> samples;
     int channels = 0;
     double rate = 0.0;
+    qint64 start_ms = 0;
+    double seg_start = 0.0;
+    double seg_seconds = 0.0;
+    if (as_raw)
+    {
+        const std::shared_ptr<const RawData> raw = m_raw;
+        if (!raw || raw->samples.isEmpty())
+            return export_result(false, tr("还没有可导出的原始数据"));
+        samples = raw->samples;
+        channels = raw->channels;
+        rate = raw->sample_rate;
+        start_ms = raw->start_utc_ms;
+        const QMutexLocker locker(&m_mutex);
+        seg_start = m_result.segment_start;
+        seg_seconds = m_result.segment_seconds;
+    }
+    else
     {
         const QMutexLocker locker(&m_mutex);
-        processed = m_result.processed;
+        samples = m_result.processed;
         channels = m_result.processed_channels;
         rate = m_result.processed_rate;
+        seg_start = m_result.segment_start;
+        seg_seconds = m_result.segment_seconds;
+        start_ms = m_raw ? m_raw->start_utc_ms : 0;
     }
-    if (processed.isEmpty() || channels <= 0 || rate <= 0.0)
+    if (samples.isEmpty() || channels <= 0 || rate <= 0.0)
         return export_result(false, tr("还没有可导出的处理结果，请先等分析完成"));
 
+    qsizetype first_frame = 0;
+    qsizetype frames = samples.size() / channels;
+    if (as_segment)
+    {
+        first_frame = std::clamp(
+            static_cast<qsizetype>(std::lround(seg_start * rate)), qsizetype(0),
+            std::max<qsizetype>(0, frames - 1));
+        const qsizetype seg_frames = std::clamp(
+            static_cast<qsizetype>(std::lround(seg_seconds * rate)), qsizetype(1),
+            frames - first_frame);
+        frames = seg_frames;
+    }
+
+    const QString typeLabel = as_raw ? tr("原始数据") : tr("预处理数据");
+    const QString rangeLabel = as_segment ? tr("片段") : tr("全记录");
+
+    if (as_edf)
+    {
+        const QString target = QDir(directory).filePath(
+            QStringLiteral("%1_%2_%3.edf").arg(m_record_no, typeLabel, rangeLabel));
+        const QString patient = m_info.value(QStringLiteral("patient")).toString();
+        if (!write_edf(target, patient, m_record_no, start_ms, channels, rate, samples,
+                       first_frame, frames, &error))
+            return export_result(false, error);
+        return export_result(true, tr("已导出 %1：%2").arg(typeLabel, target), target);
+    }
+
     const QString target = QDir(directory).filePath(
-        QStringLiteral("%1_预处理数据.csv").arg(m_record_no));
+        QStringLiteral("%1_%2_%3.csv").arg(m_record_no, typeLabel, rangeLabel));
     QFile file(target);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
         return export_result(false, tr("无法写入导出文件：%1").arg(file.errorString()));
@@ -2208,17 +2560,16 @@ QVariantMap PostProcess::export_data(const QString &directory)
         out << ',' << eeg_montage::channel_name(channel);
     out << '\n';
 
-    const qsizetype frames = processed.size() / channels;
     for (qsizetype i = 0; i < frames; ++i)
     {
-        out << QString::number(i / rate, 'f', 4);
+        out << QString::number((first_frame + i) / rate, 'f', 4);
         for (int channel = 0; channel < channels; ++channel)
-            out << ',' << QString::number(processed.at(i * channels + channel), 'f', 2);
+            out << ',' << QString::number(samples.at((first_frame + i) * channels + channel), 'f', 2);
         out << '\n';
     }
 
     file.close();
-    return export_result(true, tr("已导出预处理数据：%1").arg(target), target);
+    return export_result(true, tr("已导出 %1：%2").arg(typeLabel, target), target);
 }
 
 QVariantMap PostProcess::export_stats_csv(const QString &directory)

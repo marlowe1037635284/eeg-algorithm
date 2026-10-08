@@ -197,6 +197,63 @@ Item {
                             font.styleName: Design.styleRegular
                             font.pixelSize: 13
                         }
+
+                        // 摘要条目：「统计摘要与参考提示」一节用。截图里是一个浅灰圆角块，
+                        // 每条一个「·」+ 正文；正文允许换行 —— 长句在窄面板里不能撑破卡片
+                        Rectangle {
+                            width: body.width
+                            height: bulletColumn.implicitHeight + 24
+                            radius: 8
+                            color: Design.panelFill
+                            visible: bulletsRepeater.count > 0
+
+                            Column {
+                                id: bulletColumn
+
+                                x: 12
+                                y: 12
+                                width: parent.width - 24
+                                spacing: 6
+
+                                Repeater {
+                                    id: bulletsRepeater
+
+                                    model: card.modelData.bullets !== undefined
+                                           ? card.modelData.bullets : []
+
+                                    delegate: Item {
+                                        required property var modelData
+
+                                        width: bulletColumn.width
+                                        height: bulletText.height
+
+                                        Text {
+                                            x: 0
+                                            y: 0
+                                            text: "·"
+                                            color: Design.textSecondary
+                                            font.family: Design.fontFamily
+                                            font.styleName: Design.styleRegular
+                                            font.pixelSize: 13
+                                        }
+
+                                        Text {
+                                            id: bulletText
+
+                                            x: 14
+                                            y: 0
+                                            width: parent.width - 14
+                                            text: modelData
+                                            wrapMode: Text.WordWrap
+                                            color: Design.textSecondary
+                                            font.family: Design.fontFamily
+                                            font.styleName: Design.styleRegular
+                                            font.pixelSize: 13
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

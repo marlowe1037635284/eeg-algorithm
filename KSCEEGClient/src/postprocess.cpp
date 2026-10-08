@@ -2315,6 +2315,59 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             {QStringLiteral("note"), repair_note},
         });
 
+        // 统计摘要与参考提示：把前面几节收成几句「数字说明了什么、要注意什么」。
+        // 只提示、不下诊断 —— 标题特意避开「结论」二字，与页面右上角那句
+        // 「仅供医师参考，不作为独立诊断依据」同一个口径
+        QVariantList summary_bullets;
+
+        const QString band_letter = QString::fromUtf8(kBands[dominant_band].letter);
+        // 主导节律的一句话解读。各频段在脑电里的常见来源不同，读图的人先看到的是
+        // 「以什么为主导」，这里顺势给出它的常见成因，而不是复述百分比
+        switch (dominant_band)
+        {
+        case 0:
+            summary_bullets.append(tr("所选片段以 %1 慢波为主导，可见于深睡或病理性慢波活动，建议专科随访。")
+                                       .arg(band_letter));
+            break;
+        case 1:
+            summary_bullets.append(tr("所选片段以 %1 节律为主导，可见于困倦或深部病变，建议结合临床判断。")
+                                       .arg(band_letter));
+            break;
+        case 2:
+            summary_bullets.append(tr("所选片段以 %1 节律为主导，属清醒安静状态下的常见背景节律。")
+                                       .arg(band_letter));
+            break;
+        case 3:
+            summary_bullets.append(tr("所选片段以 %1 快波为主导，可见于警觉紧张或受药物影响，建议结合临床判断。")
+                                       .arg(band_letter));
+            break;
+        default:
+            summary_bullets.append(tr("所选片段以 %1 快波为主导，易受肌电或环境噪声影响，建议结合原始波形复核。")
+                                       .arg(band_letter));
+            break;
+        }
+
+        // 伪差与信号质量：与「伪差检测」那一节同一组数，关掉时不出这句
+        if (job.artifact_detection_enabled)
+            summary_bullets.append(
+                outlier_samples == 0
+                    ? tr("所选片段未检测到明显伪差，信号质量良好。")
+                    : tr("所选片段检测到 %1 个样本超出 ±300 μV，建议人工复核伪差片段。")
+                          .arg(outlier_samples));
+
+        // 低相关导联：与「质检结果」里的那一行同源
+        if (job.qc_correlation_enabled)
+            summary_bullets.append(
+                low_correlation.isEmpty()
+                    ? tr("各通道间相关性正常，未见明显电极贴合问题。")
+                    : tr("通道 %1 与其余通道相关性偏低，建议检查电极贴合。")
+                          .arg(low_correlation.join(QStringLiteral("、"))));
+
+        sections.append(QVariantMap{
+            {QStringLiteral("title"), tr("统计摘要与参考提示")},
+            {QStringLiteral("bullets"), summary_bullets},
+        });
+
         result.report_sections = sections;
     }
 
@@ -2882,6 +2935,11 @@ QVariantMap PostProcess::export_report_txt(const QString &directory)
         const QString note = section.value(QStringLiteral("note")).toString();
         if (!note.isEmpty())
             out << QStringLiteral("  ") << note << '\n';
+
+        const QVariantList bullets = section.value(QStringLiteral("bullets")).toList();
+        for (const QVariant &bullet_item : bullets)
+            out << QStringLiteral("  · ") << bullet_item.toString() << '\n';
+
         out << '\n';
     }
 

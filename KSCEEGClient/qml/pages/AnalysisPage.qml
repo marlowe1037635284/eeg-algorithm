@@ -49,11 +49,20 @@ Item {
     readonly property bool tabHasChannelStrip:
         currentTab === "wave" || currentTab === "spectrum" || currentTab === "channel"
 
+    // 时间轴是「换波形 / 频谱窗口」的导航条，只有看图那几页用得上；
+    // 报告页是一份从头读到尾的静态文档，底部不再摆时间轴
+    readonly property bool tabHasTimeline: currentTab !== "report"
+
     // 舞台内容区（相对舞台左上角，见上面的坐标说明）
     readonly property int contentX: 10
     readonly property int contentY: 71
     readonly property int contentWidth: 1323
-    readonly property int contentHeight: tabHasChannelStrip ? 608 : 700
+    // 有通道条时内容压在通道条（y=692）上沿；其余页面内容压到时间轴（y=754）
+    // 上沿，否则正文会盖住时间轴。报告页没有时间轴，内容一路铺到状态行（y=848）
+    // 上方的留白处。统计页最低到 668、地形图页到 674，都在 683 之内，不会被裁
+    readonly property int contentHeight:
+        tabHasChannelStrip ? 608
+                           : (tabHasTimeline ? 683 : 767)
 
     // ---------- 打开记录 ----------
     // 记录号进来之后，从库里取这条记录的字段与事件标注，一并交给 Analysis。
@@ -441,6 +450,7 @@ Item {
                 y: 754
                 width: root.contentWidth
                 height: 62
+                visible: root.tabHasTimeline
 
                 readonly property real duration: Math.max(0.5, Analysis.durationSeconds)
                 readonly property real majorStep: root.niceStep(duration)
@@ -588,6 +598,21 @@ Item {
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
         font.pixelSize: 15
+    }
+
+    // 免责声明：贴在返回按钮左侧，避免分析结论被当成独立诊断依据
+    Text {
+        x: 1491
+        y: 89
+        width: 224
+        height: 22
+        horizontalAlignment: Text.AlignRight
+        verticalAlignment: Text.AlignVCenter
+        text: qsTr("仅供医师参考，不作为独立诊断依据")
+        color: Design.textMuted
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
+        font.pixelSize: 13
     }
 
     Rectangle {

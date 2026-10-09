@@ -156,7 +156,12 @@ public:
     Q_INVOKABLE void refresh_ports();
     Q_INVOKABLE bool open_port(const QString &port_name, int baud_rate, int sample_rate);
     Q_INVOKABLE void close_port();
-    // 开始采集：开串口（若未开）、建算法会话、开始落盘
+    // 连接设备：串口未开则自动打开，并**等结果回来再返回**。
+    // 供「开始采集」弹确认框之前调用 —— 确认框里的「连接」一栏要显示真实状态，
+    // 而 open_port 只表示「已发起」（异步打开），发起后立刻弹框会先显示成「未连接」
+    Q_INVOKABLE bool connect_device();
+    // 开始采集：开串口（若未开）、建算法会话、开始落盘。
+    // 串口连接在 connect_device() 里已经做过；这里只兜底（直接调用本函数的场景）
     Q_INVOKABLE bool start_collection(const QString &directory);
     Q_INVOKABLE void stop_collection();
     Q_INVOKABLE void reset_session();

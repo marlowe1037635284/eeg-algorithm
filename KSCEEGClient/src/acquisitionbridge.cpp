@@ -446,6 +446,58 @@ void AcquisitionBridge::close_port()
 
 // ==================== 采集 ====================
 
+// 连接设备（供「开始采集」弹确认框**之前**调用）。
+//
+// 设计稿上**没有串口选择控件** —— 它的前提是「设备已连接」（顶栏那个
+// 「Neurolink-6016 已连接」的胶囊）。所以这里按这个前提办事：自动打开枚举到的
+// 那个口。参考实现的约定是取最后一个（真机通常枚举成编号最大的那个 COM 口）。
+//
+// 与 open_port 的差别在于「等结果」：open_port 只表示「已发起」，串口在采集线程里
+// 异步打开，结果经队列信号回来。而确认框里的「连接」一栏就绑在 portOpen 上，
+// 发起后立刻弹框会先显示成「未连接」—— 所以这里转一会儿事件循环，拿到确定的结果
+//（打开成功或失败）再返回。等待有上限，不会把界面卡死
+bool AcquisitionBridge::connect_device()
+{
+    // 演示模式下没有串口，直接算作已连接
+    if (m_demo_enabled)
+    {
+        return true;
+    }
+
+    // 已经开着（可能是之前连的），直接报告当前状态
+    if (collector_active())
+    {
+        return m_port_open;
+    }
+
+    refresh_ports();
+    if (m_available_ports.isEmpty())
+    {
+        set_error(tr("没有找到可用的串口，请检查设备连接与驱动"));
+        return false;
+    }
+
+    const QString port_name = m_available_ports.last();
+    emit logMessage(tr("串口未打开，自动使用 %1").arg(port_name));
+    // 先清掉上一轮的错误，好在等待时用它判断「失败已经回来了」
+    clear_error();
+    if (!open_port(port_name, 921600, m_sample_rate))
+    {
+        return false;
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    while (!m_port_open && m_error_text.isEmpty() && timer.elapsed() < 2000)
+    {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(5);
+    }
+    // 收尾再转一次，把最后那个 portStateChanged 也送到 QML
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    return m_port_open;
+}
+
 bool AcquisitionBridge::start_collection(const QString &directory)
 {
     // 演示模式下已经在灌数据了，不需要串口也不需要落盘
@@ -454,31 +506,12 @@ bool AcquisitionBridge::start_collection(const QString &directory)
         return true;
     }
 
-    // 串口没开就自动打开。
-    //
-    // 设计稿上**没有串口选择控件** —— 它的前提是「设备已连接」（顶栏那个
-    // 「Neurolink-6016 已连接」的胶囊）。所以这里按这个前提办事：自动打开
-    // 枚举到的那个口。参考实现的约定是取最后一个（真机通常枚举成编号最大的
-    // 那个 COM 口）。
-    //
-    // 需要手动指定端口时用 Acq.open_port()（接口留着，只是设计稿没给它位置）
-    if (!collector_active())
+    // 串口没开就补上。正常流程里 connect_device() 已经在弹确认框前做过，
+    // 这里只是兜底：直接把本函数当入口调用时（如自检）也能跑通 ——
+    // 连不上就报错返回，不硬着头皮往下发采集指令
+    if (!collector_active() && !connect_device())
     {
-        refresh_ports();
-        if (m_available_ports.isEmpty())
-        {
-            set_error(tr("没有找到可用的串口，请检查设备连接与驱动"));
-            return false;
-        }
-
-        const QString port_name = m_available_ports.last();
-        emit logMessage(tr("串口未打开，自动使用 %1").arg(port_name));
-        if (!open_port(port_name, 921600, m_sample_rate))
-        {
-            return false;
-        }
-        // open_port 只表示「已发起」，串口在工作线程里异步打开。
-        // 下面的 post_start 会排在队列里，等端口就绪后由采集循环取走执行
+        return false;
     }
 
     // 算法会话：串口已经打开时也可以先建会话再采集，这样第一块数据就能被处理。

@@ -707,6 +707,10 @@ Item {
                 if (root.collecting) {
                     root.stopCollection()
                 } else if (root.hasPatient) {
+                    // 弹确认框之前先连设备/检查串口：确认框里的「连接」一栏要显示
+                    // 真实状态，而连接是异步的，等到这一步再做才不会一直显示「未连接」。
+                    // 真正的采集指令仍要等用户在框里点「确认并开始」才发
+                    Acq.connect_device()
                     root.precheckRequested()
                 } else {
                     // 没选患者：这一页采集的数据要挂到某位患者名下，没有对象就开始采

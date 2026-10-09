@@ -498,9 +498,9 @@ void normalize_positions(QVector<QPointF> *xy)
 
 // 反距离加权插值（Shepard，2 次幂）。
 //
-// 算法侧用的是 scipy 的三次样条（griddata(method='cubic')），本页取反距离加权：
-// 三次样条在电极稀疏处会外插出上下冲，十六个电极的蒙太奇上偶有刺眼的假极值；
-// 反距离加权是加权平均，天然被电极值域夹住，不会出现「比最大电极还红」的点
+// 算法侧用的是 scipy 的薄板样条 RBF（全局光滑），本页取反距离加权：
+// 反距离加权是加权平均，天然被电极值域夹住，不会出现「比最大电极还红」的点，
+// 也不依赖 scipy —— 这一页不引入 Python 依赖
 void interpolate_topography(const QVector<QPointF> &xy, const QVector<double> &values,
                             int grid, QVector<float> *grid_values)
 {
@@ -562,11 +562,24 @@ QImage render_topography_image(const QVector<float> &grid_values, int grid, doub
             if (nx * nx + ny * ny > 1.0)
                 continue;   // 头外
 
-            const int gy = std::clamp(
-                static_cast<int>(std::lround((ny + 1.0) / 2.0 * (grid - 1))), 0, grid - 1);
-            const int gx = std::clamp(
-                static_cast<int>(std::lround((nx + 1.0) / 2.0 * (grid - 1))), 0, grid - 1);
-            line[x] = topography_palette::color(grid_values.at(gy * grid + gx) / safe_max);
+            // 双线性采样：按相邻四格的权重混合，而不是四舍五入到最近一格。
+            // 网格是 64×64、图是 256×256，最近邻等于把每个格子摊成 4×4 的纯色方块，
+            // 格子之间取值不连续 —— 看上去就是一圈圈硬邦邦的「分界线」
+            const double fx = (nx + 1.0) / 2.0 * (grid - 1);
+            const double fy = (ny + 1.0) / 2.0 * (grid - 1);
+            const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, grid - 1);
+            const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, grid - 1);
+            const int x1 = std::min(x0 + 1, grid - 1);
+            const int y1 = std::min(y0 + 1, grid - 1);
+            const double tx = fx - x0;
+            const double ty = fy - y0;
+
+            const double value =
+                grid_values.at(y0 * grid + x0) * (1.0 - tx) * (1.0 - ty)
+                + grid_values.at(y0 * grid + x1) * tx * (1.0 - ty)
+                + grid_values.at(y1 * grid + x0) * (1.0 - tx) * ty
+                + grid_values.at(y1 * grid + x1) * tx * ty;
+            line[x] = topography_palette::color(value / safe_max);
         }
     }
     return image;

@@ -143,19 +143,46 @@ QImage render_topography(const TopographyFrame &frame, int size)
                 continue;
             }
 
-            // 圆内但网格够不到的地方（圆周方向上超界的那一圈）按边界夹取。
-            // 那里没有任何电极，外推出来的值只是让头型完整，没有诊断含义
-            const int grid_y = std::clamp(
-                static_cast<int>(std::lround((ny + 1.0) / 2.0 * last_y)), 0, frame.grid_height - 1);
-            const int grid_x = std::clamp(
-                static_cast<int>(std::lround((nx + 1.0) / 2.0 * last_x)), 0, frame.grid_width - 1);
-            const int index = grid_y * frame.grid_width + grid_x;
+            // 双线性采样：按相邻四格的权重混合，而不是四舍五入到最近一格。
+            //
+            // 网格是 64×64、图是 256×256，最近邻等于把每个格子摊成 4×4 的纯色方块，
+            // 格子之间取值不连续 —— 看上去就是一圈圈硬邦邦的「分界线」。
+            // 这里在相邻格之间线性过渡，边界自然就化开了
+            const double fx = (nx + 1.0) / 2.0 * last_x;
+            const double fy = (ny + 1.0) / 2.0 * last_y;
+            const int x0 = std::clamp(static_cast<int>(std::floor(fx)), 0, frame.grid_width - 1);
+            const int y0 = std::clamp(static_cast<int>(std::floor(fy)), 0, frame.grid_height - 1);
+            const int x1 = std::min(x0 + 1, frame.grid_width - 1);
+            const int y1 = std::min(y0 + 1, frame.grid_height - 1);
+            const double tx = fx - x0;
+            const double ty = fy - y0;
 
-            if (index >= frame.grid_values.size())
+            // 掩膜外的格是 NaN，不参与混合，权重归一到剩下可用的格子上；
+            // 四格全不可用就留透明（头外）
+            double value_sum = 0.0;
+            double weight_sum = 0.0;
+            const auto accumulate = [&](int gx, int gy, double weight) {
+                if (weight <= 0.0)
+                    return;
+                const int index = gy * frame.grid_width + gx;
+                if (index < 0 || index >= frame.grid_values.size())
+                    return;
+                const float value = frame.grid_values.at(index);
+                if (std::isnan(value))
+                    return;
+                value_sum += weight * value;
+                weight_sum += weight;
+            };
+            accumulate(x0, y0, (1.0 - tx) * (1.0 - ty));
+            accumulate(x1, y0, tx * (1.0 - ty));
+            accumulate(x0, y1, (1.0 - tx) * ty);
+            accumulate(x1, y1, tx * ty);
+
+            if (weight_sum <= 0.0)
             {
                 continue;
             }
-            line[x] = topography_palette::color(frame.grid_values.at(index) / scale_max);
+            line[x] = topography_palette::color(value_sum / weight_sum / scale_max);
         }
     }
     return image;

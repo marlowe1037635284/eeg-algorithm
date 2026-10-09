@@ -16,6 +16,7 @@ from eeg_algorithm.types import (
     LowPassConfig,
     NotchConfig,
     OfflineAsrConfig,
+    OfflineQualityQuery,
     OfflineReferenceConfig,
     OfflineSpectrumQuery,
     OfflineStatisticsQuery,
@@ -150,11 +151,23 @@ def main() -> None:
     print(f"频带名称: {stats.band_names}")
     print(f"各通道频带能量(PSD积分):\n{np.round(stats.band_energies, 3)}")
 
-    # 6. 查看离线会话状态
+    # 6. 查询离线质检（在预处理后选段数据上独立检测，只检测不修改数据）
+    quality = api.query_offline_quality(
+        session_id,
+        OfflineQualityQuery(
+            request_id=4,
+            preprocess_version=version,
+            selected_range=selected,
+            quality_control=QualityControlConfig(),
+        ),
+    )
+    print(f"质检异常段数量: {len(quality.segments)}  修复: {quality.repaired}")
+
+    # 7. 查看离线会话状态
     status = api.get_offline_status(session_id)
     print(f"离线状态: {status.state.value}")
 
-    # 7. 关闭
+    # 8. 关闭
     api.close()
     print("已关闭 API")
 

@@ -20,6 +20,7 @@ from eeg_algorithm.types import (
     LogEvent,
     LoggingConfig,
     LoggingStatus,
+    OfflineQualityQuery,
     OfflineSessionStatus,
     OfflineSpectrumQuery,
     OfflineSpectrumResult,
@@ -33,6 +34,7 @@ from eeg_algorithm.types import (
     PreprocessConfig,
     PreprocessedDataset,
     PreprocessResult,
+    QualityReport,
     SampleFrame,
     SessionStatus,
     SignalBlock,
@@ -169,6 +171,15 @@ class EegAlgorithmApi:
         """查询离线多通道统计指标。"""
         self._ensure_open("query_offline_statistics")
         return self._offline.get(session_id).query_statistics(query)
+
+    def query_offline_quality(
+        self,
+        session_id: int,
+        query: OfflineQualityQuery,
+    ) -> QualityReport:
+        """在预处理后的选段数据上执行质检检测（只检测，不修改数据）。"""
+        self._ensure_open("query_offline_quality")
+        return self._offline.get(session_id).query_quality(query)
 
     def get_preprocessed_data(self, session_id: int) -> PreprocessedDataset:
         """获取预处理后的数据集。"""

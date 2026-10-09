@@ -18,6 +18,8 @@ from eeg_algorithm.types import (
     OfflineSessionStatus,
     OfflineSpectrumQuery,
     OfflineSpectrumResult,
+    OfflineStatisticsQuery,
+    OfflineStatisticsResult,
     OfflineTopographyQuery,
     OfflineTopographyResult,
     PreprocessConfig,
@@ -32,6 +34,7 @@ from eeg_algorithm.internal.validation import validate_block, validate_layout
 from .pipeline import run_preprocessing_pipeline
 from .selection import select_channel_segment, select_multichannel_segment
 from .spectrum import compute_offline_spectrum
+from .statistics import compute_offline_statistics
 from .topography import compute_offline_topography
 
 
@@ -57,7 +60,9 @@ class OfflineSession:
             previous = self._dataset
             self._state = OfflineSessionState.PREPROCESSING
             try:
-                candidate = run_preprocessing_pipeline(self._raw, self._layout, config, session_id=self._id)
+                candidate, quality_report, artifact_report = run_preprocessing_pipeline(
+                    self._raw, self._layout, config, session_id=self._id
+                )
             except Exception:
                 self._dataset = previous
                 self._state = OfflineSessionState.PREPROCESSED if previous is not None else OfflineSessionState.RAW_READY
@@ -72,6 +77,8 @@ class OfflineSession:
                 processed_signal=candidate.signal if config.return_processed_signal else None,
                 applied_steps=candidate.applied_steps,
                 warnings=(),
+                quality_report=quality_report,
+                artifact_report=artifact_report,
             )
 
     def query_spectrum(self, query: OfflineSpectrumQuery) -> OfflineSpectrumResult:
@@ -85,6 +92,12 @@ class OfflineSession:
             dataset = self._require_dataset(query.preprocess_version, "query_offline_topography")
             selected = select_multichannel_segment(dataset, query.selected_range)
             return compute_offline_topography(selected, dataset.layout, query)
+
+    def query_statistics(self, query: OfflineStatisticsQuery) -> OfflineStatisticsResult:
+        with self._lock:
+            dataset = self._require_dataset(query.preprocess_version, "query_offline_statistics")
+            selected = select_multichannel_segment(dataset, query.selected_range)
+            return compute_offline_statistics(selected, dataset.layout, query)
 
     def get_preprocessed_data(self) -> PreprocessedDataset:
         with self._lock:

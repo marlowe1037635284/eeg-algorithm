@@ -81,11 +81,13 @@ EEG项目/
    │     │  │  ├─ filtering.py
    │     │  │  ├─ rereference.py
    │     │  │  ├─ asr.py
+   │     │  │  ├─ artifact.py
    │     │  │  ├─ resample.py
-   │     │  │  ├─ baseline.py
+   │     │  │  ├─ quality.py
    │     │  │  ├─ selection.py
    │     │  │  ├─ topography.py
-   │     │  │  └─ spectrum.py
+   │     │  │  ├─ spectrum.py
+   │     │  │  └─ statistics.py
    │     │  │
    │     │  ├─ common/
    │     │  │  ├─ __init__.py
@@ -180,14 +182,16 @@ EEG项目/
 - `registry.py`：管理离线会话。
 - `session.py`：保存不可变原始数据和当前有效预处理版本。
 - `pipeline.py`：按照固定顺序执行已启用的预处理步骤，并原子替换成功结果。
-- `filtering.py`：带通、陷波和零相位滤波。
+- `filtering.py`：高通/低通组合、陷波和零相位滤波。
 - `rereference.py`：离线重参考。
 - `asr.py`：离线 ASR 去伪迹。
+- `artifact.py`：离线伪迹检测（跳变伪迹 + 高频能量伪迹），只检测不修改信号。
 - `resample.py`：离线降采样并同步更新时间信息。
-- `baseline.py`：基线校正。
+- `quality.py`：离线质检与修复（空值与弱信号、幅度范围外值、低相关性导联，每个小项独立开关 + 线性插值修复）。
 - `selection.py`：按照绝对时间范围从当前预处理数据中选段。
 - `spectrum.py`：对选定的单导联数据计算频谱。
-- `topography.py`：对选定的多通道数据计算脑电地形图。
+- `topography.py`：对选定的多通道数据一次计算全频段与 δ/θ/α/β/γ 共 6 张脑电地形图。
+- `statistics.py`：对选定的多通道数据逐通道计算统计指标（均值、标准差、RMS、峰峰值、最大值、最小值、零交叉率、偏度、峰度、优势频带），并计算通道相关性矩阵与 δ/θ/α/β/γ 频带能量。
 
 离线后处理不得绕过当前 `PreprocessedDataset` 直接读取原始数据。
 
@@ -205,7 +209,7 @@ EEG项目/
 
 无历史状态的算法优先使用函数：
 
-- 离线滤波、降采样和基线校正。
+- 离线滤波、降采样和质检与修复。
 - 离线选段。
 - Welch PSD 计算。
 - 地形图频段代表值和空间插值。

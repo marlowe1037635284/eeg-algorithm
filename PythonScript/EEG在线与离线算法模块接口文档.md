@@ -19,9 +19,9 @@
 2. Python 在线与离线算法模块内部接口。
 3. C++ 与 Python 之间传递的 DTO、枚举和异常。
 4. 在线滤波、陷波、重参考、ASR、实时解相位、脑电地形图和频谱分析的调用关系。
-5. 离线预处理、预处理后数据管理、选段、离线频谱和离线脑电地形图的调用关系。
+5. 离线预处理、预处理后数据管理、选段、离线频谱、离线脑电地形图和离线统计指标的调用关系。
 
-本文不定义 Qt 界面、C++ 采集类、线程类、设备驱动、环形缓冲区实现或文件格式。离线后处理首版只包含频谱图和脑电地形图，不包含其他统计指标或时频分析。
+本文不定义 Qt 界面、C++ 采集类、线程类、设备驱动、环形缓冲区实现或文件格式。离线后处理首版包含频谱图、脑电地形图和多通道统计指标，不包含其他统计指标或时频分析。
 
 ## 2. 总体数据流
 
@@ -55,10 +55,11 @@ C++采集数据
 C++完整原始数据
     → Python OfflineSession
     → 离线预处理
-         带通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正
+         高通/低通 → 陷波 → 重参考 → ASR → 伪迹检测 → 降采样 → 质检与修复
     → 版本化PreprocessedDataset
          ├── 选段 + 单导联 → PSD → 频谱图 → C++桌面
-         └── 选段 + 多通道 + 频段 + 电极坐标 → 地形图 → C++桌面
+         ├── 选段 + 多通道 + 电极坐标 → 全频段/δ/θ/α/β/γ 地形图（6 张） → C++桌面
+         └── 选段 + 多通道 → 统计指标（均值/标准差/RMS/峰值/极值/零交叉率/偏度/峰度/优势频带） → C++桌面
 ```
 
 C++ 只在创建离线会话时传入完整原始数据。后处理时只传会话 ID、预处理版本、选段范围和分析参数，Python 从 `PreprocessedDataset` 中截取数据，不要求 C++ 把预处理结果再次传回 Python。
@@ -343,10 +344,15 @@ class SpectrumQuery:
 
 ```python
 @dataclass(frozen=True)
-class BandPassConfig:
+class HighPassConfig:
     enabled: bool
-    low_cut_hz: float
-    high_cut_hz: float
+    cutoff_hz: float
+
+
+@dataclass(frozen=True)
+class LowPassConfig:
+    enabled: bool
+    cutoff_hz: float
 
 
 @dataclass(frozen=True)
@@ -373,26 +379,64 @@ class OfflineAsrConfig:
 
 
 @dataclass(frozen=True)
+class ArtifactDetectionConfig:
+    enabled: bool = True
+    jump_ratio: float = 5.0
+    high_freq_hz: float = 30.0
+    high_freq_ratio: float = 0.5
+
+
+@dataclass(frozen=True)
 class ResampleConfig:
     enabled: bool
     target_rate_hz: float
 
 
 @dataclass(frozen=True)
-class BaselineConfig:
-    enabled: bool
-    baseline_range: AbsoluteTimeRange | None = None
+class QualityControlConfig:
+    null_weak_enabled: bool = True
+    amplitude_outlier_enabled: bool = True
+    low_correlation_enabled: bool = True
+    repair_enabled: bool = False
+    amplitude_ratio: float = 0.1
+    correlation_threshold: float = 0.1
+    weak_signal_threshold_uv: float = 1.0
+
+
+@dataclass(frozen=True)
+class ArtifactSegment:
+    channel_name: str
+    artifact_type: str
+    start_sample: int
+    end_sample: int
+    start_timestamp_ns: int
+    end_timestamp_ns: int
+
+
+@dataclass(frozen=True)
+class ArtifactReport:
+    segments: tuple[ArtifactSegment, ...]
+    artifact_mask: NDArray[np.bool_]
+
+
+@dataclass(frozen=True)
+class QualityReport:
+    segments: tuple[ArtifactSegment, ...]
+    artifact_mask: NDArray[np.bool_]
+    repaired: bool
 
 
 @dataclass(frozen=True)
 class PreprocessConfig:
     preprocess_version: int
-    band_pass: BandPassConfig
+    high_pass: HighPassConfig
+    low_pass: LowPassConfig
     notch: NotchConfig
     reference: OfflineReferenceConfig
     asr: OfflineAsrConfig
+    artifact: ArtifactDetectionConfig
     resample: ResampleConfig
-    baseline: BaselineConfig
+    quality_control: QualityControlConfig = QualityControlConfig()
     return_processed_signal: bool = True
 
 
@@ -410,21 +454,30 @@ class OfflineTopographyQuery:
     request_id: int
     preprocess_version: int
     selected_range: AbsoluteTimeRange
-    frequency_band: FrequencyBand
     grid_width: int = 64
     grid_height: int = 64
+
+
+@dataclass(frozen=True)
+class OfflineStatisticsQuery:
+    request_id: int
+    preprocess_version: int
+    selected_range: AbsoluteTimeRange
 ```
 
 离线配置规则：
 
-- 固定预处理顺序为：带通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正；关闭的步骤直接跳过。
-- 带通启用时满足 `0 < low_cut_hz < high_cut_hz < sample_rate_hz / 2`。
+- 固定预处理顺序为：高通/低通组合 → 陷波 → 重参考 → ASR → 伪迹检测 → 降采样 → 质检与修复；关闭的步骤直接跳过。
+- 高通/低通组合规则：两者都启用时做带通（要求 `0 < cutoff_hp < cutoff_lp < sample_rate_hz / 2`）；仅高通启用时做高通；仅低通启用时做低通。
 - 陷波启用时满足 `0 < stop_low_hz < stop_high_hz < sample_rate_hz / 2`。
 - 降采样启用时满足 `0 < target_rate_hz <= 当前采样率`，并先进行抗混叠滤波。
 - ASR 的 `reference_range` 为空时，由算法从原始记录中自动选择有效参考段；不能获得有效参考时抛出 `ASR_REFERENCE_REQUIRED`。
-- 当前版本的基线校正针对连续数据：对 `baseline_range` 中每个通道的均值进行扣除。启用时 `baseline_range` 必填且必须位于原始记录范围内。
+- 伪迹检测与 ASR 去伪迹同级，只检测不修改信号；启用时检测跳变伪迹（一阶差分超过中位数差分的 `jump_ratio` 倍）与高频能量伪迹（1 秒窗口内高通分量能量占比超过 `high_freq_ratio`），任一命中即标记，返回伪迹异常段列表与逐样本掩码。
+- 质检检测项：空值与弱信号（`null_weak_enabled`）、异常 EEG 范围外值/幅度占比（`amplitude_outlier_enabled`）、低相关性导联/相关性（`low_correlation_enabled`），每个小项都有独立开关；检测始终返回异常段列表与逐样本掩码。
+- 修复开关 `repair_enabled`：off 仅标注不修改数据；on 对异常样本用左右正常值做线性插值修复，并在 `applied_steps` 中追加 `repair`。
 - 后处理的 `selected_range` 必须位于当前 `PreprocessedDataset` 的时间范围内；选段使用时间戳，不使用采样点下标。
-- 频谱查询只读取所选导联；地形图查询读取选段内全部有效通道，并要求电极坐标完整。
+- 频谱查询只读取所选导联；地形图查询读取选段内全部有效通道，并要求电极坐标完整，一次返回全频段与 δ/θ/α/β/γ 共 6 张地形图。
+- 统计查询读取选段内全部通道，逐通道计算均值、标准差、RMS、峰峰值、最小值、最大值、零交叉率、偏度、峰度与优势频带，并返回通道相关性矩阵（皮尔逊相关系数）与各通道 δ/θ/α/β/γ 频带能量（PSD 积分）。
 - 后处理查询中的 `preprocess_version` 必须等于离线会话当前版本，否则抛出 `STALE_DATA_VERSION`。
 
 ## 6. 输出 DTO
@@ -553,6 +606,8 @@ class PreprocessResult:
     processed_signal: SignalBlock | None
     applied_steps: tuple[str, ...]
     warnings: tuple[str, ...]
+    quality_report: QualityReport | None = None
+    artifact_report: ArtifactReport | None = None
 
 
 @dataclass(frozen=True)
@@ -569,14 +624,35 @@ class OfflineSpectrumResult:
 class OfflineTopographyResult:
     request_id: int
     preprocess_version: int
-    frequency_band: FrequencyBand
     selected_range: AbsoluteTimeRange
+    band_names: tuple[str, ...]             # ("full","delta","theta","alpha","beta","gamma")
     grid_x: NDArray[np.float32]            # [W]
     grid_y: NDArray[np.float32]            # [H]
-    grid_values: NDArray[np.float32]       # [H,W]
+    grid_values: NDArray[np.float32]       # [6,H,W]
     head_mask: NDArray[np.bool_]           # [H,W]
-    electrode_values: NDArray[np.float32]  # [C]
+    electrode_values: NDArray[np.float32]  # [6,C]
     electrode_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OfflineStatisticsResult:
+    request_id: int
+    preprocess_version: int
+    selected_range: AbsoluteTimeRange
+    channel_names: tuple[str, ...]
+    mean: NDArray[np.float32]              # [C] 均值（μV）
+    std: NDArray[np.float32]               # [C] 标准差（样本标准差，μV）
+    rms: NDArray[np.float32]               # [C] 均方根（μV）
+    peak_to_peak: NDArray[np.float32]      # [C] 峰峰值（μV）
+    min_value: NDArray[np.float32]         # [C] 最小值（μV）
+    max_value: NDArray[np.float32]         # [C] 最大值（μV）
+    zero_crossing_rate: NDArray[np.float32]  # [C] 零交叉率（次/秒）
+    skewness: NDArray[np.float32]          # [C] 偏度
+    kurtosis: NDArray[np.float32]          # [C] 峰度（超额峰度）
+    dominant_band: tuple[str, ...]         # [C] 优势频带（delta/theta/alpha/beta/gamma/none）
+    correlation_matrix: NDArray[np.float32]  # [C,C] 通道皮尔逊相关系数矩阵
+    band_names: tuple[str, ...]            # ("delta","theta","alpha","beta","gamma")
+    band_energies: NDArray[np.float32]     # [C,5] 各频带能量（PSD 积分）
 
 
 @dataclass(frozen=True)
@@ -689,6 +765,12 @@ class EegAlgorithmApi:
         query: OfflineTopographyQuery,
     ) -> OfflineTopographyResult: ...
 
+    def query_offline_statistics(
+        self,
+        session_id: int,
+        query: OfflineStatisticsQuery,
+    ) -> OfflineStatisticsResult: ...
+
     def get_preprocessed_data(
         self,
         session_id: int,
@@ -723,6 +805,7 @@ class EegAlgorithmApi:
 | `run_preprocessing` | 按开关和参数执行离线预处理 | 原子替换预处理数据并更新版本 |
 | `query_offline_spectrum` | 从预处理数据选段并计算单导联频谱 | 只读 |
 | `query_offline_topography` | 从预处理数据选段并计算脑电地形图 | 只读 |
+| `query_offline_statistics` | 从预处理数据选段并逐通道计算统计指标 | 只读 |
 | `get_preprocessed_data` | 获取完整预处理后数据，用于显示或导出 | 只读 |
 | `get_offline_status` | 查询离线会话和数据版本 | 只读 |
 | `close_offline_session` | 释放原始和预处理数据 | 会话关闭 |
@@ -742,15 +825,18 @@ class EegAlgorithmApi:
 | 频谱频段 | `SpectrumQuery.band` | `query_online_spectrum()` |
 | 频谱固定时间窗 | `SpectrumQuery.window_s` | `query_online_spectrum()` |
 | 地形图/频谱刷新周期 | 不传入 Python 配置 | C++ 定时发起查询 |
-| 离线带通开关及高低截 | `PreprocessConfig.band_pass` | `run_preprocessing()` |
+| 离线高通开关及截止频率 | `PreprocessConfig.high_pass` | `run_preprocessing()` |
+| 离线低通开关及截止频率 | `PreprocessConfig.low_pass` | `run_preprocessing()` |
 | 离线陷波开关及阻带 | `PreprocessConfig.notch` | `run_preprocessing()` |
 | 离线重参考开关及类别 | `PreprocessConfig.reference` | `run_preprocessing()` |
 | 离线 ASR 开关及参数 | `PreprocessConfig.asr` | `run_preprocessing()` |
+| 离线伪迹检测开关及参数 | `PreprocessConfig.artifact` | `run_preprocessing()` |
 | 离线降采样开关及目标频率 | `PreprocessConfig.resample` | `run_preprocessing()` |
-| 离线基线校正开关及基线段 | `PreprocessConfig.baseline` | `run_preprocessing()` |
-| 后处理选段 | `selected_range` | 离线频谱或地形图查询接口 |
+| 离线质检与修复开关及参数 | `PreprocessConfig.quality_control` | `run_preprocessing()` |
+| 后处理选段 | `selected_range` | 离线频谱/地形图/统计查询接口 |
 | 离线频谱导联及频率范围 | `OfflineSpectrumQuery` | `query_offline_spectrum()` |
-| 离线地形图频段 | `OfflineTopographyQuery.frequency_band` | `query_offline_topography()` |
+| 离线地形图（全频段 + δ/θ/α/β/γ，共 6 张） | `OfflineTopographyQuery` | `query_offline_topography()` |
+| 离线统计指标选段 | `OfflineStatisticsQuery.selected_range` | `query_offline_statistics()` |
 
 ### 7.5 公共接口行为规则
 
@@ -998,6 +1084,8 @@ class OfflineSession:
                        query: OfflineSpectrumQuery) -> OfflineSpectrumResult: ...
     def query_topography(self,
                          query: OfflineTopographyQuery) -> OfflineTopographyResult: ...
+    def query_statistics(self,
+                         query: OfflineStatisticsQuery) -> OfflineStatisticsResult: ...
     def get_preprocessed_data(self) -> PreprocessedDataset: ...
     def status(self) -> OfflineSessionStatus: ...
     def close(self) -> None: ...
@@ -1012,14 +1100,15 @@ def run_preprocessing_pipeline(
     raw_signal: SignalBlock,
     layout: ChannelLayout,
     config: PreprocessConfig,
-) -> PreprocessedDataset: ...
+) -> tuple[PreprocessedDataset, QualityReport | None, ArtifactReport | None]: ...
 
 
-def band_pass_filter(
+def apply_high_low_filter(
     signal: SignalBlock,
     sample_rate_hz: float,
-    config: BandPassConfig,
-) -> SignalBlock: ...
+    high_pass: HighPassConfig,
+    low_pass: LowPassConfig,
+) -> tuple[SignalBlock, str | None]: ...
 
 
 def notch_filter(
@@ -1043,6 +1132,13 @@ def asr_clean_offline(
 ) -> SignalBlock: ...
 
 
+def detect_artifacts_offline(
+    signal: SignalBlock,
+    layout: ChannelLayout,
+    config: ArtifactDetectionConfig,
+) -> ArtifactReport: ...
+
+
 def resample_offline(
     signal: SignalBlock,
     layout: ChannelLayout,
@@ -1050,10 +1146,11 @@ def resample_offline(
 ) -> tuple[SignalBlock, ChannelLayout]: ...
 
 
-def baseline_correct_offline(
+def run_quality_control(
     signal: SignalBlock,
-    config: BaselineConfig,
-) -> SignalBlock: ...
+    layout: ChannelLayout,
+    config: QualityControlConfig,
+) -> tuple[SignalBlock, QualityReport]: ...
 ```
 
 `run_preprocessing_pipeline()` 按固定顺序调用已启用的函数。离线滤波采用四阶 Butterworth 双向零相位处理；数据过短无法完成零相位填充时必须报错，不得静默改为因果滤波。
@@ -1091,11 +1188,19 @@ def compute_offline_topography(
     layout: ChannelLayout,
     query: OfflineTopographyQuery,
 ) -> OfflineTopographyResult: ...
+
+
+def compute_offline_statistics(
+    multichannel_signal: SignalBlock,
+    layout: ChannelLayout,
+    query: OfflineStatisticsQuery,
+) -> OfflineStatisticsResult: ...
 ```
 
 - `compute_offline_spectrum()` 接收 `select_channel_segment()` 返回的 `[1,K]` 数据，采用 Welch 单边 PSD，并按 `frequency_range_hz` 截取频点；范围为空时返回全部有效频率。
-- `compute_offline_topography()` 接收 `select_multichannel_segment()` 返回的 `[C,K]` 数据，先按 `frequency_band` 进行频段滤波，再计算电极代表值和二维空间插值。
-- 两个函数不得访问全局数据或自行读取原始数据，输入只能来自当前 `PreprocessedDataset`。
+- `compute_offline_topography()` 接收 `select_multichannel_segment()` 返回的 `[C,K]` 数据，依次对全频段（0.5–30 Hz）与 δ/θ/α/β/γ 六个频段做频段滤波，逐频段计算电极代表值并做二维空间插值，一次返回 6 张地形图。
+- `compute_offline_statistics()` 接收 `select_multichannel_segment()` 返回的 `[C,K]` 数据，逐通道计算时域指标（均值、标准差、RMS、峰峰值、最小值、最大值、零交叉率、偏度、峰度）、通道相关性矩阵、各频带能量（δ/θ/α/β/γ 的 PSD 积分）与优势频带（能量最大的频带）。
+- 三个函数不得访问全局数据或自行读取原始数据，输入只能来自当前 `PreprocessedDataset`。
 
 ## 9. 实时调用时序
 
@@ -1171,6 +1276,7 @@ sequenceDiagram
     participant Segment as 选段函数
     participant Spectrum as 频谱函数
     participant Topo as 地形图函数
+    participant Stats as 统计函数
 
     User->>UI: 打开离线EEG数据
     UI->>Controller: 加载原始数据
@@ -1187,9 +1293,9 @@ sequenceDiagram
     Worker->>API: run_preprocessing(sessionId, config)
     API->>Session: preprocess(config)
 
-    opt 启用带通滤波
-        Session->>Pre: band_pass_filter(lowCut, highCut)
-        Pre-->>Session: SignalBlock
+    opt 启用高通/低通组合
+        Session->>Pre: apply_high_low_filter(hp, lp)
+        Pre-->>Session: SignalBlock + 步骤名
     end
     opt 启用陷波
         Session->>Pre: notch_filter(stopLow, stopHigh)
@@ -1203,13 +1309,17 @@ sequenceDiagram
         Session->>Pre: asr_clean_offline(config)
         Pre-->>Session: SignalBlock
     end
+    opt 启用伪迹检测
+        Session->>Pre: detect_artifacts_offline(config)
+        Pre-->>Session: ArtifactReport
+    end
     opt 启用降采样
         Session->>Pre: resample_offline(targetRate)
         Pre-->>Session: SignalBlock + 新ChannelLayout
     end
-    opt 启用基线校正
-        Session->>Pre: baseline_correct_offline(baselineRange)
-        Pre-->>Session: SignalBlock
+    opt 启用质检与修复
+        Session->>Pre: run_quality_control(config)
+        Pre-->>Session: SignalBlock + QualityReport
     end
 
     Note over Session: 原子保存PreprocessedDataset<br/>更新preprocessVersion
@@ -1234,7 +1344,7 @@ sequenceDiagram
         Worker-->>UI: 校验版本后显示频谱图
 
     else 计算脑电地形图
-        User->>UI: 选择地形图频段
+        User->>UI: 选择地形图页面
         UI->>Controller: OfflineTopographyQuery
         Controller->>Worker: sessionId + query
         Worker->>API: query_offline_topography(sessionId, query)
@@ -1242,10 +1352,24 @@ sequenceDiagram
         Session->>Segment: select_multichannel_segment(dataset, range)
         Segment-->>Session: 多通道数据[C,K]
         Session->>Topo: compute_offline_topography([C,K], layout, query)
-        Topo-->>Session: OfflineTopographyResult
-        Session-->>API: requestId + preprocessVersion + 地形图
+        Topo-->>Session: OfflineTopographyResult (6 张)
+        Session-->>API: requestId + preprocessVersion + 6 张地形图
         API-->>Worker: OfflineTopographyResult
-        Worker-->>UI: 校验版本后显示脑电地形图
+        Worker-->>UI: 校验版本后显示全频段与 δ/θ/α/β/γ 地形图
+
+    else 计算统计指标
+        User->>UI: 选择统计指标页面
+        UI->>Controller: OfflineStatisticsQuery
+        Controller->>Worker: sessionId + query
+        Worker->>API: query_offline_statistics(sessionId, query)
+        API->>Session: query_statistics(query)
+        Session->>Segment: select_multichannel_segment(dataset, range)
+        Segment-->>Session: 多通道数据[C,K]
+        Session->>Stats: compute_offline_statistics([C,K], layout, query)
+        Stats-->>Session: OfflineStatisticsResult
+        Session-->>API: requestId + preprocessVersion + 统计指标
+        API-->>Worker: OfflineStatisticsResult
+        Worker-->>UI: 校验版本后显示各通道统计指标
     end
 
     opt 用户修改任一预处理开关或参数
@@ -1275,6 +1399,7 @@ classDiagram
         +run_preprocessing(sessionId, config) PreprocessResult
         +query_offline_spectrum(sessionId, query) OfflineSpectrumResult
         +query_offline_topography(sessionId, query) OfflineTopographyResult
+        +query_offline_statistics(sessionId, query) OfflineStatisticsResult
         +close_offline_session(sessionId)
     }
 
@@ -1320,12 +1445,14 @@ classDiagram
         +preprocess(config) PreprocessResult
         +query_spectrum(query) OfflineSpectrumResult
         +query_topography(query) OfflineTopographyResult
+        +query_statistics(query) OfflineStatisticsResult
     }
 
     class PreprocessedDataset
     class PreprocessConfig
     class OfflineSpectrumQuery
     class OfflineTopographyQuery
+    class OfflineStatisticsQuery
 
     class PreprocessingFunctions {
         <<module>>
@@ -1342,6 +1469,7 @@ classDiagram
         <<module>>
         +compute_offline_spectrum(signal, layout, query)
         +compute_offline_topography(signal, layout, query)
+        +compute_offline_statistics(signal, layout, query)
     }
 
     EegAlgorithmApi *-- OnlineSessionRegistry
@@ -1367,7 +1495,7 @@ classDiagram
     EegAlgorithmApi ..> PreprocessConfig
     EegAlgorithmApi ..> OfflineSpectrumQuery
     EegAlgorithmApi ..> OfflineTopographyQuery
-    OfflineTopographyQuery *-- FrequencyBand
+    EegAlgorithmApi ..> OfflineStatisticsQuery
 ```
 
 ## 12. 异常接口

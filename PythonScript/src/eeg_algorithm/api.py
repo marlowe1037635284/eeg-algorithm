@@ -23,6 +23,8 @@ from eeg_algorithm.types import (
     OfflineSessionStatus,
     OfflineSpectrumQuery,
     OfflineSpectrumResult,
+    OfflineStatisticsQuery,
+    OfflineStatisticsResult,
     OfflineTopographyQuery,
     OfflineTopographyResult,
     OnlineConfig,
@@ -158,6 +160,15 @@ class EegAlgorithmApi:
         """查询离线地形图。"""
         self._ensure_open("query_offline_topography")
         return self._offline.get(session_id).query_topography(query)
+
+    def query_offline_statistics(
+        self,
+        session_id: int,
+        query: OfflineStatisticsQuery,
+    ) -> OfflineStatisticsResult:
+        """查询离线多通道统计指标。"""
+        self._ensure_open("query_offline_statistics")
+        return self._offline.get(session_id).query_statistics(query)
 
     def get_preprocessed_data(self, session_id: int) -> PreprocessedDataset:
         """获取预处理后的数据集。"""

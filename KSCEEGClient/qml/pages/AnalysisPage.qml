@@ -559,30 +559,64 @@ Item {
             }
 
             // ---------- 状态行 ----------
+            // 文案很长（导联 / 片段内范围 / 处理链 / 质检一长串），窄窗口放不下。
+            // 不再直接省略号截断，而是横向可滚动：内容溢出时底部才浮出一条细滑块，
+            // 提示「还能往右拖」。放得下时滑块不出现、文字照旧左对齐，视觉与原来一致
             Rectangle {
                 x: root.contentX
                 y: 848
                 width: root.contentWidth
                 height: 30
                 radius: 6
+                clip: true
                 color: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.28)
 
-                Text {
-                    x: 14
-                    width: parent.width - 28
-                    height: parent.height
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    text: Analysis.statusLine.length > 0
-                          ? Analysis.statusLine
-                          : (Analysis.busy ? qsTr("正在计算…")
-                                           : (Analysis.errorText.length > 0
-                                              ? Analysis.errorText
-                                              : qsTr("正在等待分析结果")))
-                    color: Design.textSecondary
-                    font.family: Design.fontFamily
-                    font.styleName: Design.styleRegular
-                    font.pixelSize: 13
+                Flickable {
+                    id: statusFlick
+                    anchors.fill: parent
+                    contentWidth: Math.max(width, statusText.implicitWidth + 28)
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.HorizontalFlick
+                    // 放得下就别让它有可拖动的余量，免得跟点击/滚轮抢事件
+                    interactive: contentWidth > width + 1
+
+                    Text {
+                        id: statusText
+                        x: 14
+                        height: statusFlick.height
+                        verticalAlignment: Text.AlignVCenter
+                        text: Analysis.statusLine.length > 0
+                              ? Analysis.statusLine
+                              : (Analysis.busy ? qsTr("正在计算…")
+                                               : (Analysis.errorText.length > 0
+                                                  ? Analysis.errorText
+                                                  : qsTr("正在等待分析结果")))
+                        color: Design.textSecondary
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 13
+                    }
+
+                    // 细滑块。只在内容溢出时出现（AsNeeded），不画底槽、只留滑块，
+                    // 左右各留 15px 避开圆角；贴在状态条下沿，不挡正文
+                    ScrollBar.horizontal: ScrollBar {
+                        id: statusScroll
+                        policy: ScrollBar.AsNeeded
+                        height: 8
+                        topPadding: 1
+                        bottomPadding: 3
+                        leftPadding: 15
+                        rightPadding: 15
+
+                        contentItem: Rectangle {
+                            implicitHeight: 4
+                            radius: 2
+                            color: statusScroll.pressed
+                                   ? Design.primary
+                                   : Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.55)
+                        }
+                    }
                 }
             }
         }

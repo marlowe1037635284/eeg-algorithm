@@ -2232,7 +2232,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         }
 
         result.status_line =
-            tr("%1(第%2/%3)通道   窗口内范围: %4 ~ %5 μV   片段: %6 - %7 s   %8   处理链: %9   质检: 弱信号 %10 · 异常值 %11 点 · 低相关 %12 通道")
+            tr("%1(第%2/%3)通道   片段内范围: %4 ~ %5 μV   片段: %6 - %7 s   %8   处理链: %9   质检: 弱信号 %10 · 异常值 %11 点 · 低相关 %12 通道")
                 .arg(eeg_montage::channel_name(job.current_channel))
                 .arg(job.current_channel + 1)
                 .arg(channels)

@@ -133,10 +133,10 @@ class AcquisitionBridge : public QObject, public ChunkSink
     Q_PROPERTY(int eventCount READ event_count NOTIFY eventsChanged)
 
     // ---- 电极接触质量（面板上的「阻抗扫描」）----
-    // 每一项：{ channel, name, level, ratio, noiseUV, text }
+    // 每一项：{ channel, name, level, ratio, kohm, text }
     Q_PROPERTY(QVariantList electrodeQuality READ electrode_quality NOTIFY electrodeQualityChanged)
-    // 一句话小结：「良好 13 · 一般 2 · 脱落 1」，扫描后给界面提示用
-    // 只有三档：良好 / 一般 / 脱落（噪声大到 kFairBelow 以上或检出伪迹都算脱落）
+    // 一句话小结：「良好 13 · 一般 2 · 不良 1 · 脱落 1」，扫描后给界面提示用
+    // 共四档：良好 / 一般 / 不良 / 脱落（接触电阻大到 kOffBelow 以上或检出伪迹都算脱落）
     Q_PROPERTY(QString electrodeSummary READ electrode_summary NOTIFY electrodeQualityChanged)
     // 扫描还没做过时为 false，界面据此决定显示设计稿的静态样式还是真实结果
     Q_PROPERTY(bool electrodeScanValid READ electrode_scan_valid NOTIFY electrodeQualityChanged)
@@ -191,8 +191,8 @@ public:
     // **设备没有可用的电极级阻抗**：当前协议一次只给 4 路不带电极名的值
     //（见 serialprotocol.h 的 parse_impedance_kohm），而界面要的是 16 路带导联名的。
     // 所以这里量的是**信号本身**：电极贴不牢时接触噪声会明显抬高，噪声底从原始
-    // 数据里测得出来。返回的 level 是据此分的档，text 给的是测得的噪声值 ——
-    // 不换算成 kΩ，那个数字编不出来。
+    // 数据里测得出来。返回的 level 是据此分的档（良好/一般/不良/脱落），text 给的是
+    // 由测得的噪声**折算**出的等效接触电阻（kΩ），仅用于横向比较各导联的贴合好坏。
     //
     // 待硬件侧提供电极级阻抗接口后，这个函数是**唯一的替换点**：把读原始缓冲
     // 改成发命令、读回值即可，QML 那一侧不用动（它只认

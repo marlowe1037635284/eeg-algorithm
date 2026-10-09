@@ -7,8 +7,8 @@ import KSCEEGClient
 //
 // 数据来源：扫描结果来自 Acq.electrodeQuality，**由采集到的信号估计**，不是设备
 // 直读的阻抗 —— 协议一次只给 4 路不带电极名的阻抗值（见 serialprotocol.h），
-// 推不出「16 个导联各是多少 kΩ」。所以数值列显示的是测得的噪声，量级标在单位上；
-// 面板标题旁也写明了来源，不冒充设备读数。
+// 推不出「16 个导联各是多少 kΩ」。数值列给的是由测得噪声折算出的等效接触电阻
+// （kΩ），用于横向比较各导联的贴合好坏，不冒充设备直读的阻抗。
 Item {
     id: root
 
@@ -23,38 +23,36 @@ Item {
     readonly property var quality: Acq.electrodeScanValid ? Acq.electrodeQuality : []
     readonly property bool hasScan: quality.length > 0
 
-    // 头部电极图上的电极点：x/y = 圆点左上角（16×16），
-    // labelX/labelY = 导联名文本框左上角（高 28，字号 8）—— 位置照抄设计稿。
-    //
-    // 注意这张图上的电极**与设备的 16 路不是同一套**（设计稿画的是 AF3/F1/FC1/Cz/
-    // M1/Oz 这些，设备给的是 F7/F8/T3/T4/T5/T6/O1/O2）。名字能对上的就直连，
-    // 对不上的按**位置最近**的几路加权估计 —— 位置照设计稿不动，颜色跟真实数据走
+    // 头部电极图上的电极点，照新设计稿：**标准 10-20 的 16 个位置**，
+    // cx/cy = 电极环圆心（环半径 8.5，名称嵌在环内）。
+    // 坐标 = 头型圆心 (166.9,213.2) + 归一化坐标 × 半径 105.6，
+    // 圆心/半径与下面 head-outline.svg 头型层的头圆一致
     readonly property var mapPoints: [
-        { name: "Fp1", x: 121, y: 123, labelX: 123, labelY: 117 },
-        { name: "Fp2", x: 197, y: 123, labelX: 198, labelY: 117 },
-        { name: "AF3", x: 124, y: 153, labelX: 125, labelY: 147 },
-        { name: "F5",  x: 90,  y: 167, labelX: 94,  labelY: 161 },
-        { name: "F3",  x: 112, y: 172, labelX: 116, labelY: 166 },
-        { name: "F1",  x: 135, y: 176, labelX: 139, labelY: 170 },
-        { name: "Fz",  x: 158, y: 177, labelX: 162, labelY: 171 },
-        { name: "F2",  x: 180, y: 176, labelX: 184, labelY: 170 },
-        { name: "F4",  x: 203, y: 170, labelX: 207, labelY: 164 },
-        { name: "FC3", x: 108, y: 197, labelX: 110, labelY: 191 },
-        { name: "FC1", x: 130, y: 200, labelX: 132, labelY: 194 },
-        { name: "M1",  x: 52,  y: 213, labelX: 55,  labelY: 207 },
-        { name: "M2",  x: 263, y: 213, labelX: 266, labelY: 207 },
-        { name: "Cz",  x: 159, y: 216, labelX: 163, labelY: 210 },
-        { name: "P3",  x: 120, y: 262, labelX: 123, labelY: 256 },
-        { name: "Oz",  x: 158, y: 299, labelX: 161, labelY: 293 }
+        { name: "Fp1", cx: 110.5, cy: 125.2 },
+        { name: "Fp2", cx: 223.3, cy: 125.2 },
+        { name: "F7",  cx: 77.8,  cy: 161.4 },
+        { name: "F3",  cx: 120.6, cy: 169.3 },
+        { name: "Fz",  cx: 166.9, cy: 168.8 },
+        { name: "F4",  cx: 213.1, cy: 169.3 },
+        { name: "F8",  cx: 256.0, cy: 161.4 },
+        { name: "M1",  cx: 63.4,  cy: 212.5 },
+        { name: "C3",  cx: 120.7, cy: 212.1 },
+        { name: "Cz",  cx: 166.9, cy: 213.2 },
+        { name: "C4",  cx: 213.0, cy: 212.1 },
+        { name: "M2",  cx: 270.4, cy: 212.5 },
+        { name: "P3",  cx: 120.8, cy: 254.2 },
+        { name: "P4",  cx: 212.9, cy: 254.2 },
+        { name: "O1",  cx: 130.2, cy: 305.6 },
+        { name: "O2",  cx: 203.5, cy: 305.6 }
     ]
 
     // 设备那 16 路在本面板头型图里的落点。Acq.electrodeMap 给的是相对头半径的
     // 百分比（与地形图同一套坐标），这里按头型圆的中心与半径换算过来，
     // 好让「就近估计」能在同一个坐标系里比距离
     readonly property var deviceXY: {
-        var center_x = 166.0
-        var center_y = 215.5
-        var radius = 112.0
+        var center_x = 166.9
+        var center_y = 213.2
+        var radius = 105.6
         var table = ({})
         var list = Acq.electrodeMap
         for (var i = 0; i < list.length; ++i) {
@@ -68,7 +66,7 @@ Item {
     readonly property var placeholder: [
         { name: "Fp1", text: "—", level: "良好", ratio: 0.26 },
         { name: "Fp2", text: "—", level: "一般", ratio: 0.52 },
-        { name: "F3",  text: "—", level: "脱落", ratio: 0.19 },
+        { name: "F3",  text: "—", level: "不良", ratio: 0.62 },
         { name: "F4",  text: "—", level: "脱落", ratio: 0.19 },
         { name: "C3",  text: "—", level: "良好", ratio: 0.30 },
         { name: "C4",  text: "—", level: "良好", ratio: 0.28 },
@@ -77,15 +75,33 @@ Item {
         { name: "O1",  text: "—", level: "良好", ratio: 0.32 },
         { name: "O2",  text: "—", level: "良好", ratio: 0.34 },
         { name: "F7",  text: "—", level: "一般", ratio: 0.47 },
-        { name: "F8",  text: "—", level: "一般", ratio: 0.39 },
+        { name: "F8",  text: "—", level: "不良", ratio: 0.58 },
         { name: "T3",  text: "—", level: "良好", ratio: 0.29 },
         { name: "T4",  text: "—", level: "良好", ratio: 0.27 },
         { name: "T5",  text: "—", level: "良好", ratio: 0.35 },
         { name: "T6",  text: "—", level: "良好", ratio: 0.36 }
     ]
 
-    // 数值列宽度够放多少行。设计稿画了 4 行 + 一根滚动条
-    readonly property var rows: hasScan ? quality : placeholder
+    // 当前档位（4/8/16）下头型图上**激活**的电极名。未激活的位置在头型图上只画
+    // 浅灰占位点；16 档返回空数组，表示全部激活（见 Design.activeElectrodes，
+    // 与 C++ 侧 display_channel_indices 同源）
+    readonly property var activeNames: Design.activeElectrodes(Acq.channelCount)
+    function isActive(name) {
+        return activeNames.length === 0 || activeNames.indexOf(name) >= 0
+    }
+
+    // 数值列宽度够放多少行，设计稿画了 4 行 + 一根滚动条。
+    // **只列当前档位激活的通道** —— 头型图上没亮的电极不该出现在列表里，
+    // 8 档列 8 行、4 档列 4 行
+    readonly property var rows: {
+        var source = hasScan ? quality : placeholder
+        var out = []
+        for (var i = 0; i < source.length; ++i) {
+            if (isActive(source[i].name))
+                out.push(source[i])
+        }
+        return out
+    }
     readonly property int rowHeight: 32
     readonly property int viewHeight: 134
     property real scroll: 0
@@ -94,7 +110,8 @@ Item {
     // 头部图上某个点位对应的接触等级。
     // 数据源与下方列表**同一份**（rows）：有扫描结果是设备 16 路，没有则是设计稿
     // 示意值 —— 两边同源，同名字的电极在图上与列表里永远是同一个档位。
-    // 图上那些设备没有的点位（AF3/F1/Cz/M1…）取最近的三路做反距离加权，取最差档
+    // 图上那 16 个位置就是设备那 16 路，名字全部能对上；万一有对不上的点，
+    // 取最近的几路做反距离加权、取最差档兜底
     function levelAtPoint(name, pointX, pointY) {
         var data = rows
         if (data.length === 0)
@@ -126,7 +143,7 @@ Item {
         var worstRank = -1
         for (var k = 0; k < Math.min(3, best.length); ++k) {
             var level = data[best[k].index].level
-            var rank = level === "脱落" ? 2 : level === "一般" ? 1 : 0
+            var rank = level === "脱落" ? 3 : level === "不良" ? 2 : level === "一般" ? 1 : 0
             if (rank > worstRank) {
                 worstRank = rank
                 worst = level
@@ -261,17 +278,17 @@ Item {
     }
 
     // ---------- 图例 ----------
-    // 设计稿只画了「良好/一般/脱落」三项（面板宽度放不下第四项），
-    // 颜色也按设计稿图例原样：良好=绿、一般=红、脱落=灰。
+    // 新设计稿是四项：良好=绿、一般=红、不良=橙、脱落=灰。
     Row {
-        x: 129
+        x: 64
         y: 54
-        spacing: 21
+        spacing: 20
 
         Repeater {
             model: [
                 { label: "良好", state: "良好" },
                 { label: "一般", state: "一般" },
+                { label: "不良", state: "不良" },
                 { label: "脱落", state: "脱落" }
             ]
 
@@ -305,6 +322,7 @@ Item {
     }
 
     // ---------- 电极分布图 ----------
+    // 底盘：浅灰圆角矩形。头型单独一层叠在上面（见下），与设计稿分层一致
     Image {
         x: 14
         y: 89
@@ -314,11 +332,16 @@ Item {
         fillMode: Image.Stretch
     }
 
+    // 头型：圆头 + 鼻尖 + 两侧耳突，直接复用**地形图那张** head-outline.svg ——
+    // 与「实时脑电地形图」是同一个头型资源，两边耳朵自然长得一样，不再各画各的。
+    // 位置按新设计稿的头圆反推：目标圆心（面板坐标）(166.9,213.2)、半径 105.6；
+    // head-outline.svg 里头圆圆心 (112,117)、半径 106，故缩放 k=105.6/106≈0.99623，
+    // 图幅 224×223 → 223.2×222.2，左上角 = (166.9-112k, 213.2-117k) ≈ (55.3, 96.6)
     Image {
-        x: 54
-        y: 104
-        width: 224
-        height: 223
+        x: 55.3
+        y: 96.6
+        width: 223.2
+        height: 222.2
         source: Design.assetRoot + "icons/head-outline.svg"
         fillMode: Image.Stretch
     }
@@ -329,34 +352,51 @@ Item {
         delegate: Item {
             required property var modelData
 
+            // 当前档位下这个位置是不是激活通道（4/8 档只有部分是）
+            readonly property bool active: root.isActive(modelData.name)
+
             // 与下方列表同源（见 levelAtPoint）：同名电极在图上与列表里永远同一档位，
             // 不会再出现「图上一片绿、列表却有红黄」的对不上
             readonly property string pointLevel:
-                root.levelAtPoint(modelData.name, modelData.x + 8, modelData.y + 8)
+                root.levelAtPoint(modelData.name, modelData.cx, modelData.cy)
 
+            // 激活：浅底 + 同色描边的环形电极，导联名嵌在环内
             Rectangle {
-                x: modelData.x
-                y: modelData.y
-                width: 16
-                height: 16
-                radius: 8
+                visible: parent.active
+                x: modelData.cx - 8.5
+                y: modelData.cy - 8.5
+                width: 17
+                height: 17
+                radius: 8.5
                 color: Design.electrodeFill(parent.pointLevel)
                 border.width: 1
                 border.color: Design.impedanceColor(parent.pointLevel)
             }
 
             Text {
-                x: modelData.x + 8 - 15
-                y: modelData.labelY
-                width: 30
-                height: 28
+                visible: parent.active
+                x: modelData.cx - 20
+                y: modelData.cy - 8.5
+                width: 40
+                height: 17
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 text: modelData.name
                 color: Design.impedanceColor(parent.pointLevel)
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
-                font.pixelSize: 8
+                font.pixelSize: 7
+            }
+
+            // 未激活：只留一个浅灰圆点占位（设计稿 8 通道档的样子）
+            Rectangle {
+                visible: !parent.active
+                x: modelData.cx - 3.5
+                y: modelData.cy - 3.5
+                width: 7
+                height: 7
+                radius: 3.5
+                color: Design.electrodeIdle
             }
         }
     }

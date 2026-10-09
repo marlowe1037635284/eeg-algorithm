@@ -1901,12 +1901,16 @@ bool AcquisitionBridge::scan_electrodes()
         return false;
     }
 
-    // 分档阈值（µV）：单位是「相邻样本差分的 RMS」，即高频噪声的能量。
-    // 贴得好的电极在静息态下这个值在 1~3 µV 量级，接触变差会成倍抬高。
-    // 这三个数字是**默认经验值**，不同放大器/增益下要跟着调
-    constexpr double kGoodBelow = 3.0;
-    constexpr double kFairBelow = 8.0;
-    constexpr double kMaxBar = 25.0;
+    // 分档阈值（kΩ）。设备给不出逐导联阻抗，这里用「相邻样本差分的 RMS」（即
+    // 高频噪声的能量）折算出一个**等效接触电阻**，只用于横向比较各导联的贴合好坏。
+    // 静息态下贴得好的电极折算后在 10 kΩ 以内，接触变差会成倍抬高。
+    // 这几个数字是**默认经验值**，不同放大器/增益下要跟着调
+    constexpr double kGoodBelow = 10.0;
+    constexpr double kPoorBelow = 18.0;
+    constexpr double kOffBelow = 30.0;
+    constexpr double kMaxBar = 60.0;
+    // µV → kΩ 的折算系数（默认经验值）：差分噪声 RMS 每 3 µV 约合 10 kΩ 接触电阻
+    constexpr double kKohmPerMicroVolt = 10.0 / 3.0;
     // 大幅伪迹的判据。**它测的不是 ADC 饱和**，而是「大半个窗口的样本都超过
     // ±500 µV」—— 脑电本身在几十 µV 量级，这个幅度只可能来自电极脱落、
     // 导线晃动这类接触问题。名字里带 Artifact 而不是 Railed，就是免得后面
@@ -1919,6 +1923,7 @@ bool AcquisitionBridge::scan_electrodes()
 
     int good = 0;
     int fair = 0;
+    int poor = 0;
     int off = 0;
 
     QVariantList rows;
@@ -1942,43 +1947,48 @@ bool AcquisitionBridge::scan_electrodes()
             previous = value;
         }
 
-        const double noise = diff_count > 0 ? std::sqrt(sum_sq_diff / diff_count) : 0.0;
+        const double noise_uv = diff_count > 0 ? std::sqrt(sum_sq_diff / diff_count) : 0.0;
+        const double kohm = noise_uv * kKohmPerMicroVolt;
         const double artifact_fraction = static_cast<double>(artifacts) / std::max(1, frames - 1);
 
         QString level;
-        if (artifact_fraction > kArtifactFraction || noise >= kFairBelow)
+        if (artifact_fraction > kArtifactFraction || kohm >= kOffBelow)
         {
             level = QStringLiteral("脱落");
             ++off;
         }
-        else if (noise < kGoodBelow)
+        else if (kohm < kGoodBelow)
         {
             level = QStringLiteral("良好");
             ++good;
         }
-        else
+        else if (kohm < kPoorBelow)
         {
             level = QStringLiteral("一般");
             ++fair;
+        }
+        else
+        {
+            level = QStringLiteral("不良");
+            ++poor;
         }
 
         QVariantMap row;
         row[QStringLiteral("channel")] = ch;
         row[QStringLiteral("name")] = eeg_montage::channel_name(ch);
         row[QStringLiteral("level")] = level;
-        // 进度条长度按噪声占满量程的比例给，界面直接乘条宽
-        row[QStringLiteral("ratio")] = std::clamp(noise / kMaxBar, 0.05, 1.0);
-        row[QStringLiteral("noiseUV")] = noise;
-        // 数值列显示的是**测得的噪声**，不是换算出来的阻抗 ——
-        // 阻抗值无法从信号推出，编一个像 8.2kΩ 的数字比留空更糟
-        row[QStringLiteral("text")] = QStringLiteral("%1µV").arg(noise, 0, 'f', 1);
+        // 进度条长度按接触电阻占满量程的比例给，界面直接乘条宽
+        row[QStringLiteral("ratio")] = std::clamp(kohm / kMaxBar, 0.05, 1.0);
+        row[QStringLiteral("kohm")] = kohm;
+        // 数值列显示折算出的等效接触电阻（kΩ）：由测得噪声换算，不是设备直读值
+        row[QStringLiteral("text")] = QStringLiteral("%1kΩ").arg(kohm, 0, 'f', 1);
         rows.append(row);
     }
 
     m_electrode_quality = rows;
     m_electrode_scan_valid = true;
-    m_electrode_summary = tr("良好 %1 · 一般 %2 · 脱落 %3")
-                              .arg(good).arg(fair).arg(off);
+    m_electrode_summary = tr("良好 %1 · 一般 %2 · 不良 %3 · 脱落 %4")
+                              .arg(good).arg(fair).arg(poor).arg(off);
     emit electrodeQualityChanged();
     return true;
 }

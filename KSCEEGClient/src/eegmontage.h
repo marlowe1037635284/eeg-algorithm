@@ -93,13 +93,13 @@ inline QStringList channel_colors()
 // 设备永远是 16 路，档位只决定界面画几条泳道。**不能简单取前 N 路**：
 // 取前 8 路会得到 Fp1 Fp2 F7 F3 F4 F8 T3 C3，而设计稿的 8 通道写的是
 // Fp1 Fp2 F3 F4 C3 C4 P3 P4 —— 要挑出来才对得上。
-// 4 档同理，取 Fp1 Fp2 C3 C4 四个有代表性的位置
+// 4 档取 F3 F4 P3 P4 —— 设备 4 通道档位实际接的就是这几个位置
 inline QVector<int> display_channel_indices(int channel_count)
 {
     switch (channel_count)
     {
     case 4:
-        return {0, 1, 7, 8};                                    // Fp1 Fp2 C3 C4
+        return {3, 4, 11, 12};                                  // F3 F4 P3 P4
     case 8:
         return {0, 1, 3, 4, 7, 8, 11, 12};                      // Fp1 Fp2 F3 F4 C3 C4 P3 P4
     default:

@@ -1614,7 +1614,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     const int source_rate = raw->sample_rate;
     const int source_frames = raw->frames;
 
-    // 这一轮「窗口无关」输入的指纹。拖动时间轴只动 window_start/seconds，指纹不变，
+    // 这一轮「重流水线」输入的指纹。拖动时间轴只动 window_start/seconds，指纹不变，
     // 于是下面可以直接复用上一轮结果；改参数（滤波、重参考、片段、质检…）则指纹必变
     Fingerprint fingerprint;
     fingerprint.high_pass_enabled = job.high_pass_enabled;
@@ -1638,14 +1638,12 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     fingerprint.segment_start = job.segment_start;
     fingerprint.segment_seconds = job.segment_seconds;
     fingerprint.current_channel = job.current_channel;
-    fingerprint.spectrum_width = job.spectrum_width;
-    fingerprint.spectrum_height = job.spectrum_height;
     fingerprint.raw = raw.get();
     result.fingerprint = fingerprint;
 
-    // 指纹命中 = 这一轮只有窗口/幅度标尺/事件这类「只进波形图」的输入变了。
-    // 直接拿上一轮的结果当底子，只重画波形 —— 拖时间轴时真正卡住的滤波、Welch、
-    // 相关性那一整条流水线（步骤 1–12、15–17）全部跳过
+    // 指纹命中 = 这一轮只有窗口/幅度标尺/事件这类「只进波形、频谱与地形图」的输入变了。
+    // 直接拿上一轮的结果当底子，只重画这三样 —— 拖时间轴时真正卡住的滤波、
+    // 相关性那一整条流水线（步骤 1–12、16–17）全部跳过
     if (job.previous && job.previous->ok && job.previous->fingerprint == fingerprint
         && job.previous->channels == channels && job.previous->processed_channels == channels)
     {
@@ -1667,6 +1665,8 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         }
 
         compute_wave(reused, data, reused.processed_rate, job);
+        compute_spectrum(reused, data, reused.processed_rate, job);
+        compute_topography(reused, data, reused.processed_rate, job);
         return reused;
     }
 
@@ -1983,100 +1983,16 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     compute_wave(result, data, sample_rate, job);
 
     // ---------- 14. 频谱图 ----------
-    if (job.current_channel >= 0 && job.current_channel < spectra.size())
-    {
-        const Psd &psd = spectra.at(job.current_channel);
-        double f_max = std::min(60.0, std::floor(sample_rate / 2.0));
-        if (f_max <= 1.0)
-            f_max = std::max(1.0, sample_rate / 2.0);
-
-        double db_max = -1.0e9;
-        double db_min = 1.0e9;
-        for (int i = 0; i < psd.frequencies.size(); ++i)
-        {
-            if (psd.frequencies.at(i) > f_max)
-                break;
-            const double value = psd.values.at(i);
-            const double db = value > 0.0 ? 10.0 * std::log10(value) : -120.0;
-            db_max = std::max(db_max, db);
-            db_min = std::min(db_min, db);
-        }
-        if (db_max < db_min)
-        {
-            db_max = 10.0;
-            db_min = -90.0;
-        }
-        // 上下各留一档，曲线不贴边框；下界封在 -120（再低只是噪声地板）
-        result.spectrum_f_min = 0.0;
-        result.spectrum_f_max = f_max;
-        result.spectrum_db_max = std::ceil(db_max / 10.0) * 10.0;
-        result.spectrum_db_min = std::max(-120.0, std::floor(db_min / 10.0) * 10.0);
-        result.spectrum_image = render_spectrum_image(psd, 0.0, f_max, result.spectrum_db_min,
-                                                      result.spectrum_db_max,
-                                                      job.spectrum_width, job.spectrum_height);
-    }
+    // 频谱按**当前窗口**做 Welch（不再是整段片段），与波形图同一套窗口 —— 拖动
+    // 时间轴时频谱随之变化。出图逻辑集中在 compute_spectrum：拖动命中指纹的增量
+    // 重算走的也是它，两条路径共用同一份
+    compute_spectrum(result, data, sample_rate, job);
 
     // ---------- 15. 地形图 ----------
-    {
-        QVector<QPointF> positions;
-        positions.reserve(channels);
-        for (int channel = 0; channel < channels; ++channel)
-        {
-            const eeg_montage::Electrode *table = eeg_montage::electrodes();
-            positions.append(channel < eeg_montage::kChannelCount
-                                 ? QPointF(table[channel].x, table[channel].y)
-                                 : QPointF(0.0, 0.0));
-        }
-        normalize_positions(&positions);
-
-        // 六张图：全频段 + 五档。电极值直接取算法算好的各频段电极 RMS
-        // （electrode_values[6,C]，顺序 full/delta/theta/alpha/beta/gamma，与本处
-        // band 0..5 一致）；网格插值与配色仍由本页原有的 C++ 实现完成，所以传给
-        // 算法的地形图网格取了最小值 8×8，只借它的电极值
-        QVariantList topo_stats;
-        for (int band = 0; band < kBandCount + 1; ++band)
-        {
-            const QVector<double> electrode_values = output.topo_electrode.at(band);
-
-            int peak_index = 0;
-            double peak_value = 0.0;
-            double sum = 0.0;
-            for (int i = 0; i < electrode_values.size(); ++i)
-            {
-                if (electrode_values.at(i) > peak_value)
-                {
-                    peak_value = electrode_values.at(i);
-                    peak_index = i;
-                }
-                sum += electrode_values.at(i);
-            }
-
-            QVector<float> grid_values;
-            interpolate_topography(positions, electrode_values, kTopoGrid, &grid_values);
-            const double scale = nice_scale_max(peak_value);
-            result.topo_images.append(render_topography_image(grid_values, kTopoGrid, scale));
-
-            const QString label =
-                band == 0
-                    ? tr("全频段")
-                    : QString::fromUtf8(kBands[band - 1].letter) + QLatin1Char(' ')
-                          + QString::fromUtf8(kBands[band - 1].name);
-            topo_stats.append(QVariantMap{
-                {QStringLiteral("label"), label},
-                {QStringLiteral("peakElectrode"), eeg_montage::channel_name(peak_index)},
-                {QStringLiteral("peakValue"), QString::number(peak_value, 'f', 2)},
-                {QStringLiteral("meanValue"),
-                 QString::number(electrode_values.isEmpty() ? 0.0 : sum / electrode_values.size(),
-                                 'f', 2)},
-                {QStringLiteral("scaleMax"), QString::number(scale, 'f', 2)},
-                {QStringLiteral("band"), band == 0 ? QString() : QString::fromUtf8(kBands[band - 1].key)},
-            });
-
-            if (band == 0)
-                result.topo_scale_max = scale;
-        }
-        result.topo_stats = topo_stats;
-    }
+    // 六张地形图按**当前窗口**逐通道做 Welch、取各频段的平均功率谱密度（µV²/Hz）作为
+    // 电极值，与频谱图同一扇窗、同一份 Welch —— 拖动时间轴时六张图随之变化。出图
+    // 逻辑集中在 compute_topography：拖动命中指纹的增量重算走的也是它，两条路径共用同一份
+    compute_topography(result, data, sample_rate, job);
 
     // ---------- 16. 报告分节 ----------
     {
@@ -2392,6 +2308,160 @@ void PostProcess::compute_wave(Result &result, const QVector<QVector<double>> &d
     result.wave_image = render_wave_image(data, sample_rate, job.window_start,
                                           job.window_seconds, job.current_channel,
                                           channel_range_uv, job.wave_width, job.events);
+}
+
+// 频谱图那一张的出图。原来曲线取自 Python 对**分析片段**（整段）算的 Welch，窗口动
+// 它不动；现在改成对**当前窗口**做 Welch —— 与波形图同一扇窗，拖时间轴时两者一起变。
+// 窗口在预处理后的采样率上换算，与 compute_wave 取 window_first/window_last 的口径一致；
+// welch_psd 的段长/重叠/窗函数也与算法侧 spectrum_core 对齐
+void PostProcess::compute_spectrum(Result &result, const QVector<QVector<double>> &data,
+                                   double sample_rate, const Job &job)
+{
+    const int channels = data.size();
+    if (channels <= 0 || sample_rate <= 0.0)
+        return;
+    if (job.current_channel < 0 || job.current_channel >= channels)
+        return;
+
+    const QVector<double> &row = data.at(job.current_channel);
+    const int frames = row.size();
+    if (frames < 4)
+        return;
+
+    const int window_first = std::clamp(
+        static_cast<int>(std::lround(job.window_start * sample_rate)), 0, frames - 1);
+    const int window_last = std::clamp(
+        window_first + static_cast<int>(std::lround(job.window_seconds * sample_rate)),
+        window_first + 1, frames);
+
+    const Psd psd = welch_psd(row.constData() + window_first, window_last - window_first,
+                              sample_rate);
+
+    double f_max = std::min(60.0, std::floor(sample_rate / 2.0));
+    if (f_max <= 1.0)
+        f_max = std::max(1.0, sample_rate / 2.0);
+
+    double db_max = -1.0e9;
+    double db_min = 1.0e9;
+    for (int i = 0; i < psd.frequencies.size(); ++i)
+    {
+        if (psd.frequencies.at(i) > f_max)
+            break;
+        const double value = psd.values.at(i);
+        const double db = value > 0.0 ? 10.0 * std::log10(value) : -120.0;
+        db_max = std::max(db_max, db);
+        db_min = std::min(db_min, db);
+    }
+    if (db_max < db_min)
+    {
+        db_max = 10.0;
+        db_min = -90.0;
+    }
+    // 上下各留一档，曲线不贴边框；下界封在 -120（再低只是噪声地板）
+    result.spectrum_f_min = 0.0;
+    result.spectrum_f_max = f_max;
+    result.spectrum_db_max = std::ceil(db_max / 10.0) * 10.0;
+    result.spectrum_db_min = std::max(-120.0, std::floor(db_min / 10.0) * 10.0);
+    result.spectrum_image = render_spectrum_image(psd, 0.0, f_max, result.spectrum_db_min,
+                                                  result.spectrum_db_max,
+                                                  job.spectrum_width, job.spectrum_height);
+}
+
+// 六张地形图那一批的出图。原来电极值取自 Python 对**分析片段**（整段）算的各频段电极
+// RMS，窗口动它不动；现在改成对**当前窗口**逐通道做 Welch，再取各频段的平均功率谱密度
+// （µV²/Hz）当电极值 —— 与频谱图同一扇窗、同一份 welch_psd，拖时间轴时六张图一起变。
+// 每通道只需一次 Welch，六档频段都从这一份谱上取均值；网格插值/配色仍用本页原有实现
+void PostProcess::compute_topography(Result &result, const QVector<QVector<double>> &data,
+                                     double sample_rate, const Job &job)
+{
+    const int channels = data.size();
+    if (channels <= 0 || sample_rate <= 0.0)
+        return;
+
+    const int frames = data.first().size();
+    if (frames < 4)
+        return;
+
+    // 窗口换算口径与 compute_wave / compute_spectrum 完全一致
+    const int window_first = std::clamp(
+        static_cast<int>(std::lround(job.window_start * sample_rate)), 0, frames - 1);
+    const int window_last = std::clamp(
+        window_first + static_cast<int>(std::lround(job.window_seconds * sample_rate)),
+        window_first + 1, frames);
+    const int window_length = window_last - window_first;
+
+    QVector<QPointF> positions;
+    positions.reserve(channels);
+    const eeg_montage::Electrode *table = eeg_montage::electrodes();
+    for (int channel = 0; channel < channels; ++channel)
+    {
+        positions.append(channel < eeg_montage::kChannelCount
+                             ? QPointF(table[channel].x, table[channel].y)
+                             : QPointF(0.0, 0.0));
+    }
+    normalize_positions(&positions);
+
+    // 每通道一次窗口 Welch；六档频段的电极值都是这份谱在频段内的均值
+    QVector<Psd> spectra(channels);
+    for (int channel = 0; channel < channels; ++channel)
+        spectra[channel] = welch_psd(data.at(channel).constData() + window_first, window_length,
+                                     sample_rate);
+
+    QVector<QImage> images;
+    images.reserve(kBandCount + 1);
+    QVariantList topo_stats;
+    double full_scale = 0.0;
+    for (int band = 0; band < kBandCount + 1; ++band)
+    {
+        // band 0 是「全频段」（取五档的并集 0.5–45），1..5 依次是 δ/θ/α/β/γ
+        const double low_hz = band == 0 ? kFullBandLowHz : kBands[band - 1].low_hz;
+        const double high_hz = band == 0 ? kFullBandHighHz : kBands[band - 1].high_hz;
+
+        QVector<double> electrode_values(channels, 0.0);
+        for (int channel = 0; channel < channels; ++channel)
+            electrode_values[channel] = band_mean_psd(spectra.at(channel), low_hz, high_hz);
+
+        int peak_index = 0;
+        double peak_value = 0.0;
+        double sum = 0.0;
+        for (int i = 0; i < electrode_values.size(); ++i)
+        {
+            if (electrode_values.at(i) > peak_value)
+            {
+                peak_value = electrode_values.at(i);
+                peak_index = i;
+            }
+            sum += electrode_values.at(i);
+        }
+
+        QVector<float> grid_values;
+        interpolate_topography(positions, electrode_values, kTopoGrid, &grid_values);
+        const double scale = nice_scale_max(peak_value);
+        images.append(render_topography_image(grid_values, kTopoGrid, scale));
+
+        const QString label =
+            band == 0
+                ? tr("全频段")
+                : QString::fromUtf8(kBands[band - 1].letter) + QLatin1Char(' ')
+                      + QString::fromUtf8(kBands[band - 1].name);
+        topo_stats.append(QVariantMap{
+            {QStringLiteral("label"), label},
+            {QStringLiteral("peakElectrode"), eeg_montage::channel_name(peak_index)},
+            {QStringLiteral("peakValue"), QString::number(peak_value, 'f', 2)},
+            {QStringLiteral("meanValue"),
+             QString::number(electrode_values.isEmpty() ? 0.0 : sum / electrode_values.size(),
+                             'f', 2)},
+            {QStringLiteral("scaleMax"), QString::number(scale, 'f', 2)},
+            {QStringLiteral("band"), band == 0 ? QString() : QString::fromUtf8(kBands[band - 1].key)},
+        });
+
+        if (band == 0)
+            full_scale = scale;
+    }
+
+    result.topo_images = images;
+    result.topo_stats = topo_stats;
+    result.topo_scale_max = full_scale;
 }
 
 // ==================== 结果读取 ====================

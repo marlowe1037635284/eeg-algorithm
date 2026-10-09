@@ -43,23 +43,28 @@ Item {
         { key: "report",     label: qsTr("报告") }
     ]
 
-    // 底部那条「通道条」只在波形 / 频谱 / 通道三页出现：它是**选当前导联**的，
-    // 而统计页有每通道小柱、地形图页有六张全脑图、报告页是整段描述 ——
-    // 那三页没有「当前导联」这个概念，摆一条条上去只会让人以为点了会变
+    // 底部那条「通道条」只在波形 / 频谱两页出现：它是**选当前导联**的，
+    // 而通道页是一张只读的 16 行统计表（设计稿 post-channel.png 里表格直接
+    // 铺到状态行、下方没有通道条）、统计页有每通道小柱、地形图页有六张全脑
+    // 图、报告页是整段描述 —— 那几页没有「当前导联」这个概念，摆一条条上去
+    // 只会让人以为点了会变
     readonly property bool tabHasChannelStrip:
-        currentTab === "wave" || currentTab === "spectrum" || currentTab === "channel"
+        currentTab === "wave" || currentTab === "spectrum"
 
-    // 时间轴是「换波形 / 频谱窗口」的导航条，只有看图那几页用得上；
-    // 报告页是一份从头读到尾的静态文档，底部不再摆时间轴
-    readonly property bool tabHasTimeline: currentTab !== "report"
+    // 时间轴是「换窗口」的导航条：波形、频谱两页用它换时间窗，地形图页用它换
+    // 六张全脑图对应的时段；通道页是只读的 16 行统计表、统计页是一组汇总图、
+    // 报告页是整段描述，底部都不摆时间轴
+    readonly property bool tabHasTimeline:
+        currentTab === "wave" || currentTab === "spectrum" || currentTab === "topography"
 
     // 舞台内容区（相对舞台左上角，见上面的坐标说明）
     readonly property int contentX: 10
     readonly property int contentY: 71
     readonly property int contentWidth: 1323
-    // 有通道条时内容压在通道条（y=692）上沿；其余页面内容压到时间轴（y=754）
-    // 上沿，否则正文会盖住时间轴。报告页没有时间轴，内容一路铺到状态行（y=848）
-    // 上方的留白处。统计页最低到 668、地形图页到 674，都在 683 之内，不会被裁
+    // 有通道条时内容压在通道条（y=692）上沿；其余有图页的内容压到时间轴
+    // （y=754）上沿，否则正文会盖住时间轴。通道页 / 统计页 / 报告页没有时间轴，
+    // 内容一路铺到状态行（y=848）上方的留白处；地形图页最低到 674，在 683
+    // 之内，不会被裁
     readonly property int contentHeight:
         tabHasChannelStrip ? 608
                            : (tabHasTimeline ? 683 : 767)

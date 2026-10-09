@@ -188,15 +188,11 @@ public:
     Q_INVOKABLE int sample_rate() const { return m_sample_rate; }
     // 电极接触质量扫描（面板上的「阻抗扫描」按钮）。
     //
-    // **设备没有可用的电极级阻抗**：当前协议一次只给 4 路不带电极名的值
-    //（见 serialprotocol.h 的 parse_impedance_kohm），而界面要的是 16 路带导联名的。
-    // 所以这里量的是**信号本身**：电极贴不牢时接触噪声会明显抬高，噪声底从原始
-    // 数据里测得出来。返回的 level 是据此分的档（良好/一般/不良/脱落），text 给的是
-    // 由测得的噪声**折算**出的等效接触电阻（kΩ），仅用于横向比较各导联的贴合好坏。
-    //
-    // 待硬件侧提供电极级阻抗接口后，这个函数是**唯一的替换点**：把读原始缓冲
-    // 改成发命令、读回值即可，QML 那一侧不用动（它只认
-    // electrodeQuality / electrodeSummary / electrodeScanValid 这三样）
+    // 分两步：按下按钮时调 begin_electrode_scan() 发 'Z'，设备改为上传**真实阻抗**
+    //（B0…D0 帧，16 路与 eegmontage 的 16 个电极 1:1 对应）；等界面那 1.2 秒动画
+    // 结束时调 scan_electrodes() 读回最近一帧、发 's' 停发，并按四档阈值分档。
+    // 返回的 level（良好/一般/不良/脱落）与 kohm 都来自设备实测的阻抗，不再是估计值。
+    Q_INVOKABLE void begin_electrode_scan();
     Q_INVOKABLE bool scan_electrodes();
     // 事件：手动标记，时间取自采集计时与墙钟。
     // color 留空时用默认的事件紫；系统设置里建过标签的话由界面把标签色传进来，

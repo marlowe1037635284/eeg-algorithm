@@ -533,11 +533,11 @@ bool AcquisitionBridge::start_collection(const QString &directory)
         return true;
     }
 
-    // 串口没开就补上。正常流程里 connect_device() 已经在弹确认框前做过，
-    // 这里只是兜底：直接把本函数当入口调用时（如自检）也能跑通 ——
-    // 连不上就报错返回，不硬着头皮往下发采集指令
-    if (!collector_active() && !connect_device())
+    // 串口在登录成功后就连上了，这里不再自动补连（连接已与采集解耦）：
+    // 没连上就明确报错返回，不硬着头皮往下发采集指令
+    if (!collector_active())
     {
+        set_error(tr("请先连接设备"));
         return false;
     }
 
@@ -1875,51 +1875,52 @@ QVariantList AcquisitionBridge::electrode_map() const
     return rows;
 }
 
+void AcquisitionBridge::begin_electrode_scan()
+{
+    // 按下「阻抗扫描」就立刻发 'Z'，让设备切到阻抗上传模式（只发 B0…D0 帧）。
+    // 界面随后跑约 1.2 秒动画，等动画结束时由 scan_electrodes() 读回并停发 's'，
+    // 这段时间足够设备连续上传多帧阻抗。
+    // 串口在登录成功后就连上了，这里不再自动补连（连接已与采集解耦）；
+    // 没连上（也含演示模式没有真实串口）就什么都不做，1.2 秒后由
+    // scan_electrodes() 统一把「请先连接设备」交给界面
+    if (!collector_active())
+    {
+        return;
+    }
+    m_collector->post_impedance_start();
+}
+
 bool AcquisitionBridge::scan_electrodes()
 {
-    // 门槛按**实际攒到的秒数**判，不按样本个数：1 kHz 下 8 个样本只有 8 毫秒，
-    // 拿它算出来的「噪声底」是个随机数，却会被当成一份可信的电极质量表
-    constexpr double kMinimumSeconds = 1.0;
-    if (m_raw_buffer.available_seconds() < kMinimumSeconds)
+    // 阻抗是设备实测的，必须先有采集线程才能发 'Z'/'s'
+    if (!collector_active())
     {
         m_electrode_quality.clear();
-        m_electrode_summary = tr("实时数据不足（需 1 秒），请先连接设备");
+        m_electrode_summary = tr("请先连接设备后再扫描阻抗");
         m_electrode_scan_valid = false;
         emit electrodeQualityChanged();
         return false;
     }
 
-    SignalChunk chunk;
-    // 取最近 2 秒：再短则差分噪声的统计不稳，再长则结果反映的是更早之前的接触状态
-    if (!m_raw_buffer.snapshot(2, &chunk) || chunk.samples.isEmpty()
-        || chunk.channels <= 0 || chunk.samples_per_channel < 8)
+    // 读回采集线程缓存的最新一帧阻抗（内部加锁），随后立刻发 's' 让设备停止上传
+    const QVector<double> kohm_values = m_collector->latest_impedance_kohm();
+    m_collector->post_impedance_stop();
+
+    if (kohm_values.size() < eeg_montage::kChannelCount)
     {
         m_electrode_quality.clear();
-        m_electrode_summary = tr("实时数据不足（需 1 秒），请先连接设备");
+        m_electrode_summary = tr("未收到阻抗数据，请确认设备已连接并支持阻抗扫描");
         m_electrode_scan_valid = false;
         emit electrodeQualityChanged();
         return false;
     }
 
-    // 分档阈值（kΩ）。设备给不出逐导联阻抗，这里用「相邻样本差分的 RMS」（即
-    // 高频噪声的能量）折算出一个**等效接触电阻**，只用于横向比较各导联的贴合好坏。
-    // 静息态下贴得好的电极折算后在 10 kΩ 以内，接触变差会成倍抬高。
-    // 这几个数字是**默认经验值**，不同放大器/增益下要跟着调
+    // 分档阈值（kΩ）。数值来自设备实测阻抗（B0…D0 帧每路一个 24 位值，
+    // 单位欧姆，经 serial_protocol::kKohmPerOhm 换算）；< 0 表示该路未连接
     constexpr double kGoodBelow = 10.0;
     constexpr double kPoorBelow = 18.0;
     constexpr double kOffBelow = 30.0;
     constexpr double kMaxBar = 60.0;
-    // µV → kΩ 的折算系数（默认经验值）：差分噪声 RMS 每 3 µV 约合 10 kΩ 接触电阻
-    constexpr double kKohmPerMicroVolt = 10.0 / 3.0;
-    // 大幅伪迹的判据。**它测的不是 ADC 饱和**，而是「大半个窗口的样本都超过
-    // ±500 µV」—— 脑电本身在几十 µV 量级，这个幅度只可能来自电极脱落、
-    // 导线晃动这类接触问题。名字里带 Artifact 而不是 Railed，就是免得后面
-    // 有人把它当成饱和检测来调
-    constexpr double kArtifactFraction = 0.30;
-    constexpr double kArtifactUV = 500.0;
-
-    const int channels = chunk.channels;
-    const int frames = chunk.samples_per_channel;
 
     int good = 0;
     int fair = 0;
@@ -1927,32 +1928,15 @@ bool AcquisitionBridge::scan_electrodes()
     int off = 0;
 
     QVariantList rows;
-    rows.reserve(channels);
+    rows.reserve(eeg_montage::kChannelCount);
 
-    for (int ch = 0; ch < channels; ++ch)
+    for (int ch = 0; ch < eeg_montage::kChannelCount; ++ch)
     {
-        double sum_sq_diff = 0.0;
-        int diff_count = 0;
-        int artifacts = 0;
-
-        float previous = chunk.samples[ch];
-        for (int i = 1; i < frames; ++i)
-        {
-            const float value = chunk.samples[i * channels + ch];
-            const double diff = static_cast<double>(value) - static_cast<double>(previous);
-            sum_sq_diff += diff * diff;
-            ++diff_count;
-            if (std::abs(static_cast<double>(value)) > kArtifactUV)
-                ++artifacts;
-            previous = value;
-        }
-
-        const double noise_uv = diff_count > 0 ? std::sqrt(sum_sq_diff / diff_count) : 0.0;
-        const double kohm = noise_uv * kKohmPerMicroVolt;
-        const double artifact_fraction = static_cast<double>(artifacts) / std::max(1, frames - 1);
+        const double kohm = kohm_values.at(ch);
+        const bool disconnected = kohm < 0.0;
 
         QString level;
-        if (artifact_fraction > kArtifactFraction || kohm >= kOffBelow)
+        if (disconnected || kohm >= kOffBelow)
         {
             level = QStringLiteral("脱落");
             ++off;
@@ -1977,11 +1961,14 @@ bool AcquisitionBridge::scan_electrodes()
         row[QStringLiteral("channel")] = ch;
         row[QStringLiteral("name")] = eeg_montage::channel_name(ch);
         row[QStringLiteral("level")] = level;
-        // 进度条长度按接触电阻占满量程的比例给，界面直接乘条宽
-        row[QStringLiteral("ratio")] = std::clamp(kohm / kMaxBar, 0.05, 1.0);
-        row[QStringLiteral("kohm")] = kohm;
-        // 数值列显示折算出的等效接触电阻（kΩ）：由测得噪声换算，不是设备直读值
-        row[QStringLiteral("text")] = QStringLiteral("%1kΩ").arg(kohm, 0, 'f', 1);
+        // 进度条长度按阻抗占满量程的比例给；未连接画满条以直观地标出「脱落」
+        row[QStringLiteral("ratio")] = disconnected ? 1.0
+                                                    : std::clamp(kohm / kMaxBar, 0.05, 1.0);
+        row[QStringLiteral("kohm")] = disconnected ? 0.0 : kohm;
+        // 数值列显示设备实测阻抗（kΩ）；未连接显示「--」
+        row[QStringLiteral("text")] = disconnected
+                                          ? QStringLiteral("--")
+                                          : QStringLiteral("%1kΩ").arg(kohm, 0, 'f', 1);
         rows.append(row);
     }
 
@@ -2238,29 +2225,18 @@ int run_bridge_selfcheck(PythonEngine &engine)
         QObject::connect(&bridge, &AcquisitionBridge::logMessage, &bridge,
                          [&message_log](const QString &message) { message_log.append(message); });
 
-        // ---- 没有可用串口时的错误路径 ----
+        // ---- 未连接时的错误路径 ----
         //
-        // 注意这里**不能**无条件调 start_collection()：它的设计行为是
-        // 「串口没开就自动打开」（设计稿上没有串口选择控件），而在开发机上
-        // 往往真有 COM 口 —— 自检会去占住用户的设备。所以先看枚举结果，
-        // 只有在确认没有可用端口时才去验证拒绝路径
+        // 串口在登录后独立连接，start_collection() 不再自动开串口：没连上就
+        // 直接拒绝并给出错误。这里验证这条拒绝路径（不依赖本机有没有 COM 口，
+        // 因为该路径根本不会去占用设备）
         bridge.refresh_ports();
-        if (bridge.available_ports().isEmpty())
-        {
-            check_bridge(!bridge.start_collection(QString()),
-                         QStringLiteral("没有可用串口时开始采集被拒绝"));
-            check_bridge(!bridge.error_text().isEmpty(),
-                         QStringLiteral("拒绝时给出了可显示的错误：%1").arg(bridge.error_text()));
-            bridge.clear_error();
-            check_bridge(bridge.error_text().isEmpty(), QStringLiteral("错误可以被清掉"));
-        }
-        else
-        {
-            qInfo().noquote() << QStringLiteral(
-                                     "  跳过错误路径：本机存在可用串口（%1 个），"
-                                     "「自动打开串口」是设计行为，自检不实际占用设备")
-                                     .arg(bridge.available_ports().size());
-        }
+        check_bridge(!bridge.start_collection(QString()),
+                     QStringLiteral("未连接设备时开始采集被拒绝"));
+        check_bridge(!bridge.error_text().isEmpty(),
+                     QStringLiteral("拒绝时给出了可显示的错误：%1").arg(bridge.error_text()));
+        bridge.clear_error();
+        check_bridge(bridge.error_text().isEmpty(), QStringLiteral("错误可以被清掉"));
 
         // ---- 演示数据源 ----
         bridge.start_demo_source();

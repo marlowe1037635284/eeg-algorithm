@@ -5,10 +5,10 @@ import KSCEEGClient
 // 「电极贴合状态」面板。
 // 设计稿里位于画板 (107,225)，尺寸 331×499；本文件坐标 = 设计坐标 - (107,225)。
 //
-// 数据来源：扫描结果来自 Acq.electrodeQuality，**由采集到的信号估计**，不是设备
-// 直读的阻抗 —— 协议一次只给 4 路不带电极名的阻抗值（见 serialprotocol.h），
-// 推不出「16 个导联各是多少 kΩ」。数值列给的是由测得噪声折算出的等效接触电阻
-// （kΩ），用于横向比较各导联的贴合好坏，不冒充设备直读的阻抗。
+// 数据来源：扫描结果来自 Acq.electrodeQuality，是设备**实测的阻抗**。
+// 按下按钮时调 Acq.begin_electrode_scan() 发 'Z'，设备改为上传 B0…D0 阻抗帧
+//（每帧 16 路，与 16 个电极 1:1 对应）；1.2 秒后调 Acq.scan_electrodes() 读回最新
+// 一帧并发 's' 停发。数值列给的就是设备给出的阻抗（kΩ）。
 Item {
     id: root
 
@@ -154,6 +154,8 @@ Item {
 
     function startScan() {
         scanning = true
+        // 按下就发 'Z'，让设备开始上传阻抗；1.2 秒后由 scanTimer 读回结果并发 's' 停止
+        Acq.begin_electrode_scan()
         scanTimer.restart()
     }
 
@@ -266,7 +268,7 @@ Item {
             onClicked: root.startScan()
 
             ToolTip.visible: containsMouse && !root.scanning
-            ToolTip.text: qsTr("按最近 2 秒的实时信号估计各导联的接触质量")
+            ToolTip.text: qsTr("向设备请求一次阻抗扫描，读取各导联的实测阻抗")
             ToolTip.delay: 400
         }
     }
@@ -444,7 +446,7 @@ Item {
                 Rectangle {
                     x: 46
                     y: rowY + 10
-                    width: 178
+                    width: 168
                     height: 10
                     radius: 5
                     color: Qt.rgba(0, 0, 0, 0.07)
@@ -453,17 +455,21 @@ Item {
                 Rectangle {
                     x: 46
                     y: rowY + 10
-                    width: 178 * modelData.ratio
+                    width: 168 * modelData.ratio
                     height: 10
                     radius: 5
                     color: Design.impedanceColor(modelData.level)
                 }
 
+                // 数值列：右对齐。阻抗文案（如「122.4kΩ」）比原来 50px 的列宽，
+                // 之前会溢出到右侧把等级文字压住 —— 这里加宽到 70 并右对齐，
+                // 保证「kΩ」贴齐等级列左侧留出间隙，不再互相遮挡
                 Text {
-                    x: 236
+                    x: 218
                     y: rowY
-                    width: 50
+                    width: 70
                     height: 28
+                    horizontalAlignment: Text.AlignRight
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.text
                     color: Design.textSecondary
@@ -473,9 +479,9 @@ Item {
                 }
 
                 Text {
-                    x: 280
+                    x: 292
                     y: rowY
-                    width: 44
+                    width: 32
                     height: 28
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.level

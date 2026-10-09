@@ -123,6 +123,11 @@ ApplicationWindow {
                 window.currentUserRole = result.role
                 window.loggedIn = true
                 window.enterWorkbench()
+                // 登录成功后自动连接设备：串口从此独立于采集，一次连上后常开，
+                // 「开始采集 / 阻抗扫描」不再各自补连。
+                // 用 callLater 推迟到本帧渲染之后：connect_device 内部要等串口异步
+                // 打开的结果（最多 2 秒），当场调用会把工作台的首帧一起卡住
+                Qt.callLater(function() { Acq.connect_device() })
                 appDatabase.saveLoginRecord(account, password, rememberPassword)
             }
         }
@@ -324,6 +329,9 @@ ApplicationWindow {
         var page = window.currentPageItem()
         if (page && page.stopCollection)
             page.stopCollection()
+        // 串口不再随采集关闭（登录后常开），退出登录时显式断开：
+        // 这是除「关闭程序」外唯一的断开时机（界面上不设手动断开入口）
+        Acq.close_port()
         activeDialog = ""
         loggedIn = false
         if (!loginPage.rememberChecked)

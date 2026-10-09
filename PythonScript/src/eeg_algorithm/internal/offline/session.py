@@ -14,6 +14,7 @@ from eeg_algorithm.errors import (
 from eeg_algorithm.types import (
     AbsoluteTimeRange,
     ChannelLayout,
+    OfflineQualityQuery,
     OfflineSessionState,
     OfflineSessionStatus,
     OfflineSpectrumQuery,
@@ -25,6 +26,7 @@ from eeg_algorithm.types import (
     PreprocessConfig,
     PreprocessedDataset,
     PreprocessResult,
+    QualityReport,
     SignalBlock,
 )
 
@@ -32,6 +34,7 @@ from eeg_algorithm.internal.observability.context import get_logger, log_event
 from eeg_algorithm.internal.validation import validate_block, validate_layout
 
 from .pipeline import run_preprocessing_pipeline
+from .quality import detect_quality
 from .selection import select_channel_segment, select_multichannel_segment
 from .spectrum import compute_offline_spectrum
 from .statistics import compute_offline_statistics
@@ -48,6 +51,7 @@ class OfflineSession:
         self._dataset: PreprocessedDataset | None = None
         self._state = OfflineSessionState.RAW_READY
         self._last_error: AlgorithmErrorInfo | None = None
+        self._quality_cache: dict[tuple[object, ...], QualityReport] = {}
         self._lock = RLock()
         self._logger = get_logger(__name__)
         log_event(self._logger, logging.INFO, "离线会话创建", code="OFFLINE_SESSION_CREATED", session_id=self._id)
@@ -69,6 +73,7 @@ class OfflineSession:
                 raise
             self._dataset = candidate
             self._state = OfflineSessionState.PREPROCESSED
+            self._quality_cache.clear()
             return PreprocessResult(
                 preprocess_version=candidate.preprocess_version,
                 layout=candidate.layout,
@@ -99,6 +104,18 @@ class OfflineSession:
             selected = select_multichannel_segment(dataset, query.selected_range)
             return compute_offline_statistics(selected, dataset.layout, query)
 
+    def query_quality(self, query: OfflineQualityQuery) -> QualityReport:
+        with self._lock:
+            dataset = self._require_dataset(query.preprocess_version, "query_offline_quality")
+            cache_key = (query.preprocess_version, query.selected_range, query.quality_control)
+            cached = self._quality_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            selected = select_multichannel_segment(dataset, query.selected_range)
+            report = detect_quality(selected, dataset.layout, query.quality_control)
+            self._quality_cache[cache_key] = report
+            return report
+
     def get_preprocessed_data(self) -> PreprocessedDataset:
         with self._lock:
             self._ensure_open("get_preprocessed_data")
@@ -124,6 +141,7 @@ class OfflineSession:
             if self._state is OfflineSessionState.CLOSED:
                 return
             self._dataset = None
+            self._quality_cache.clear()
             self._state = OfflineSessionState.CLOSED
             log_event(self._logger, logging.INFO, "离线会话关闭", code="OFFLINE_SESSION_CLOSED", session_id=self._id)
 

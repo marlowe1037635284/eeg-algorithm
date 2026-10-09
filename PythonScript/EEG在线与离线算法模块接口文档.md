@@ -59,7 +59,8 @@ C++完整原始数据
     → 版本化PreprocessedDataset
          ├── 选段 + 单导联 → PSD → 频谱图 → C++桌面
          ├── 选段 + 多通道 + 电极坐标 → 全频段/δ/θ/α/β/γ 地形图（6 张） → C++桌面
-         └── 选段 + 多通道 → 统计指标（均值/标准差/RMS/峰值/极值/零交叉率/偏度/峰度/优势频带） → C++桌面
+         ├── 选段 + 多通道 → 统计指标（均值/标准差/RMS/峰值/极值/零交叉率/偏度/峰度/优势频带） → C++桌面
+         └── 选段 + 多通道 → 质检检测（异常段标注） → C++桌面
 ```
 
 C++ 只在创建离线会话时传入完整原始数据。后处理时只传会话 ID、预处理版本、选段范围和分析参数，Python 从 `PreprocessedDataset` 中截取数据，不要求 C++ 把预处理结果再次传回 Python。
@@ -463,6 +464,14 @@ class OfflineStatisticsQuery:
     request_id: int
     preprocess_version: int
     selected_range: AbsoluteTimeRange
+
+
+@dataclass(frozen=True)
+class OfflineQualityQuery:
+    request_id: int
+    preprocess_version: int
+    selected_range: AbsoluteTimeRange
+    quality_control: QualityControlConfig
 ```
 
 离线配置规则：
@@ -478,6 +487,7 @@ class OfflineStatisticsQuery:
 - 后处理的 `selected_range` 必须位于当前 `PreprocessedDataset` 的时间范围内；选段使用时间戳，不使用采样点下标。
 - 频谱查询只读取所选导联；地形图查询读取选段内全部有效通道，并要求电极坐标完整，一次返回全频段与 δ/θ/α/β/γ 共 6 张地形图。
 - 统计查询读取选段内全部通道，逐通道计算均值、标准差、RMS、峰峰值、最小值、最大值、零交叉率、偏度、峰度与优势频带，并返回通道相关性矩阵（皮尔逊相关系数）与各通道 δ/θ/α/β/γ 频带能量（PSD 积分）。
+- 质检查询在选段数据上独立执行质检检测（空值/弱信号、幅度范围外值、低相关性导联），只检测不修改 `PreprocessedDataset`，返回与预处理内嵌一致的 `QualityReport`（`repaired` 恒为 `False`）。质检结果按 `preprocess_version + selected_range + quality_control` 缓存：相同查询直接复用缓存，检测参数或选段变化时重新计算，预处理重新运行（版本递增）后缓存自动清空。
 - 后处理查询中的 `preprocess_version` 必须等于离线会话当前版本，否则抛出 `STALE_DATA_VERSION`。
 
 ## 6. 输出 DTO
@@ -771,6 +781,12 @@ class EegAlgorithmApi:
         query: OfflineStatisticsQuery,
     ) -> OfflineStatisticsResult: ...
 
+    def query_offline_quality(
+        self,
+        session_id: int,
+        query: OfflineQualityQuery,
+    ) -> QualityReport: ...
+
     def get_preprocessed_data(
         self,
         session_id: int,
@@ -806,6 +822,7 @@ class EegAlgorithmApi:
 | `query_offline_spectrum` | 从预处理数据选段并计算单导联频谱 | 只读 |
 | `query_offline_topography` | 从预处理数据选段并计算脑电地形图 | 只读 |
 | `query_offline_statistics` | 从预处理数据选段并逐通道计算统计指标 | 只读 |
+| `query_offline_quality` | 从预处理数据选段并独立执行质检检测 | 只读 |
 | `get_preprocessed_data` | 获取完整预处理后数据，用于显示或导出 | 只读 |
 | `get_offline_status` | 查询离线会话和数据版本 | 只读 |
 | `close_offline_session` | 释放原始和预处理数据 | 会话关闭 |
@@ -833,10 +850,11 @@ class EegAlgorithmApi:
 | 离线伪迹检测开关及参数 | `PreprocessConfig.artifact` | `run_preprocessing()` |
 | 离线降采样开关及目标频率 | `PreprocessConfig.resample` | `run_preprocessing()` |
 | 离线质检与修复开关及参数 | `PreprocessConfig.quality_control` | `run_preprocessing()` |
-| 后处理选段 | `selected_range` | 离线频谱/地形图/统计查询接口 |
+| 后处理选段 | `selected_range` | 离线频谱/地形图/统计/质检查询接口 |
 | 离线频谱导联及频率范围 | `OfflineSpectrumQuery` | `query_offline_spectrum()` |
 | 离线地形图（全频段 + δ/θ/α/β/γ，共 6 张） | `OfflineTopographyQuery` | `query_offline_topography()` |
 | 离线统计指标选段 | `OfflineStatisticsQuery.selected_range` | `query_offline_statistics()` |
+| 离线质检检测参数 | `OfflineQualityQuery.quality_control` | `query_offline_quality()` |
 
 ### 7.5 公共接口行为规则
 
@@ -1086,6 +1104,8 @@ class OfflineSession:
                          query: OfflineTopographyQuery) -> OfflineTopographyResult: ...
     def query_statistics(self,
                          query: OfflineStatisticsQuery) -> OfflineStatisticsResult: ...
+    def query_quality(self,
+                      query: OfflineQualityQuery) -> QualityReport: ...
     def get_preprocessed_data(self) -> PreprocessedDataset: ...
     def status(self) -> OfflineSessionStatus: ...
     def close(self) -> None: ...
@@ -1151,9 +1171,18 @@ def run_quality_control(
     layout: ChannelLayout,
     config: QualityControlConfig,
 ) -> tuple[SignalBlock, QualityReport]: ...
+
+
+def detect_quality(
+    signal: SignalBlock,
+    layout: ChannelLayout,
+    config: QualityControlConfig,
+) -> QualityReport: ...
 ```
 
 `run_preprocessing_pipeline()` 按固定顺序调用已启用的函数。离线滤波采用四阶 Butterworth 双向零相位处理；数据过短无法完成零相位填充时必须报错，不得静默改为因果滤波。
+
+`run_quality_control()` 内部先调用 `detect_quality()` 完成检测，再按 `repair_enabled` 决定是否线性插值修复；`detect_quality()` 只做检测、不修改信号，供外部 `query_offline_quality` 独立调用。
 
 ### 8.13 离线选段函数
 
@@ -1277,6 +1306,7 @@ sequenceDiagram
     participant Spectrum as 频谱函数
     participant Topo as 地形图函数
     participant Stats as 统计函数
+    participant Quality as 质检函数
 
     User->>UI: 打开离线EEG数据
     UI->>Controller: 加载原始数据
@@ -1370,6 +1400,20 @@ sequenceDiagram
         Session-->>API: requestId + preprocessVersion + 统计指标
         API-->>Worker: OfflineStatisticsResult
         Worker-->>UI: 校验版本后显示各通道统计指标
+
+    else 执行质检检测
+        User->>UI: 选择质检页面
+        UI->>Controller: OfflineQualityQuery
+        Controller->>Worker: sessionId + query
+        Worker->>API: query_offline_quality(sessionId, query)
+        API->>Session: query_quality(query)
+        Session->>Segment: select_multichannel_segment(dataset, range)
+        Segment-->>Session: 多通道数据[C,K]
+        Session->>Quality: detect_quality([C,K], layout, quality_control)
+        Quality-->>Session: QualityReport
+        Session-->>API: requestId + preprocessVersion + 质检报告
+        API-->>Worker: QualityReport
+        Worker-->>UI: 校验版本后标注异常段
     end
 
     opt 用户修改任一预处理开关或参数
@@ -1400,6 +1444,7 @@ classDiagram
         +query_offline_spectrum(sessionId, query) OfflineSpectrumResult
         +query_offline_topography(sessionId, query) OfflineTopographyResult
         +query_offline_statistics(sessionId, query) OfflineStatisticsResult
+        +query_offline_quality(sessionId, query) QualityReport
         +close_offline_session(sessionId)
     }
 
@@ -1446,6 +1491,7 @@ classDiagram
         +query_spectrum(query) OfflineSpectrumResult
         +query_topography(query) OfflineTopographyResult
         +query_statistics(query) OfflineStatisticsResult
+        +query_quality(query) QualityReport
     }
 
     class PreprocessedDataset
@@ -1453,6 +1499,7 @@ classDiagram
     class OfflineSpectrumQuery
     class OfflineTopographyQuery
     class OfflineStatisticsQuery
+    class OfflineQualityQuery
 
     class PreprocessingFunctions {
         <<module>>
@@ -1470,6 +1517,7 @@ classDiagram
         +compute_offline_spectrum(signal, layout, query)
         +compute_offline_topography(signal, layout, query)
         +compute_offline_statistics(signal, layout, query)
+        +detect_quality(signal, layout, config)
     }
 
     EegAlgorithmApi *-- OnlineSessionRegistry
@@ -1496,6 +1544,7 @@ classDiagram
     EegAlgorithmApi ..> OfflineSpectrumQuery
     EegAlgorithmApi ..> OfflineTopographyQuery
     EegAlgorithmApi ..> OfflineStatisticsQuery
+    EegAlgorithmApi ..> OfflineQualityQuery
 ```
 
 ## 12. 异常接口

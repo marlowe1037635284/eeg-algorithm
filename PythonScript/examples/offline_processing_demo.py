@@ -1,7 +1,7 @@
 """离线处理 API 完整使用示例（模拟数据）。
 
 演示离线会话的完整生命周期：
-创建会话 → 预处理 → 查询频谱/地形图 → 查看状态 → 关闭。
+创建会话 → 预处理 → 查询频谱/地形图/统计 → 质检检测（含子模块单独/组合与参数调整） → 查看状态 → 关闭。
 """
 
 import numpy as np
@@ -16,6 +16,7 @@ from eeg_algorithm.types import (
     LowPassConfig,
     NotchConfig,
     OfflineAsrConfig,
+    OfflineQualityQuery,
     OfflineReferenceConfig,
     OfflineSpectrumQuery,
     OfflineStatisticsQuery,
@@ -150,11 +151,77 @@ def main() -> None:
     print(f"频带名称: {stats.band_names}")
     print(f"各通道频带能量(PSD积分):\n{np.round(stats.band_energies, 3)}")
 
-    # 6. 查看离线会话状态
+    # 6. 查询离线质检（在预处理后选段数据上独立检测，只检测不修改数据）
+    quality = api.query_offline_quality(
+        session_id,
+        OfflineQualityQuery(
+            request_id=4,
+            preprocess_version=version,
+            selected_range=selected,
+            quality_control=QualityControlConfig(),
+        ),
+    )
+    print(f"质检异常段数量: {len(quality.segments)}  修复: {quality.repaired}")
+
+    # 6.1 质检检测子模块可单独/组合调用，检测参数也可独立调整。
+    # 三个开关：null_weak_enabled（空值+弱信号）、amplitude_outlier_enabled（幅度范围外值）、
+    #          low_correlation_enabled（低相关性导联）。
+
+    # 只测「幅度范围外值」，并把幅度占比阈值从默认 0.1 调大到 0.2
+    qc_amplitude_only = QualityControlConfig(
+        null_weak_enabled=False,
+        low_correlation_enabled=False,
+        amplitude_ratio=0.2,
+    )
+    amp_report = api.query_offline_quality(
+        session_id,
+        OfflineQualityQuery(
+            request_id=5,
+            preprocess_version=version,
+            selected_range=selected,
+            quality_control=qc_amplitude_only,
+        ),
+    )
+    amp_types = {s.artifact_type for s in amp_report.segments}
+    print(f"只测幅度外值(占比0.2): {len(amp_report.segments)} 段, 类型={amp_types}")
+
+    # 只测「低相关性导联」，并把相关性阈值从默认 0.1 调大到 0.5
+    qc_corr_only = QualityControlConfig(
+        null_weak_enabled=False,
+        amplitude_outlier_enabled=False,
+        correlation_threshold=0.5,
+    )
+    corr_report = api.query_offline_quality(
+        session_id,
+        OfflineQualityQuery(
+            request_id=6,
+            preprocess_version=version,
+            selected_range=selected,
+            quality_control=qc_corr_only,
+        ),
+    )
+    corr_types = {s.artifact_type for s in corr_report.segments}
+    print(f"只测低相关性(阈值0.5): {len(corr_report.segments)} 段, 类型={corr_types}")
+
+    # 测「空值/弱信号 + 幅度范围外值」两个模块（关掉低相关性）
+    qc_two = QualityControlConfig(low_correlation_enabled=False)
+    two_report = api.query_offline_quality(
+        session_id,
+        OfflineQualityQuery(
+            request_id=7,
+            preprocess_version=version,
+            selected_range=selected,
+            quality_control=qc_two,
+        ),
+    )
+    two_types = {s.artifact_type for s in two_report.segments}
+    print(f"测空值/弱信号+幅度外值: {len(two_report.segments)} 段, 类型={two_types}")
+
+    # 7. 查看离线会话状态
     status = api.get_offline_status(session_id)
     print(f"离线状态: {status.state.value}")
 
-    # 7. 关闭
+    # 8. 关闭
     api.close()
     print("已关闭 API")
 

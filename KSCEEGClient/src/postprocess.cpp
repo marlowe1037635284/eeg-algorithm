@@ -9,6 +9,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QSaveFile>
+#include <QSet>
 #include <QTextStream>
 #include <QTimer>
 #include <QtConcurrent/QtConcurrentRun>
@@ -21,6 +22,7 @@
 
 #include "eegbinformat.h"
 #include "eegmontage.h"
+#include "offlinealgorithm.h"
 #include "topographypalette.h"
 
 namespace
@@ -1104,7 +1106,7 @@ QStringList PostProcess::segment_choices() const
 
 QStringList PostProcess::qc_repair_choices() const
 {
-    return {tr("off"), tr("限幅修复")};
+    return {tr("off"), tr("线性插值修复")};
 }
 
 QStringList PostProcess::export_format_choices() const
@@ -1668,138 +1670,43 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         return reused;
     }
 
-    // ---------- 1. 交错样本 → 逐通道 double ----------
-    // 后面每一步都是逐通道的整段运算，先转置一次，比每步都去乘一次索引便宜
-    QVector<QVector<double>> data(channels);
-    for (int channel = 0; channel < channels; ++channel)
-    {
-        QVector<double> &row = data[channel];
-        row.resize(source_frames);
-        for (int i = 0; i < source_frames; ++i)
-            row[i] = raw->samples.at(i * channels + channel);
-    }
+    // ---------- 1–8、15. 预处理与统计全部走 Python 离线接口 ----------
+    //
+    // 原来这一大段（高通/低通/陷波、重参考、ASR、降采样、基线校正、修复、Welch、
+    // 通道统计、频带占比、相关性、地形图）是 C++ 自己实现的。现在算法统一收到
+    // Python 的 eeg_algorithm 离线接口里，这一层只负责把 Job 翻成离线输入、把
+    // 结果搬回普通容器；出图、报告、导出仍是下面原有的 C++ 代码，只是数据来源换了。
+    //
+    // 基线校正由离线层在送数据前按通道扣整段均值完成（见 offlinealgorithm）。
+    offlinealgorithm::Input input;
+    input.samples = raw->samples;
+    input.channels = channels;
+    input.frames = source_frames;
+    input.sample_rate = source_rate;
+    input.high_pass_enabled = job.high_pass_enabled;
+    input.high_pass_hz = job.high_pass_hz;
+    input.low_pass_enabled = job.low_pass_enabled;
+    input.low_pass_hz = job.low_pass_hz;
+    input.notch_enabled = job.notch_enabled;
+    input.notch_hz = job.notch_hz;
+    input.reference_index = job.reference_index;
+    input.asr_enabled = job.asr_enabled && job.asr_cutoff > 0;
+    input.asr_cutoff = job.asr_cutoff;
+    input.artifact_detection_enabled = job.artifact_detection_enabled;
+    input.baseline_enabled = job.baseline_enabled;
+    input.segment_start = job.segment_start;
+    input.segment_seconds = job.segment_seconds;
+    input.qc_signal_enabled = job.qc_signal_enabled;
+    input.qc_range_enabled = job.qc_range_enabled;
+    input.qc_correlation_enabled = job.qc_correlation_enabled;
+    input.qc_repair_enabled = job.qc_repair_index > 0;
+    input.qc_amplitude_ratio = job.qc_amplitude_ratio;
+    input.qc_correlation = job.qc_correlation;
 
-    double sample_rate = source_rate;
-    QStringList chain;
-
-    // ---------- 2. 高通 / 低通 + 陷波 ----------
-    // 合成**一条**级联（高通两节 → 低通两节 → 陷波一节）只做一次零相位滤波。
-    // 分成三次各做一遍前向-反向数值上等价，代价是三倍的边界延拓与内存搬运
-    {
-        // 滤波之前先扣掉每路的直流分量。
-        //
-        // 这一步不是可有可无的：本机落盘的记录带着数万到数十万 µV 的直流偏置
-        //（放大器的零点，与脑电无关）。0.1 Hz 高通要从这个台阶上「爬」回零，
-        // 而它的时间常数是秒级的 —— 整段分析片段都会被这条爬升曲线占满，真实的
-        // 脑电被压成一条直线。扣直流**正是高通本来要做的事**，提前做只是让滤波器
-        // 不必从饱和状态启动。高通关掉时不扣：那时用户要的就是原始波形
-        if (job.high_pass_enabled)
-        {
-            for (QVector<double> &row : data)
-            {
-                double sum = 0.0;
-                for (const double value : row)
-                    sum += value;
-                const double mean = sum / row.size();
-                for (double &value : row)
-                    value -= mean;
-            }
-            chain.prepend(tr("去直流"));
-        }
-
-        QVector<Biquad> sos;
-        if (job.high_pass_enabled)
-        {
-            sos += butter_sos(job.high_pass_hz, sample_rate, true);
-            chain.append(tr("高通 %1 Hz").arg(job.high_pass_hz, 0, 'g', 4));
-        }
-        if (job.low_pass_enabled)
-        {
-            const double low_pass = std::min(job.low_pass_hz, sample_rate / 2.0 - 1.0);
-            sos += butter_sos(low_pass, sample_rate, false);
-            chain.append(tr("低通 %1 Hz").arg(job.low_pass_hz, 0, 'g', 4));
-        }
-        if (job.notch_enabled)
-        {
-            sos.append(notch_biquad(std::min(job.notch_hz, sample_rate / 2.0 - 1.0), sample_rate, 12.5));
-            chain.append(tr("陷波 %1 Hz").arg(job.notch_hz, 0, 'g', 4));
-        }
-        if (!sos.isEmpty())
-        {
-            for (QVector<double> &row : data)
-                zero_phase_filter(row, sos, sample_rate);
-        }
-    }
-
-    // ---------- 3. 重参考 ----------
-    // 减参考不改变「哪一段是哪一段」，时间轴完全不动
-    if (job.reference_index == 0 || job.reference_index == 1)
-    {
-        QVector<double> reference(source_frames, 0.0);
-        if (job.reference_index == 0)
-        {
-            // 双侧乳突。本蒙太奇里没有 A1/A2，最接近乳突的一对是 T3/T4（左右中颞）。
-            // 界面上写「双侧乳突」是设计稿的说法，代码里按名字取下标，蒙太奇顺序
-            // 变了也不会悄悄指到别的电极上
-            const int left = eeg_montage::index_of(QStringLiteral("T3"));
-            const int right = eeg_montage::index_of(QStringLiteral("T4"));
-            if (left >= 0 && right >= 0 && left < channels && right < channels)
-            {
-                for (int i = 0; i < source_frames; ++i)
-                    reference[i] = 0.5 * (data.at(left).at(i) + data.at(right).at(i));
-            }
-        }
-        else
-        {
-            for (int channel = 0; channel < channels; ++channel)
-            {
-                const QVector<double> &row = data.at(channel);
-                for (int i = 0; i < source_frames; ++i)
-                    reference[i] += row.at(i);
-            }
-            for (int i = 0; i < source_frames; ++i)
-                reference[i] /= channels;
-        }
-
-        for (int channel = 0; channel < channels; ++channel)
-        {
-            QVector<double> &row = data[channel];
-            for (int i = 0; i < source_frames; ++i)
-                row[i] -= reference.at(i);
-        }
-    }
-
-    // ---------- 4. ASR 去伪迹 ----------
-    // 与算法包离线模块当前的行为一致：按「均值 ± cutoff × 标准差」整段限幅。
-    // 算法包把那一步标成可替换的边界，这里保持同样语义 —— 哪天换成真 ASR，两边一起换
-    if (job.asr_enabled && job.asr_cutoff > 0)
-    {
-        for (QVector<double> &row : data)
-        {
-            double sum = 0.0;
-            for (const double value : row)
-                sum += value;
-            const double mean = sum / row.size();
-
-            double variance = 0.0;
-            for (const double value : row)
-                variance += (value - mean) * (value - mean);
-            const double limit = job.asr_cutoff * std::sqrt(variance / row.size());
-            if (limit <= 0.0)
-                continue;
-            for (double &value : row)
-                value = std::clamp(value, mean - limit, mean + limit);
-        }
-        chain.append(tr("ASR 限幅 ×%1").arg(job.asr_cutoff));
-    }
-
-    // ---------- 5. 降采样 ----------
-    // 先按目标采样率的一半做抗混叠低通，再每 M 个取一个。跳过抗混叠的话高频会
-    // 折叠到低频上，δ/θ 段凭空多出一堆功率，而且看不出是假的
+    // 降采样档位 → 目标采样率（分频规则与 downsample_choices() 完全一致）
     int divisor = 1;
     if (job.downsample_index > 0 && source_rate > 0)
     {
-        // 档位下标 → 分频比，规则与 downsample_choices() 完全一致
         int seen = 0;
         for (int candidate = 2; candidate <= 16; candidate <<= 1)
         {
@@ -1814,71 +1721,60 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             }
         }
     }
+    input.resample_enabled = divisor > 1;
+    input.resample_target_hz =
+        divisor > 1 ? static_cast<double>(source_rate) / divisor : 0.0;
 
-    if (divisor > 1)
+    const offlinealgorithm::Output output = offlinealgorithm::run(input);
+    if (!output.ok)
     {
-        const double target_rate = static_cast<double>(source_rate) / divisor;
-        const QVector<Biquad> anti_alias = butter_sos(target_rate * 0.45, sample_rate, false);
-        for (QVector<double> &row : data)
-        {
-            zero_phase_filter(row, anti_alias, sample_rate);
-
-            QVector<double> decimated;
-            decimated.reserve(row.size() / divisor + 1);
-            for (int i = 0; i < row.size(); i += divisor)
-                decimated.append(row.at(i));
-            row = decimated;
-        }
-        sample_rate = target_rate;
-        chain.append(tr("降采样 %1 Hz").arg(target_rate, 0, 'g', 4));
+        result.error = output.error.isEmpty() ? tr("后处理算法执行失败") : output.error;
+        return result;
     }
-
-    const int frames = data.isEmpty() ? 0 : data.first().size();
-    if (frames < 16)
+    // 结果完整性守卫：下面每个通道都要按下标取统计/频谱，任何一路缺失都会越界，
+    // 与其在各处零散判空，不如在这里一次把关（copy_* 失败时容器会留空）
+    if (output.spectra.size() < channels || output.band_energies.size() != channels
+        || output.correlation.size() != channels || output.mean.size() != channels
+        || output.std_dev.size() != channels || output.rms.size() != channels
+        || output.minimum.size() != channels || output.maximum.size() != channels
+        || output.zero_cross.size() != channels || output.skewness.size() != channels
+        || output.kurtosis.size() != channels || output.dominant_band.size() != channels
+        || output.topo_electrode.size() != kBandCount + 1
+        || output.topo_electrode.at(0).size() != channels)
     {
-        result.error = tr("预处理后的数据太短，无法分析");
+        result.error = tr("算法返回的结果不完整");
         return result;
     }
 
-    // ---------- 6. 基线校正 ----------
-    // 按整段记录的均值扣除（constant 去趋势），与算法侧 BaselineConfig
-    //「对 baseline_range 内每通道的均值进行扣除」是同一件事
+    // ---------- 处理链 ----------
+    // Python 返回的 applied_steps 只作参考；界面文案仍由 C++ 按 Job 参数拼，与
+    // 左侧面板的开关一一对应。Python 不做去直流，所以这里也没有那一步
+    QStringList chain;
+    if (job.high_pass_enabled)
+        chain.append(tr("高通 %1 Hz").arg(job.high_pass_hz, 0, 'g', 4));
+    if (job.low_pass_enabled)
+        chain.append(tr("低通 %1 Hz").arg(job.low_pass_hz, 0, 'g', 4));
+    if (job.notch_enabled)
+        chain.append(tr("陷波 %1 Hz").arg(job.notch_hz, 0, 'g', 4));
+    if (job.asr_enabled && job.asr_cutoff > 0)
+        chain.append(tr("ASR 限幅 ×%1").arg(job.asr_cutoff));
+    if (divisor > 1)
+        chain.append(tr("降采样 %1 Hz").arg(static_cast<double>(source_rate) / divisor, 0, 'g', 4));
     if (job.baseline_enabled)
-    {
-        for (QVector<double> &row : data)
-        {
-            double sum = 0.0;
-            for (const double value : row)
-                sum += value;
-            const double mean = sum / row.size();
-            for (double &value : row)
-                value -= mean;
-        }
         chain.prepend(tr("基线校正"));
-    }
-
-    // ---------- 6.5 修复 ----------
-    // 「质检与修复」里的修复方式。目前只有「限幅修复」：把超出 ±300 μV 的样本
-    // 压回边界。这一步对后续统计/频谱/报告都生效，也会体现在处理链里
     if (job.qc_repair_index > 0)
-    {
-        constexpr double kRepairLimitUV = 300.0;
-        for (QVector<double> &row : data)
-            for (double &value : row)
-                value = std::clamp(value, -kRepairLimitUV, kRepairLimitUV);
-        chain.append(tr("限幅修复 ±%1 μV").arg(kRepairLimitUV));
-    }
+        chain.append(tr("线性插值修复"));
 
-    // ---------- 7. 分析片段 ----------
-    const int first = std::clamp(static_cast<int>(std::lround(job.segment_start * sample_rate)),
-                                 0, std::max(0, frames - 16));
-    const int count = std::clamp(static_cast<int>(std::lround(job.segment_seconds * sample_rate)),
-                                 16, frames - first);
+    const int frames = output.sample_count;
+    const double sample_rate = output.sample_rate;
+    const QVector<QVector<double>> &data = output.processed;
+    const int first = output.analysis_first;
+    const int count = output.analysis_count;
 
     result.sample_rate = static_cast<int>(std::lround(sample_rate));
     result.channels = channels;
-    result.segment_start = static_cast<double>(first) / sample_rate;
-    result.segment_seconds = static_cast<double>(count) / sample_rate;
+    result.segment_start = sample_rate > 0.0 ? static_cast<double>(first) / sample_rate : 0.0;
+    result.segment_seconds = sample_rate > 0.0 ? static_cast<double>(count) / sample_rate : 0.0;
     result.processing_chain = chain;
 
     // 留一份预处理后的整段数据供「导出数据」用（见 Result::processed 的说明）。
@@ -1890,13 +1786,13 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         for (int channel = 0; channel < channels; ++channel)
             result.processed[i * channels + channel] = static_cast<float>(data.at(channel).at(i));
 
-    // ---------- 8. 每通道功率谱 ----------
-    // **一次 Welch 供全页使用**：频谱页那条曲线、通道表的「优势频带」、统计页的
-    // 频带占比、地形图的电极功率，都是它的不同投影。每处各算一遍的话，
-    // 同一份数据在不同页面上会给出互相矛盾的数字
+    // ---------- 8. 每通道功率谱（Python Welch）----------
+    // **一次谐算供全页使用**：频谱页那条曲线、通道表的「优势频带」、统计页的
+    // 频带占比、地形图的电极功率，都是它的不同投影
     QVector<Psd> spectra(channels);
     for (int channel = 0; channel < channels; ++channel)
-        spectra[channel] = welch_psd(data.at(channel).constData() + first, count, sample_rate);
+        spectra[channel] = Psd{output.spectra.at(channel).frequencies,
+                               output.spectra.at(channel).values};
 
     // ---------- 9. 通道统计表与各通道频带占比 ----------
     QVariantList channel_stats;
@@ -1906,23 +1802,44 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
 
     for (int channel = 0; channel < channels; ++channel)
     {
-        stats[channel] = compute_stat(data.at(channel).constData() + first, count, sample_rate);
-        const ChannelStat &stat = stats.at(channel);
+        // 统计量直接取算法的结果（口径见 statistics.py）；peak 算法不单列，
+        // 用正负极值的绝对值大者，与原先「|value| 的最大值」同义
+        ChannelStat stat;
+        stat.mean = output.mean.at(channel);
+        stat.std_dev = output.std_dev.at(channel);
+        stat.rms = output.rms.at(channel);
+        stat.minimum = output.minimum.at(channel);
+        stat.maximum = output.maximum.at(channel);
+        stat.peak = std::max(std::abs(stat.minimum), std::abs(stat.maximum));
+        stat.zero_cross = output.zero_cross.at(channel);
+        stat.skewness = output.skewness.at(channel);
+        stat.kurtosis = output.kurtosis.at(channel);
+        stats[channel] = stat;
 
+        // 频带占比来自算法的 band_energies[C,5]（各频段绝对功率），归一化成占比
+        const QVector<double> &energies = output.band_energies.at(channel);
         QVector<double> share(kBandCount, 0.0);
         double total = 0.0;
+        for (int band = 0; band < kBandCount && band < energies.size(); ++band)
+            total += energies.at(band);
+        if (total > 0.0)
+        {
+            for (int band = 0; band < kBandCount && band < energies.size(); ++band)
+                share[band] = energies.at(band) / total;
+        }
+        ratios[channel] = share;
+
+        // 主导频带：算法给的是频段 key（或 "none"），映射回 kBands 的字母 + 名称
         int dominant = 0;
-        QVector<double> powers(kBandCount, 0.0);
+        const QString dominant_key = output.dominant_band.at(channel);
         for (int band = 0; band < kBandCount; ++band)
         {
-            powers[band] = band_power(spectra.at(channel), kBands[band].low_hz, kBands[band].high_hz);
-            total += powers.at(band);
-            if (powers.at(band) > powers.at(dominant))
+            if (dominant_key == QString::fromLatin1(kBands[band].key))
+            {
                 dominant = band;
+                break;
+            }
         }
-        for (int band = 0; band < kBandCount; ++band)
-            share[band] = total > 0.0 ? powers.at(band) / total : 0.0;
-        ratios[channel] = share;
 
         const QString name = eeg_montage::channel_name(channel);
         const QString color = eeg_montage::channel_colors().value(channel);
@@ -1994,88 +1911,71 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
     result.band_distribution = distribution;
 
     // ---------- 11. 通道相关性 ----------
-    QVector<QVector<double>> correlation(channels, QVector<double>(channels, 0.0));
-    for (int a = 0; a < channels; ++a)
-    {
-        correlation[a][a] = 1.0;
-        const double *row_a = data.at(a).constData() + first;
-        for (int b = a + 1; b < channels; ++b)
-        {
-            const double *row_b = data.at(b).constData() + first;
-            double mean_a = 0.0;
-            double mean_b = 0.0;
-            for (int i = 0; i < count; ++i)
-            {
-                mean_a += row_a[i];
-                mean_b += row_b[i];
-            }
-            mean_a /= count;
-            mean_b /= count;
-
-            double covariance = 0.0;
-            double variance_a = 0.0;
-            double variance_b = 0.0;
-            for (int i = 0; i < count; ++i)
-            {
-                const double da = row_a[i] - mean_a;
-                const double db = row_b[i] - mean_b;
-                covariance += da * db;
-                variance_a += da * da;
-                variance_b += db * db;
-            }
-            const double denominator = std::sqrt(variance_a * variance_b);
-            const double value = denominator > 1e-12 ? covariance / denominator : 0.0;
-            correlation[a][b] = value;
-            correlation[b][a] = value;
-        }
-    }
-    result.correlation_image = render_correlation_image(correlation, 420);
+    // 算法的 correlation_matrix 就是逐通道的 Pearson 相关（np.corrcoef），
+    // 直接拿来配色标，不必在这里按定义重算一遍
+    result.correlation_image = render_correlation_image(output.correlation, 420);
 
     // ---------- 12. 质检 ----------
-    // 三项都在这里一次算完：报告页与底栏读的是同一组数，
-    // 各算各的迟早会出现「报告说 3 个、底栏说 0 个」。
-    // 三个检测项是否启用、阈值多少，都来自「质检与修复」那一块
+    // 检测口径（弱信号 / 范围外值 / 低相关）与阈值都交给算法，这里只把返回的片段
+    // 裁到所选片段上，折算成报告页与底栏读的同一组计数 —— 各算各的迟早会出现
+    // 「报告说 3 个、底栏说 0 个」。片段是整段 sample 索引（start 闭、end 开），
+    // 裁剪区间是 [first, first + count)
     int weak_channels = 0;
-    QStringList weak_names;
     int outlier_samples = 0;
-    for (int channel = 0; channel < channels; ++channel)
+    int artifact_samples = 0;
+    QStringList low_correlation;
     {
-        if (job.qc_signal_enabled && stats.at(channel).rms < 5.0)
+        const int selection_end = first + count;
+        const auto overlap = [&](const offlinealgorithm::Segment &segment) {
+            return std::min(segment.end_sample, selection_end)
+                   - std::max(segment.start_sample, first);
+        };
+
+        QSet<int> weak_set;
+        QSet<int> low_set;
+        for (const offlinealgorithm::Segment &segment : output.quality_segments)
         {
-            ++weak_channels;
-            weak_names.append(eeg_montage::channel_name(channel));
-        }
-        const double *row = data.at(channel).constData() + first;
-        if (job.qc_range_enabled)
-        {
-            for (int i = 0; i < count; ++i)
+            const int length = overlap(segment);
+            if (length <= 0)
+                continue;
+            if (segment.type == QLatin1String("amplitude_outlier"))
             {
-                if (std::abs(row[i]) > 300.0)
-                    ++outlier_samples;
+                outlier_samples += length;
             }
+            else if (segment.type == QLatin1String("weak_signal")
+                     || segment.type == QLatin1String("null_value"))
+            {
+                const int index = eeg_montage::index_of(segment.channel_name);
+                if (index >= 0)
+                    weak_set.insert(index);
+            }
+            else if (segment.type == QLatin1String("low_correlation"))
+            {
+                const int index = eeg_montage::index_of(segment.channel_name);
+                if (index >= 0)
+                    low_set.insert(index);
+            }
+        }
+
+        for (const offlinealgorithm::Segment &segment : output.artifact_segments)
+        {
+            const int length = overlap(segment);
+            if (length > 0)
+                artifact_samples += length;
+        }
+
+        for (int channel = 0; channel < channels; ++channel)
+        {
+            if (weak_set.contains(channel))
+                ++weak_channels;
+            if (low_set.contains(channel))
+                low_correlation.append(eeg_montage::channel_name(channel));
         }
     }
     const double outlier_ratio =
         (count > 0 && channels > 0)
             ? static_cast<double>(outlier_samples) / (static_cast<double>(count) * channels)
             : 0.0;
-    const bool out_of_range_alarm = outlier_ratio > job.qc_amplitude_ratio;
-
-    QStringList low_correlation;
-    if (job.qc_correlation_enabled)
-    {
-        for (int channel = 0; channel < channels; ++channel)
-        {
-            double best = 0.0;
-            for (int other = 0; other < channels; ++other)
-            {
-                if (other != channel)
-                    best = std::max(best, std::abs(correlation.at(channel).at(other)));
-            }
-            if (best < job.qc_correlation)
-                low_correlation.append(eeg_montage::channel_name(channel));
-        }
-    }
 
     // ---------- 13. 波形图 ----------
     // 只进本图的那部分输入（窗口、当前导联、幅度标尺、事件）全交给 compute_wave：
@@ -2129,24 +2029,14 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         }
         normalize_positions(&positions);
 
-        // 六张图：全频段 + 五档。每张**按自身峰值归一化** ——
-        // γ 的绝对功率常常只有 δ 的百分之一，六张共用一根色标的话五张会是
-        // 同一种深蓝，什么也看不出来。归一化不丢量纲：每张图的峰值功率与
-        // 峰值电极都列在 topoStats 与报告里
-        double edges[kBandCount + 1][2] = {{kFullBandLowHz, kFullBandHighHz}};
-        for (int band = 0; band < kBandCount; ++band)
-        {
-            edges[band + 1][0] = kBands[band].low_hz;
-            edges[band + 1][1] = kBands[band].high_hz;
-        }
-
+        // 六张图：全频段 + 五档。电极值直接取算法算好的各频段电极 RMS
+        // （electrode_values[6,C]，顺序 full/delta/theta/alpha/beta/gamma，与本处
+        // band 0..5 一致）；网格插值与配色仍由本页原有的 C++ 实现完成，所以传给
+        // 算法的地形图网格取了最小值 8×8，只借它的电极值
         QVariantList topo_stats;
         for (int band = 0; band < kBandCount + 1; ++band)
         {
-            QVector<double> electrode_values;
-            electrode_values.reserve(channels);
-            for (int channel = 0; channel < channels; ++channel)
-                electrode_values.append(band_mean_psd(spectra.at(channel), edges[band][0], edges[band][1]));
+            const QVector<double> electrode_values = output.topo_electrode.at(band);
 
             int peak_index = 0;
             double peak_value = 0.0;
@@ -2279,15 +2169,15 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         });
 
         // 伪差检测：只有开关打开时才出一节。关掉时整节不出现，
-        // 与左侧面板「伪迹检测」那块开关一致
+        // 与左侧面板「伪迹检测」那块开关一致。算法给的是伪差片段，这里报样本点数
         if (job.artifact_detection_enabled)
         {
             sections.append(QVariantMap{
                 {QStringLiteral("title"), tr("伪差检测")},
                 {QStringLiteral("note"),
-                 outlier_samples == 0
-                     ? tr("所选片段未检测到超出 ±300 μV 的样本")
-                     : tr("所选片段有 %1 个样本超出 ±300 μV").arg(outlier_samples)},
+                 artifact_samples == 0
+                     ? tr("所选片段未检测到伪差片段")
+                     : tr("所选片段检测到 %1 个伪差样本点").arg(artifact_samples)},
             });
         }
 
@@ -2297,7 +2187,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             qc_rows.append(QVariantMap{
                 {QStringLiteral("label"), tr("弱信号和空值")},
                 {QStringLiteral("value"),
-                 tr("%1 个通道（RMS < 5 μV）").arg(weak_channels)},
+                 tr("%1 个通道（1 s 窗标准差 < 1 μV 或含空值）").arg(weak_channels)},
             });
         if (job.qc_range_enabled)
             qc_rows.append(QVariantMap{
@@ -2320,7 +2210,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                            .arg(low_correlation.join(QStringLiteral("、")))},
             });
         const QString repair_note = job.qc_repair_index > 0
-            ? tr("修复：限幅修复（超出 ±300 μV 的样本压回边界）")
+            ? tr("修复：线性插值修复（按检测出的伪差/异常片段做线性插值）")
             : tr("修复：off");
         sections.append(QVariantMap{
             {QStringLiteral("title"), tr("质检结果")},
@@ -2363,10 +2253,10 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         // 伪差与信号质量：与「伪差检测」那一节同一组数，关掉时不出这句
         if (job.artifact_detection_enabled)
             summary_bullets.append(
-                outlier_samples == 0
+                artifact_samples == 0
                     ? tr("所选片段未检测到明显伪差，信号质量良好。")
-                    : tr("所选片段检测到 %1 个样本超出 ±300 μV，建议人工复核伪差片段。")
-                          .arg(outlier_samples));
+                    : tr("所选片段检测到 %1 个伪差样本点，建议人工复核伪差片段。")
+                          .arg(artifact_samples));
 
         // 低相关导联：与「质检结果」里的那一行同源
         if (job.qc_correlation_enabled)
@@ -2405,7 +2295,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                 .arg(result.segment_start, 0, 'f', 1)
                 .arg(result.segment_start + result.segment_seconds, 0, 'f', 1)
                 .arg(job.artifact_detection_enabled
-                         ? (outlier_samples == 0 ? tr("无伪差") : tr("有伪差"))
+                         ? (artifact_samples == 0 ? tr("无伪差") : tr("有伪差"))
                          : tr("伪差检测: 关"))
                 .arg(chain.isEmpty() ? tr("未启用") : chain.join(QStringLiteral(" → ")))
                 .arg(job.qc_signal_enabled ? QString::number(weak_channels) : tr("关"))

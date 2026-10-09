@@ -27,19 +27,32 @@ from eeg_algorithm.errors import (
     algorithm_error,
 )
 from eeg_algorithm.types import (
+    AbsoluteTimeRange,
+    ArtifactDetectionConfig,
     AsrConfig,
     BandPreset,
     ChannelLayout,
     ElectrodePosition,
     FrequencyBand,
     GapInfo,
+    HighPassConfig,
     LoggingConfig,
     LogLevel,
+    LowPassConfig,
+    NotchConfig,
+    OfflineAsrConfig,
+    OfflineReferenceConfig,
+    OfflineSpectrumQuery,
+    OfflineStatisticsQuery,
+    OfflineTopographyQuery,
     OnlineConfig,
     OnlineProcessingConfig,
     PhaseModelConfig,
+    PreprocessConfig,
+    QualityControlConfig,
     ReferenceConfig,
     ReferenceMethod,
+    ResampleConfig,
     SignalBlock,
     SpectrumQuery,
     ToggleFilterConfig,
@@ -554,6 +567,332 @@ def close_session(session_id: int) -> None:
     _session_sample_rate.pop(session_id, None)
 
 
+# ---- 离线（后处理）通路 ----
+#
+# 离线与在线的差别只有两点，但都会影响扁平化方式：
+#
+# 1. 离线是「整段一次性处理」：先 create_offline_session 送原始信号，再
+#    run_preprocessing 得到 PreprocessResult，之后的查询靠 session_id +
+#    preprocess_version 定位那份预处理结果。preprocess_version 必须原样带回，
+#    否则算法侧会视为查询过期数据而拒绝。
+# 2. 查询用绝对时间范围 AbsoluteTimeRange（纳秒）选中片段，而不是在线那种
+#    「最近 N 秒」。
+#
+# 预处理配置有五层嵌套（high_pass/low_pass/notch/reference/asr/artifact/
+# resample/quality_control），压成一个扁平 dict 后 C++ 每加一个字段不必改
+# py::arg 列表 —— 与在线处理的处理方式一致（见本模块顶部说明）。
+
+
+def _parse_preprocess_config(config: Mapping[str, Any]) -> PreprocessConfig:
+    """扁平 dict → ``PreprocessConfig``。"""
+    return PreprocessConfig(
+        preprocess_version=int(config["preprocess_version"]),
+        high_pass=HighPassConfig(
+            enabled=bool(config["high_pass_enabled"]),
+            cutoff_hz=float(config["high_pass_cutoff_hz"]),
+        ),
+        low_pass=LowPassConfig(
+            enabled=bool(config["low_pass_enabled"]),
+            cutoff_hz=float(config["low_pass_cutoff_hz"]),
+        ),
+        notch=NotchConfig(
+            enabled=bool(config["notch_enabled"]),
+            stop_low_hz=float(config["notch_stop_low_hz"]),
+            stop_high_hz=float(config["notch_stop_high_hz"]),
+        ),
+        reference=OfflineReferenceConfig(
+            enabled=bool(config["reference_enabled"]),
+            method=_parse_reference_method(config["reference_method"]),
+            mastoid_channels=tuple(str(name) for name in config.get("mastoid_channels", ())),
+        ),
+        asr=OfflineAsrConfig(
+            enabled=bool(config["asr_enabled"]),
+            cutoff=float(config["asr_cutoff"]),
+        ),
+        artifact=ArtifactDetectionConfig(
+            enabled=bool(config["artifact_enabled"]),
+            jump_ratio=float(config["artifact_jump_ratio"]),
+            high_freq_hz=float(config["artifact_high_freq_hz"]),
+            high_freq_ratio=float(config["artifact_high_freq_ratio"]),
+        ),
+        resample=ResampleConfig(
+            enabled=bool(config["resample_enabled"]),
+            target_rate_hz=float(config["resample_target_rate_hz"]),
+        ),
+        quality_control=QualityControlConfig(
+            null_weak_enabled=bool(config["qc_null_weak_enabled"]),
+            amplitude_outlier_enabled=bool(config["qc_amplitude_outlier_enabled"]),
+            low_correlation_enabled=bool(config["qc_low_correlation_enabled"]),
+            repair_enabled=bool(config["qc_repair_enabled"]),
+            amplitude_ratio=float(config["qc_amplitude_ratio"]),
+            correlation_threshold=float(config["qc_correlation_threshold"]),
+            weak_signal_threshold_uv=float(config["qc_weak_signal_threshold_uv"]),
+        ),
+        return_processed_signal=bool(config["return_processed_signal"]),
+    )
+
+
+def _flatten_artifact_segments(segments: Iterable[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "channel_name": str(segment.channel_name),
+            "artifact_type": str(segment.artifact_type),
+            "start_sample": int(segment.start_sample),
+            "end_sample": int(segment.end_sample),
+            "start_timestamp_ns": int(segment.start_timestamp_ns),
+            "end_timestamp_ns": int(segment.end_timestamp_ns),
+        }
+        for segment in segments
+    ]
+
+
+def _flatten_artifact_report(report: Any) -> dict[str, Any] | None:
+    if report is None:
+        return None
+    return {
+        "segments": _flatten_artifact_segments(report.segments),
+        # numpy bool 掩码，C++ 必须在取 GIL 的作用域内拷走。
+        "artifact_mask": report.artifact_mask,
+    }
+
+
+def _flatten_quality_report(report: Any) -> dict[str, Any] | None:
+    if report is None:
+        return None
+    return {
+        "repaired": bool(report.repaired),
+        "segments": _flatten_artifact_segments(report.segments),
+        "artifact_mask": report.artifact_mask,
+    }
+
+
+def create_offline_session(
+    channel_names: Sequence[str],
+    sample_rate_hz: float,
+    positions: Iterable[Sequence[Any]],
+    coordinate_system: str,
+    first_sequence_id: int,
+    timestamps_ns: Any,
+    values: Any,
+) -> int:
+    """建离线会话，返回 session_id。
+
+    ``positions`` 与在线一致：``[(name, x, y, z), ...]``，地形图插值要求至少
+    3 个电极带二维坐标。
+    ``values`` 形状 ``[C,N]``、``timestamps_ns`` 形状 ``[N]``，都是 numpy 数组；
+    会话内部会复制保存，返回后内存即可复用。
+    """
+    layout = ChannelLayout(
+        channel_names=tuple(_require_str("channel_name", n) for n in channel_names),
+        sample_rate_hz=float(sample_rate_hz),
+        positions=tuple(
+            ElectrodePosition(
+                channel_name=_require_str("channel_name", item[0]),
+                x=float(item[1]),
+                y=float(item[2]),
+                z=float(item[3]),
+                coordinate_system=str(coordinate_system),
+            )
+            for item in positions
+        ),
+    )
+    raw_signal = SignalBlock(
+        first_sequence_id=int(first_sequence_id),
+        timestamps_ns=timestamps_ns,
+        values=values,
+    )
+    return int(_get_api().create_offline_session(layout, raw_signal))
+
+
+def run_preprocessing(session_id: int, config: Mapping[str, Any]) -> dict[str, Any]:
+    """运行离线预处理，返回扁平化 ``PreprocessResult``。
+
+    ``processed_values`` 直接返回 numpy 数组本身（不拷贝），C++ 必须在本作用域
+    内取走；形状 ``[C,N]``、帧序与 ``processed_timestamps_ns`` 对齐。
+    """
+    result = _get_api().run_preprocessing(int(session_id), _parse_preprocess_config(config))
+    processed = result.processed_signal
+    time_range = result.actual_time_range
+    return {
+        "preprocess_version": int(result.preprocess_version),
+        "sample_count": int(result.sample_count),
+        "sample_rate_hz": float(result.layout.sample_rate_hz),
+        "channel_names": [str(name) for name in result.layout.channel_names],
+        "start_timestamp_ns": int(time_range.start_timestamp_ns),
+        "end_timestamp_ns": int(time_range.end_timestamp_ns),
+        "applied_steps": [str(step) for step in result.applied_steps],
+        "warnings": [str(warning) for warning in result.warnings],
+        "has_processed_signal": processed is not None,
+        "processed_values": processed.values if processed is not None else None,
+        "processed_timestamps_ns": processed.timestamps_ns if processed is not None else None,
+        "processed_first_sequence_id": (
+            int(processed.first_sequence_id) if processed is not None else -1
+        ),
+        "quality": _flatten_quality_report(result.quality_report),
+        "artifact": _flatten_artifact_report(result.artifact_report),
+    }
+
+
+def query_offline_spectrum(
+    session_id: int,
+    request_id: int,
+    preprocess_version: int,
+    channel_name: str,
+    start_timestamp_ns: int,
+    end_timestamp_ns: int,
+    frequency_range_hz: Any,
+) -> dict[str, Any]:
+    """查询离线单导联频谱。``frequency_range_hz`` 传 ``None`` 或 ``(low, high)``。"""
+    selected_range = AbsoluteTimeRange(int(start_timestamp_ns), int(end_timestamp_ns))
+    frequency_range: tuple[float, float] | None = None
+    if frequency_range_hz is not None:
+        frequency_range = (float(frequency_range_hz[0]), float(frequency_range_hz[1]))
+
+    result = _get_api().query_offline_spectrum(
+        int(session_id),
+        OfflineSpectrumQuery(
+            request_id=int(request_id),
+            preprocess_version=int(preprocess_version),
+            channel_name=str(channel_name),
+            selected_range=selected_range,
+            frequency_range_hz=frequency_range,
+        ),
+    )
+    return {
+        "request_id": int(result.request_id),
+        "preprocess_version": int(result.preprocess_version),
+        "channel_name": str(result.channel_name),
+        "frequencies_hz": result.frequencies_hz,
+        "psd": result.psd,
+    }
+
+
+def query_offline_topography(
+    session_id: int,
+    request_id: int,
+    preprocess_version: int,
+    start_timestamp_ns: int,
+    end_timestamp_ns: int,
+    grid_width: int,
+    grid_height: int,
+) -> dict[str, Any]:
+    """查询离线地形图（一次返回全频段 + δ/θ/α/β/γ 共 6 张）。
+
+    ``grid_values`` 形状 ``[6,H,W]``、``electrode_values`` 形状 ``[6,C]``，
+    都是 numpy 数组，必须在本作用域内拷走。
+    """
+    result = _get_api().query_offline_topography(
+        int(session_id),
+        OfflineTopographyQuery(
+            request_id=int(request_id),
+            preprocess_version=int(preprocess_version),
+            selected_range=AbsoluteTimeRange(int(start_timestamp_ns), int(end_timestamp_ns)),
+            grid_width=int(grid_width),
+            grid_height=int(grid_height),
+        ),
+    )
+    return {
+        "request_id": int(result.request_id),
+        "preprocess_version": int(result.preprocess_version),
+        "band_names": [str(name) for name in result.band_names],
+        "grid_x": result.grid_x,
+        "grid_y": result.grid_y,
+        "grid_values": result.grid_values,
+        "head_mask": result.head_mask,
+        "electrode_values": result.electrode_values,
+        "electrode_names": [str(name) for name in result.electrode_names],
+    }
+
+
+def query_offline_statistics(
+    session_id: int,
+    request_id: int,
+    preprocess_version: int,
+    start_timestamp_ns: int,
+    end_timestamp_ns: int,
+) -> dict[str, Any]:
+    """查询离线多通道统计指标。除名称外各字段都是长度 ``C`` 的数组，
+    ``correlation_matrix`` 为 ``[C,C]``、``band_energies`` 为 ``[C,5]``。"""
+    result = _get_api().query_offline_statistics(
+        int(session_id),
+        OfflineStatisticsQuery(
+            request_id=int(request_id),
+            preprocess_version=int(preprocess_version),
+            selected_range=AbsoluteTimeRange(int(start_timestamp_ns), int(end_timestamp_ns)),
+        ),
+    )
+    return {
+        "request_id": int(result.request_id),
+        "preprocess_version": int(result.preprocess_version),
+        "channel_names": [str(name) for name in result.channel_names],
+        "mean": result.mean,
+        "std": result.std,
+        "rms": result.rms,
+        "peak_to_peak": result.peak_to_peak,
+        "min_value": result.min_value,
+        "max_value": result.max_value,
+        "zero_crossing_rate": result.zero_crossing_rate,
+        "skewness": result.skewness,
+        "kurtosis": result.kurtosis,
+        "dominant_band": [str(name) for name in result.dominant_band],
+        "correlation_matrix": result.correlation_matrix,
+        "band_names": [str(name) for name in result.band_names],
+        "band_energies": result.band_energies,
+    }
+
+
+def get_preprocessed_data(session_id: int) -> dict[str, Any]:
+    """取整段预处理数据集。``values`` 形状 ``[C,N]``，必须在本作用域内拷走。"""
+    dataset = _get_api().get_preprocessed_data(int(session_id))
+    time_range = dataset.actual_time_range
+    return {
+        "preprocess_version": int(dataset.preprocess_version),
+        "sample_rate_hz": float(dataset.layout.sample_rate_hz),
+        "channel_names": [str(name) for name in dataset.layout.channel_names],
+        "first_sequence_id": int(dataset.signal.first_sequence_id),
+        "start_timestamp_ns": int(time_range.start_timestamp_ns),
+        "end_timestamp_ns": int(time_range.end_timestamp_ns),
+        "applied_steps": [str(step) for step in dataset.applied_steps],
+        "values": dataset.signal.values,
+        "timestamps_ns": dataset.signal.timestamps_ns,
+    }
+
+
+def offline_status(session_id: int) -> dict[str, Any]:
+    """查离线会话状态。``state`` 用于判断「这份预处理结果还能不能用」。"""
+    status = _get_api().get_offline_status(int(session_id))
+    last_error = status.last_error
+    preprocessed = status.preprocessed_time_range
+    return {
+        "state": status.state.value,
+        "preprocess_version": (
+            int(status.preprocess_version) if status.preprocess_version is not None else -1
+        ),
+        "raw_start_timestamp_ns": int(status.raw_time_range.start_timestamp_ns),
+        "raw_end_timestamp_ns": int(status.raw_time_range.end_timestamp_ns),
+        "has_preprocessed_range": preprocessed is not None,
+        "preprocessed_start_timestamp_ns": (
+            int(preprocessed.start_timestamp_ns) if preprocessed is not None else -1
+        ),
+        "preprocessed_end_timestamp_ns": (
+            int(preprocessed.end_timestamp_ns) if preprocessed is not None else -1
+        ),
+        "raw_sample_count": int(status.raw_sample_count),
+        "preprocessed_sample_count": (
+            int(status.preprocessed_sample_count)
+            if status.preprocessed_sample_count is not None
+            else -1
+        ),
+        "last_error_code": str(last_error.code) if last_error is not None else "",
+        "last_error_message": str(last_error.message) if last_error is not None else "",
+    }
+
+
+def close_offline_session(session_id: int) -> None:
+    """关闭离线会话，释放原始信号与预处理结果。"""
+    _get_api().close_offline_session(int(session_id))
+
+
 def drain_log_events(max_items: int = 100) -> list[dict[str, Any]]:
     """拉取待转发的告警事件。C++ 每隔 200~500ms 调一次。"""
     return [
@@ -609,20 +948,28 @@ __all__ = [
     "PROCESSING_KEYS",
     "api_version",
     "close_api",
+    "close_offline_session",
     "close_session",
     "configure_logging",
+    "create_offline_session",
     "create_online_session",
     "describe_error",
     "drain_log_events",
     "ensure_api_compatible",
+    "get_preprocessed_data",
     "notify_gap",
+    "offline_status",
     "online_status",
     "open_api",
     "processing_defaults",
     "push_block",
+    "query_offline_spectrum",
+    "query_offline_statistics",
+    "query_offline_topography",
     "query_spectrum",
     "query_topography",
     "reset_session",
+    "run_preprocessing",
     "set_fault_injection",
     "set_asr_reference",
     "update_processing_config",

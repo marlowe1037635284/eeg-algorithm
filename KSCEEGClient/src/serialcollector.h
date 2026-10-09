@@ -89,6 +89,15 @@ public:
     void post_start(const StartRequest &request);
     void post_stop();
 
+    // 阻抗扫描：开始/停止设备上传阻抗帧（发 'Z' / 's'）。
+    // 停止时会顺带用 'b' 把常规数据流接回来（若当时正在采集）
+    void post_impedance_start();
+    void post_impedance_stop();
+
+    // 最近一帧阻抗解析出的 16 路 kΩ（无效通道为 -1）。还没收到过任何阻抗帧时为空数组。
+    // 线程安全：采集线程写、GUI 线程读，内部加锁
+    QVector<double> latest_impedance_kohm() const;
+
     // 取 ASR 参考数据请直接用 RawRingBuffer::snapshot()：缓冲本身就是线程安全的，
     // 这里不再转发一层 —— 采集器会在每次换串口时被销毁重建，
     // 谁若拿了它的指针去取数据，中途换串口就会悬空
@@ -126,7 +135,9 @@ private:
     {
         Start,
         Stop,
-        Raw
+        Raw,
+        ImpedanceStart,
+        ImpedanceStop
     };
 
     struct Command
@@ -142,6 +153,10 @@ private:
 
     mutable QMutex m_command_mutex;
     QVector<Command> m_commands;
+
+    // 最近一帧阻抗（kΩ，16 路，无效为 -1）。采集线程写、GUI 线程读，用锁保护
+    mutable QMutex m_impedance_mutex;
+    QVector<double> m_latest_impedance;
 
     std::atomic<bool> m_stop_requested{false};
 };

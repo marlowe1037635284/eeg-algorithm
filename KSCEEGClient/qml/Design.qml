@@ -31,6 +31,10 @@ QtObject {
     // 「停止采集」按钮的底色。设计稿里它和滑块高亮、警告色是同一个橙，
     // 但语义完全不同，单独给个名字 —— 免得以后调滑块配色时把按钮一起改掉
     readonly property color stopButton: "#fea85d"
+    // 波形页当前导联的高亮色（波形本体、通道名、±量程标注共用）。
+    // 数值与状态色 bad 恰好相同，但语义无关，各留各的名字 —— 以后调警告色
+    // 不该顺手把波形也改掉
+    readonly property color waveCurrent: "#d65a5d"
 
     // ---------- 面板与文字 ----------
     readonly property color panelFill: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.35)     // 面板底
@@ -46,19 +50,22 @@ QtObject {
     readonly property color textOnDark: "#ffffff"
 
     // ---------- 状态色 ----------
-    // 电极面板只有三档，颜色与设计稿图例一致：良好=绿、一般=红、脱落=灰。
+    // 电极面板共四档，颜色与设计稿图例一致：良好=绿、一般=红、不良=橙、脱落=灰。
     readonly property color good: "#23af6e"
     readonly property color warning: "#fea85d"
     readonly property color bad: "#d65a5d"
     readonly property color badSoft: Qt.rgba(0xd6 / 255, 0x5a / 255, 0x5d / 255, 0.10)  // 危险按钮底
+    readonly property color poor: "#da8e20"
     readonly property color offline: "#a3a3a3"
 
-    // 阻抗等级 → 颜色（只有良好/一般/脱落三档）
+    // 阻抗等级 → 颜色（良好/一般/不良/脱落四档）
     function impedanceColor(level) {
         if (level === "良好")
             return good
         if (level === "一般")
             return bad
+        if (level === "不良")
+            return poor
         return offline
     }
 
@@ -68,7 +75,24 @@ QtObject {
             return "#eaf2ee"
         if (level === "一般")
             return "#f5f0ef"
+        if (level === "不良")
+            return "#f7f1e6"
         return "#f4f4f4"
+    }
+
+    // 未激活电极位置的占位点颜色（浅蓝灰，取自设计稿）
+    readonly property color electrodeIdle: "#ccd3dd"
+
+    // 通道档位（4/8/16）下头型图上**激活**的电极名 —— 与 C++ 侧
+    // eeg_montage::display_channel_indices 同源：那边给波形定泳道，这边给头型图
+    // 定高亮点（8 档 Fp1 Fp2 F3 F4 C3 C4 P3 P4，4 档 F3 F4 P3 P4）。
+    // 16 档返回空数组，表示「全部激活」；其余位置在头型图上画成浅灰占位点
+    function activeElectrodes(channelCount) {
+        if (channelCount === 4)
+            return ["F3", "F4", "P3", "P4"]
+        if (channelCount === 8)
+            return ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4"]
+        return []
     }
 
     // ---------- 字体 ----------

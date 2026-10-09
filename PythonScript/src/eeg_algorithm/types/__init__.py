@@ -2,19 +2,26 @@ from .common import AbsoluteTimeRange, ChannelLayout, ElectrodePosition, GapInfo
 from .enums import BandPreset, OfflineSessionState, QualityFlag, ReferenceMethod, SessionState
 from .observability import LogEvent, LogLevel, LoggingConfig, LoggingStatus
 from .offline import (
-    BandPassConfig,
-    BaselineConfig,
+    ArtifactDetectionConfig,
+    ArtifactReport,
+    ArtifactSegment,
+    HighPassConfig,
+    LowPassConfig,
     NotchConfig,
     OfflineAsrConfig,
     OfflineReferenceConfig,
     OfflineSessionStatus,
     OfflineSpectrumQuery,
     OfflineSpectrumResult,
+    OfflineStatisticsQuery,
+    OfflineStatisticsResult,
     OfflineTopographyQuery,
     OfflineTopographyResult,
     PreprocessConfig,
     PreprocessedDataset,
     PreprocessResult,
+    QualityControlConfig,
+    QualityReport,
     ResampleConfig,
 )
 from .online import (

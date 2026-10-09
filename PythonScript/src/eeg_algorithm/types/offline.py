@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -8,17 +8,21 @@ from numpy.typing import NDArray
 
 from .common import AbsoluteTimeRange, ChannelLayout, SignalBlock
 from .enums import OfflineSessionState, ReferenceMethod
-from .online import FrequencyBand
 
 if TYPE_CHECKING:
     from eeg_algorithm.errors import AlgorithmErrorInfo
 
 
 @dataclass(frozen=True)
-class BandPassConfig:
+class HighPassConfig:
     enabled: bool
-    low_cut_hz: float
-    high_cut_hz: float
+    cutoff_hz: float
+
+
+@dataclass(frozen=True)
+class LowPassConfig:
+    enabled: bool
+    cutoff_hz: float
 
 
 @dataclass(frozen=True)
@@ -45,26 +49,89 @@ class OfflineAsrConfig:
 
 
 @dataclass(frozen=True)
+class ArtifactDetectionConfig:
+    """离线伪迹检测配置（与 ASR 去伪迹同级）。
+
+    enabled: 是否执行伪迹检测（检测并返回伪迹异常段与掩码）。
+    jump_ratio: 跳变阈值，一阶差分超过中位数差分的倍数，默认 5.0。
+    high_freq_hz: 高频判定频率（Hz），默认 30.0。
+    high_freq_ratio: 高频能量占比阈值，默认 0.5。
+    """
+
+    enabled: bool = True
+    jump_ratio: float = 5.0
+    high_freq_hz: float = 30.0
+    high_freq_ratio: float = 0.5
+
+
+@dataclass(frozen=True)
 class ResampleConfig:
     enabled: bool
     target_rate_hz: float
 
 
 @dataclass(frozen=True)
-class BaselineConfig:
-    enabled: bool
-    baseline_range: AbsoluteTimeRange | None = None
+class QualityControlConfig:
+    """离线质检与修复配置。
+
+    null_weak_enabled: 空值与弱信号检测开关（合并），默认 True。
+    amplitude_outlier_enabled: 异常 EEG 范围外值检测开关，默认 True。
+    low_correlation_enabled: 低相关性导联检测开关，默认 True。
+    repair_enabled: 是否执行线性插值修复（off 仅标注，on 修复异常段），默认 False。
+    amplitude_ratio: 异常 EEG 范围外值检测的幅度占比，默认 0.1。
+    correlation_threshold: 低相关性导联检测的相关性阈值，默认 0.1。
+    weak_signal_threshold_uv: 弱信号判定的幅值阈值（μV），默认 1.0。
+    """
+
+    null_weak_enabled: bool = True
+    amplitude_outlier_enabled: bool = True
+    low_correlation_enabled: bool = True
+    repair_enabled: bool = False
+    amplitude_ratio: float = 0.1
+    correlation_threshold: float = 0.1
+    weak_signal_threshold_uv: float = 1.0
+
+
+@dataclass(frozen=True)
+class ArtifactSegment:
+    """单个异常数据段（用于界面标注）。"""
+
+    channel_name: str
+    artifact_type: str
+    start_sample: int
+    end_sample: int
+    start_timestamp_ns: int
+    end_timestamp_ns: int
+
+
+@dataclass(frozen=True)
+class ArtifactReport:
+    """伪迹检测报告：异常段列表 + 逐样本掩码。"""
+
+    segments: tuple[ArtifactSegment, ...]
+    artifact_mask: NDArray[np.bool_]
+
+
+@dataclass(frozen=True)
+class QualityReport:
+    """质检报告：异常段列表 + 逐样本掩码 + 是否已修复。"""
+
+    segments: tuple[ArtifactSegment, ...]
+    artifact_mask: NDArray[np.bool_]
+    repaired: bool
 
 
 @dataclass(frozen=True)
 class PreprocessConfig:
     preprocess_version: int
-    band_pass: BandPassConfig
+    high_pass: HighPassConfig
+    low_pass: LowPassConfig
     notch: NotchConfig
     reference: OfflineReferenceConfig
     asr: OfflineAsrConfig
+    artifact: ArtifactDetectionConfig
     resample: ResampleConfig
-    baseline: BaselineConfig
+    quality_control: QualityControlConfig = field(default_factory=QualityControlConfig)
     return_processed_signal: bool = True
 
 
@@ -82,9 +149,15 @@ class OfflineTopographyQuery:
     request_id: int
     preprocess_version: int
     selected_range: AbsoluteTimeRange
-    frequency_band: FrequencyBand
     grid_width: int = 64
     grid_height: int = 64
+
+
+@dataclass(frozen=True)
+class OfflineStatisticsQuery:
+    request_id: int
+    preprocess_version: int
+    selected_range: AbsoluteTimeRange
 
 
 @dataclass(frozen=True)
@@ -105,6 +178,8 @@ class PreprocessResult:
     processed_signal: SignalBlock | None
     applied_steps: tuple[str, ...]
     warnings: tuple[str, ...]
+    quality_report: QualityReport | None = None
+    artifact_report: ArtifactReport | None = None
 
 
 @dataclass(frozen=True)
@@ -119,16 +194,49 @@ class OfflineSpectrumResult:
 
 @dataclass(frozen=True)
 class OfflineTopographyResult:
+    """离线多频段脑电地形图结果（全频段 + δ/θ/α/β/γ 共 6 张）。
+
+    grid_values 形状为 [6,H,W]，electrode_values 形状为 [6,C]，
+    行顺序由 band_names 给出（full/delta/theta/alpha/beta/gamma）。
+    """
+
     request_id: int
     preprocess_version: int
-    frequency_band: FrequencyBand
     selected_range: AbsoluteTimeRange
+    band_names: tuple[str, ...]
     grid_x: NDArray[np.float32]
     grid_y: NDArray[np.float32]
     grid_values: NDArray[np.float32]
     head_mask: NDArray[np.bool_]
     electrode_values: NDArray[np.float32]
     electrode_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class OfflineStatisticsResult:
+    """离线多通道统计指标结果（在预处理后选段数据上逐通道计算）。
+
+    除 dominant_band 与 band_names 为名称外，其余字段均为长度等于通道数的 float32 数组；
+    correlation_matrix 为 [C,C] 通道皮尔逊相关系数矩阵，band_energies 为 [C,5] 各频带能量。
+    """
+
+    request_id: int
+    preprocess_version: int
+    selected_range: AbsoluteTimeRange
+    channel_names: tuple[str, ...]
+    mean: NDArray[np.float32]
+    std: NDArray[np.float32]
+    rms: NDArray[np.float32]
+    peak_to_peak: NDArray[np.float32]
+    min_value: NDArray[np.float32]
+    max_value: NDArray[np.float32]
+    zero_crossing_rate: NDArray[np.float32]
+    skewness: NDArray[np.float32]
+    kurtosis: NDArray[np.float32]
+    dominant_band: tuple[str, ...]
+    correlation_matrix: NDArray[np.float32]
+    band_names: tuple[str, ...]
+    band_energies: NDArray[np.float32]
 
 
 @dataclass(frozen=True)
@@ -140,4 +248,3 @@ class OfflineSessionStatus:
     raw_sample_count: int
     preprocessed_sample_count: int | None
     last_error: AlgorithmErrorInfo | None
-

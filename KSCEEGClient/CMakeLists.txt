@@ -9,11 +9,20 @@ if (MSVC)
     # QML 文件一多（本项目 20+ 个）就会报 C1060「编译器的堆空间不足」。
     # /Zm 用来提高编译器的堆上限，避免这个坑。
     add_compile_options(/Zm2000)
+    # 源码一律按 UTF-8 读、字符串字面量一律按 UTF-8 写。
+    #
+    # **不能省**：MSVC 默认按系统代码页（中文 Windows 上是 GBK）解释源文件。
+    # 中文正好能「GBK 解一次、GBK 编回去」地原样绕一圈，所以中文一直看着没问题；
+    # 希腊字母（频段的 δ θ α β γ）编码成 UTF-8 是两字节，被当成 GBK 就会落到
+    # 别的字符上 —— 界面上出现的不是 δ，而是一个没人认识的符号，且不报任何错
+    add_compile_options(/utf-8)
 endif()
 set(QT_QML_GENERATE_QMLLS_INI ON)
 
 # SerialPort 用于采集页：串口收发全在 C++ 侧（SerialCollector）
-find_package(Qt6 REQUIRED COMPONENTS Quick Sql SerialPort)
+# Concurrent 用于后处理页：一轮分析要算几百毫秒（滤波 + Welch + 相关性），
+# 放在 GUI 线程上就是「拖一下滑块界面卡住」，改成 QtConcurrent 丢到线程池
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql SerialPort Concurrent)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -32,9 +41,6 @@ set(PYTHON_VENV_DIR "D:/myproject/eeg-algorithm/PythonScript/venv" CACHE PATH "P
 # 算法包是 src 布局（源码在 <PythonScript>/src/eeg_algorithm），而 venv 里并没有装
 # eeg_algorithm，所以要把 src 这一层加进 sys.path —— 不能只加项目根目录
 set(EEG_ALGO_SRC_DIR "D:/myproject/eeg-algorithm/PythonScript/src" CACHE PATH "eeg_algorithm 源码目录")
-# 显示通路要直接 import 顶层的实时滤波模块 Realtime_IIR.py（与参考项目 pybindwithqt 同一份），
-# 它是平铺在项目根目录下的，不在 src 那一层，所以这一层也得进 sys.path
-set(PYTHON_PROJECT_DIR "D:/myproject/eeg-algorithm/PythonScript" CACHE PATH "Python 项目根目录（含顶层实时滤波模块 Realtime_IIR.py）")
 set(EEG_BRIDGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python" CACHE PATH "宿主侧适配层 eeg_bridge.py 所在目录")
 
 # ==================== pybind11（源码方式引入） ====================
@@ -76,6 +82,11 @@ qt_add_executable(appKSCEEGClient
     # 历史记录的波形回放（读 .eegbin，不走串口）
     src/recordingpreview.h
     src/recordingpreview.cpp
+    # 「数据分析与后处理」页：预处理流水线、统计、频谱、相关性、地形图、导出
+    src/postprocess.h
+    src/postprocess.cpp
+    # 地形图配色表（实时与后处理共用一份）
+    src/topographypalette.h
     # 把一条记录排成 A4 报告（导出 PDF）
     src/recordreport.h
     src/recordreport.cpp
@@ -111,6 +122,7 @@ qt_add_qml_module(appKSCEEGClient
         qml/dialogs/ResetPasswordDialog.qml
         qml/dialogs/SelectPatientDialog.qml
         qml/dialogs/UserDialog.qml
+        qml/pages/AnalysisPage.qml
         qml/pages/HistoryPage.qml
         qml/pages/LoginPage.qml
         qml/pages/PatientManagementPage.qml
@@ -122,6 +134,13 @@ qt_add_qml_module(appKSCEEGClient
         qml/panels/SpectrumPanel.qml
         qml/panels/TopographyPanel.qml
         qml/panels/WaveformPanel.qml
+        qml/analysis/AnalysisControls.qml
+        qml/analysis/WaveTab.qml
+        qml/analysis/SpectrumTab.qml
+        qml/analysis/ChannelTab.qml
+        qml/analysis/StatsTab.qml
+        qml/analysis/TopographyTab.qml
+        qml/analysis/ReportTab.qml
     RESOURCES
         assets/login-background.jpg
         assets/asset-03.svg
@@ -183,13 +202,13 @@ target_compile_definitions(appKSCEEGClient
     PRIVATE PYTHON_VENV_DIR="${PYTHON_VENV_DIR}"
     PRIVATE EEG_ALGO_SRC_DIR="${EEG_ALGO_SRC_DIR}"
     PRIVATE EEG_BRIDGE_DIR="${EEG_BRIDGE_DIR}"
-    PRIVATE PYTHON_PROJECT_DIR="${PYTHON_PROJECT_DIR}"
 )
 
 target_link_libraries(appKSCEEGClient
     PRIVATE Qt6::Quick
     PRIVATE Qt6::Sql
     PRIVATE Qt6::SerialPort
+    PRIVATE Qt6::Concurrent
     PRIVATE pybind11::embed
 )
 

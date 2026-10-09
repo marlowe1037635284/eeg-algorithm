@@ -612,6 +612,155 @@ double nice_scale_max(double value)
 namespace
 {
 
+// 显示用的 AC 耦合：本窗口内该通道的最小二乘**三次**多项式 c0 + c1*u + c2*u² + c3*u³，
+// u = (i - mid) / half 归一化到 [-1, 1]（用归一化自变量是为了四次方的正规方程数值稳定）。
+// 只减均值/直线时，0.1 Hz 高通在十几秒的短记录上会拖出周期数秒、幅度几十 µV 的低频瞬态：
+// 窗口内仍留下明显**曲率**，纯正弦看着也「后面升上去了」。三次多项式能把曲率一并压掉，
+// 而 10 Hz 正弦在 5 s 窗口里有五十来个周期，对低阶多项式近似正交，会被完整保留。
+// 画图与自动量程共用同一个拟合，标注才和波形对得上
+struct Poly3
+{
+    double c0 = 0.0, c1 = 0.0, c2 = 0.0, c3 = 0.0;
+    double mid = 0.0, half = 1.0;
+};
+
+Poly3 fit_poly3(const QVector<double> &row, int from, int to)
+{
+    Poly3 poly;
+    const int count = to - from;
+    if (count <= 0)
+        return poly;
+
+    poly.mid = 0.5 * (from + to - 1);
+    poly.half = std::max(1e-9, 0.5 * static_cast<double>(count));
+
+    double sum_v = 0.0;
+    for (int i = from; i < to; ++i)
+        sum_v += row.at(i);
+    poly.c0 = sum_v / count; // 退化（点数不足 4）时退回「只减均值」
+
+    if (count < 4)
+        return poly;
+
+    // 正规方程 A·c = B，A[k][m] = Σu^(k+m)，B[k] = Σu^k·v
+    double S[7] = {0.0};
+    double B[4] = {0.0};
+    for (int i = from; i < to; ++i)
+    {
+        const double u = (i - poly.mid) / poly.half;
+        const double v = row.at(i);
+        double uk = 1.0;
+        for (int k = 0; k < 7; ++k)
+        {
+            S[k] += uk;
+            uk *= u;
+        }
+        uk = 1.0;
+        for (int k = 0; k < 4; ++k)
+        {
+            B[k] += uk * v;
+            uk *= u;
+        }
+    }
+
+    double A[4][5];
+    for (int k = 0; k < 4; ++k)
+    {
+        for (int m = 0; m < 4; ++m)
+            A[k][m] = S[k + m];
+        A[k][4] = B[k];
+    }
+
+    // 列主元高斯消元
+    for (int col = 0; col < 4; ++col)
+    {
+        int pivot = col;
+        for (int r = col + 1; r < 4; ++r)
+            if (std::abs(A[r][col]) > std::abs(A[pivot][col]))
+                pivot = r;
+        if (std::abs(A[pivot][col]) < 1e-12)
+            return poly;
+        if (pivot != col)
+            for (int c = col; c < 5; ++c)
+                std::swap(A[pivot][c], A[col][c]);
+        for (int r = col + 1; r < 4; ++r)
+        {
+            const double factor = A[r][col] / A[col][col];
+            for (int c = col; c < 5; ++c)
+                A[r][c] -= factor * A[col][c];
+        }
+    }
+
+    double c[4];
+    for (int r = 3; r >= 0; --r)
+    {
+        double sum = A[r][4];
+        for (int k = r + 1; k < 4; ++k)
+            sum -= A[r][k] * c[k];
+        c[r] = sum / A[r][r];
+    }
+    poly.c0 = c[0];
+    poly.c1 = c[1];
+    poly.c2 = c[2];
+    poly.c3 = c[3];
+    return poly;
+}
+
+double eval_poly3(const Poly3 &poly, int index)
+{
+    const double u = (index - poly.mid) / poly.half;
+    return poly.c0 + u * (poly.c1 + u * (poly.c2 + u * poly.c3));
+}
+
+// 每通道的显示标尺：**与当前时间窗无关**，整条记录只算一次。
+// 逐窗现算的话，P95 在整数档边界（49.9 ↔ 50.1）左右来回跳，标尺会在 50/100 之间翻倍：
+// 拖动时间滑块时波形高度整个换一档、右侧 +N 也跟着变 —— 正是「拖动时线上下漂移 +
+// 幅值跟着变化」的来源。
+// 做法：按窗口长度分块，每块先减一条**最小二乘三次多项式**（与 render_wave_image 同一套
+// 显示 AC 耦合），再取该块 |残差| 的 P99，最后取各块 P99 的**中位数**（取中位数是为了忽略
+// 记录首尾的高通瞬态 / 伪差块），再按 2 位有效数字向上取整。
+// 用 2 位有效数字而不是 1/2/5×10ⁿ 是为了**贴着该通道的真实幅度**：P95 恰好落在 50 附近时
+// 1/2/5 档会直接跳到 100，波形只填一半泳道、右侧 +N 浮在波峰上面 —— 正是「对不上、位置不对」
+double stable_channel_range_uv(const QVector<double> &row, int chunk)
+{
+    const int frames = row.size();
+    if (frames <= 0)
+        return 25.0;
+
+    const int step = std::max(1, chunk);
+    QVector<double> chunk_p99;
+    for (int start = 0; start < frames; start += step)
+    {
+        const int stop = std::min(start + step, frames);
+        if (stop - start < 4) // 太短的尾块三次拟合不稳，跳过
+            continue;
+        const Poly3 trend = fit_poly3(row, start, stop);
+        QVector<double> mag;
+        mag.reserve(stop - start);
+        for (int i = start; i < stop; ++i)
+            mag.append(std::abs(row.at(i) - eval_poly3(trend, i)));
+        if (mag.isEmpty())
+            continue;
+        const int count = mag.size();
+        const int rank = std::clamp(
+            static_cast<int>(std::lround(0.99 * (count - 1))), 0, count - 1);
+        std::nth_element(mag.begin(), mag.begin() + rank, mag.end());
+        chunk_p99.append(mag.at(rank));
+    }
+    if (chunk_p99.isEmpty())
+        return 25.0;
+
+    const int mid = chunk_p99.size() / 2;
+    std::nth_element(chunk_p99.begin(), chunk_p99.begin() + mid, chunk_p99.end());
+    const double peak = chunk_p99.at(mid);
+    if (!(peak > 0.0))
+        return 25.0;
+
+    // 2 位有效数字、向上取整：52.3 → 53、448 → 450、5000 → 5000
+    const double grain = std::max(1e-6, std::pow(10.0, std::floor(std::log10(peak)) - 1.0));
+    return std::max(25.0, std::ceil(peak / grain) * grain);
+}
+
 // 波形图。宽度是**绘制区**宽度（不含左边的通道名列），高度 = 通道数 × 泳道高，
 // 所以整张图比视口高，由 QML 那边滚动着看 —— 这样滚动不必重算一遍分析
 QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rate,
@@ -694,18 +843,19 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         polyline.reserve(std::max(2, width) * 2);
         const int samples = static_cast<int>(row.size());
 
-        // 显示用去直流（AC 耦合）：减去本窗口内该通道的均值。
-        // 与实时波形（AcquisitionBridge 的 m_dc_removal）和预览弹窗
-        // （RecordingPreview::render_window）同一套约定：每帧现算、没有跨帧状态，
-        // 所以不会像算法侧的因果高通那样在启动后拖出几秒的漂移。
-        // 不减掉的话，电极直流偏置与启动漂移会把整条波形抬离泳道中线（甚至压到
-        // 相邻泳道上），同时把自动量程顶到 ±1000，几十 µV 的脑电被压成一条平线
+        // 显示用去直流 + 去缓慢漂移（AC 耦合）：对本窗口内该通道做最小二乘**三次多项式**
+        // 拟合，画图时减去它。只减均值/直线不够 —— 0.1 Hz 高通在十几秒的短记录上会拖出
+        // 周期数秒、幅度几十 µV 的低频瞬态，窗口内既有漂移又有曲率，纯正弦看着也
+        //「一会儿上一会儿下 / 后面升上去了」；减去三次多项式后每一屏都落回泳道中线附近。
+        // 与实时波形（AcquisitionBridge 的 m_dc_removal）同一套约定：每帧现算、
+        // 没有跨帧状态。不减的话，电极直流偏置与启动漂移会把整条波形抬离泳道中线
+        //（甚至压到相邻泳道上），同时把自动量程顶到 ±1000，几十 µV 的脑电被压成平线
         const int offset_from = std::clamp(static_cast<int>(first_sample), 0, samples - 1);
         const int offset_to = std::clamp(static_cast<int>(last_sample), offset_from + 1, samples);
-        double offset = 0.0;
-        for (int i = offset_from; i < offset_to; ++i)
-            offset += row.at(i);
-        offset /= static_cast<double>(offset_to - offset_from);
+        const Poly3 trend = fit_poly3(row, offset_from, offset_to);
+        const auto detrended = [&](int i) {
+            return row.at(i) - eval_poly3(trend, i);
+        };
 
         for (int x = 0; x < width; ++x)
         {
@@ -716,17 +866,18 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
 
             // 一个像素列对应多个采样点时取这一列的最小/最大，画成一条竖线 ——
             // 只取一个点的话，高频成分会被抽稀成一堆假峰
-            double lowest = row.at(std::clamp(from, 0, samples - 1));
+            double lowest = detrended(std::clamp(from, 0, samples - 1));
             double highest = lowest;
             const int stop = std::min(std::max(to, from + 1), samples);
             for (int i = std::max(0, from); i < stop; ++i)
             {
-                lowest = std::min(lowest, row.at(i));
-                highest = std::max(highest, row.at(i));
+                const double value = detrended(i);
+                lowest = std::min(lowest, value);
+                highest = std::max(highest, value);
             }
 
-            const double y_low = centre - std::clamp((lowest - offset) * scale, -half_lane, half_lane);
-            const double y_high = centre - std::clamp((highest - offset) * scale, -half_lane, half_lane);
+            const double y_low = centre - std::clamp(lowest * scale, -half_lane, half_lane);
+            const double y_high = centre - std::clamp(highest * scale, -half_lane, half_lane);
             polyline.append(QPointF(x, y_low));
             polyline.append(QPointF(x, y_high));
         }
@@ -2263,73 +2414,25 @@ void PostProcess::compute_wave(Result &result, const QVector<QVector<double>> &d
     if (channels <= 0 || data.first().isEmpty() || sample_rate <= 0.0)
         return;
 
-    const int frames = data.first().size();
+    // 幅值标尺：逐通道独立，**与当前时间窗无关**（整条记录只算一次）。
+    // 用户在「窗口和缩放」里拖过幅度滑块就用他的值，否则（0 = 自动）走
+    // stable_channel_range_uv —— 拖动时间滑块时标尺纹丝不动，波形高度与右侧
+    // +N/0/−N 标注都稳定；逐窗现算会让标尺在整数档边界来回翻倍（见该函数注释）
+    const int chunk = std::max(
+        1, static_cast<int>(std::lround(job.window_seconds * sample_rate)));
 
-    // 幅值标尺：用户在「窗口和缩放」里拖过幅度滑块就用他的值，
-    // 否则（0 = 自动）按**这一屏的稳健幅度**自动定，向上取整到 1/2/5×10ⁿ。
-    // 稳健做法：逐通道取 |value| 的 P95（单点伪差尖峰影响不到它），再逐通道各自定尺
-    // —— 直接取全通道最大值的话，少数几路大幅度噪声会把标尺顶到 ±1000，整屏波形
-    // 被压成平线
-    const int window_first = std::clamp(
-        static_cast<int>(std::lround(job.window_start * sample_rate)), 0, frames - 1);
-    const int window_last = std::clamp(
-        window_first + static_cast<int>(std::lround(job.window_seconds * sample_rate)),
-        window_first + 1, frames);
-
-    QVector<double> channel_p95(channels, 0.0);
-    QVector<double> magnitudes;
-    for (int channel = 0; channel < channels; ++channel)
-    {
-        const QVector<double> &row = data.at(channel);
-        const int stop = std::min(window_last, static_cast<int>(row.size()));
-        if (stop <= window_first)
-            continue;
-
-        // 与画图时一致：先减掉本窗口均值（显示用去直流）再取幅度。
-        // 不减的话，直流偏置与启动漂移会主导 P95，标尺被顶到 ±1000，
-        // 脑电被压成一条平线（正是上面那段注释想避免的情况）
-        double offset = 0.0;
-        for (int i = window_first; i < stop; ++i)
-            offset += row.at(i);
-        offset /= static_cast<double>(stop - window_first);
-
-        magnitudes.clear();
-        magnitudes.reserve(stop - window_first);
-        for (int i = window_first; i < stop; ++i)
-            magnitudes.append(std::abs(row.at(i) - offset));
-        if (magnitudes.isEmpty())
-            continue;
-
-        const int count = static_cast<int>(magnitudes.size());
-        const int rank = std::clamp(
-            static_cast<int>(std::lround(0.95 * (count - 1))), 0, count - 1);
-        std::nth_element(magnitudes.begin(), magnitudes.begin() + rank, magnitudes.end());
-        channel_p95[channel] = magnitudes.at(rank);
-    }
-
-    // 逐通道独立标尺：每一路各自向上取整到 1/2/5×10ⁿ。
-    // 统一标尺时，噪声大的通道会把标尺顶高、把脑电压平；反过来用脑电的标尺
-    // 又会让噪声通道削成方块 —— 各定各的，两种情况都不会出现
     QVector<double> channel_range_uv;
     channel_range_uv.reserve(channels);
     for (int channel = 0; channel < channels; ++channel)
     {
         if (job.wave_amplitude_uv > 0.0)
         {
-            // 用户拖过幅度滑块：仍然全通道统一用他给的值
+            // 用户拖过幅度滑块：全通道统一用他给的值
             channel_range_uv.append(job.wave_amplitude_uv);
             continue;
         }
 
-        const double p95 = channel_p95.at(channel);
-        const double exponent =
-            p95 > 0.0 ? std::pow(10.0, std::floor(std::log10(p95))) : 1.0;
-        const double normalized = exponent > 0.0 ? p95 / exponent : 1.0;
-        // 1 / 2 / 5 / 10 四档。**不能只给到 5**：归一化值落在 (5,10) 时取 5 会
-        // 算出一个比实际峰值还小的标尺，波形顶部会被削平
-        const double step = normalized <= 1.0 ? 1.0
-                          : (normalized <= 2.0 ? 2.0 : (normalized <= 5.0 ? 5.0 : 10.0));
-        channel_range_uv.append(std::max(25.0, step * exponent));
+        channel_range_uv.append(stable_channel_range_uv(data.at(channel), chunk));
     }
 
     // 右侧 +N/0/−N 标注只画在当前导联那条泳道上，所以取当前导联的标尺

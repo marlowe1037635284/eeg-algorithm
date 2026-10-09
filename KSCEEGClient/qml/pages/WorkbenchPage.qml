@@ -707,6 +707,14 @@ Item {
                 if (root.collecting) {
                     root.stopCollection()
                 } else if (root.hasPatient) {
+                    // 串口在登录成功后已独立连上，这里只做检查：没连上就提示，
+                    // 不再自动补连（连接与采集已解耦）。演示模式没有真实串口，
+                    // 由 Acq.demoSource 放行。
+                    // 真正的采集指令仍要等用户在框里点「确认并开始」才发
+                    if (!Acq.portOpen && !Acq.demoSource) {
+                        root.notifyRequested(qsTr("请先连接设备"), "warn")
+                        return
+                    }
                     root.precheckRequested()
                 } else {
                     // 没选患者：这一页采集的数据要挂到某位患者名下，没有对象就开始采

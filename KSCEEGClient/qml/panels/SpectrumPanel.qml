@@ -10,8 +10,6 @@ Item {
     property bool collecting: false
     property bool frozen: false
     property bool channelMenuOpen: false
-    // 选中的频段（下面那排数值块），点一下切换
-    property int selectedBand: 2
 
     // 采集时重绘；冻结/停止时画面停住。数据仍在后台更新，
     // 解冻后下一次 revision 变化会立刻接上
@@ -29,15 +27,11 @@ Item {
     readonly property var bands: {
         var values = Acq.spectrumBandValues
         var letters = ["δ", "θ", "α", "β", "γ"]
-        var labelX = [36, 99, 162, 225, 288]
-        var valueX = [23, 82, 149, 212, 275]
         var result = []
         for (var i = 0; i < letters.length; ++i) {
             result.push({
                 letter: letters[i],
-                value: (values && values.length === 5) ? values[i] : "—",
-                labelX: labelX[i],
-                valueX: valueX[i]
+                value: (values && values.length === 5) ? values[i] : "—"
             })
         }
         return result
@@ -342,7 +336,7 @@ Item {
         font.pixelSize: 12
     }
 
-    // ---------- 频段数值 ----------
+    // ---------- 频段数值（只展示，不可点选） ----------
     Repeater {
         model: root.bands
 
@@ -350,23 +344,21 @@ Item {
             required property var modelData
             required property int index
 
-            readonly property bool active: root.selectedBand === index
+            readonly property int blockX: 14 + 63 * index
 
             Rectangle {
-                x: 14 + 63 * index
+                x: parent.blockX
                 y: 206
                 width: 54
                 height: 60
                 radius: 7
-                color: parent.active ? Design.primarySoft : Design.panelFillSoft
-                border.width: parent.active ? 1 : 0
-                border.color: Design.primary
+                color: Design.panelFillSoft
             }
 
             Text {
-                x: modelData.labelX
+                x: parent.blockX
                 y: 215
-                width: 20
+                width: 54
                 height: 22
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
@@ -374,13 +366,13 @@ Item {
                 color: Design.primary
                 font.family: Design.fontFamily
                 font.styleName: Design.styleMedium
-                font.pixelSize: 16
+                font.pixelSize: 15
             }
 
             Text {
-                x: modelData.valueX
+                x: parent.blockX
                 y: 236
-                width: 44
+                width: 54
                 height: 22
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
@@ -388,21 +380,10 @@ Item {
                 color: Design.textPrimary
                 font.family: Design.fontFamily
                 font.styleName: Design.styleMedium
-                font.pixelSize: 14
-            }
-
-            MouseArea {
-                x: 14 + 63 * index
-                y: 206
-                width: 54
-                height: 60
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.selectedBand = index
-
-                ToolTip.visible: containsMouse
-                ToolTip.text: qsTr("查看 %1 频段").arg(modelData.letter)
-                ToolTip.delay: 400
+                font.pixelSize: 13
+                // 值形如 "368.8μV²"，块宽固定 54，缩到放得下为止，免得溢出
+                fontSizeMode: Text.HorizontalFit
+                minimumPixelSize: 8
             }
         }
     }

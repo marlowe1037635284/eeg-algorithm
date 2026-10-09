@@ -65,9 +65,8 @@ QStringList RecordingPreview::channel_names() const
 
 QStringList RecordingPreview::channel_colors()
 {
-    return {QStringLiteral("#0e9fbf"), QStringLiteral("#36a772"), QStringLiteral("#daa82a"),
-            QStringLiteral("#e07a2e"), QStringLiteral("#d675a4"), QStringLiteral("#876ee3"),
-            QStringLiteral("#299fbb"), QStringLiteral("#6baa40")};
+    // 配色表已经收进 eeg_montage：波形预览、实时波形、后处理波形三处必须是同一套
+    return eeg_montage::channel_colors();
 }
 
 bool RecordingPreview::open(const QString &path)

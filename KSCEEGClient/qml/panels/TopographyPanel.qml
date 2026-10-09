@@ -8,31 +8,58 @@ import KSCEEGClient
 Item {
     id: root
 
-    // 地形图上的电极：圆形标记 16×16，标签字号 8，标签竖直居中于圆点
-    readonly property var electrodes: [
-        { name: "Fp1", x: 122, y: 75,  labelX: 124, labelY: 69 },
-        { name: "Fp2", x: 198, y: 75,  labelX: 199, labelY: 69 },
-        { name: "AF3", x: 125, y: 105, labelX: 126, labelY: 99 },
-        { name: "F5",  x: 91,  y: 119, labelX: 95,  labelY: 113 },
-        { name: "F3",  x: 113, y: 124, labelX: 117, labelY: 118 },
-        { name: "F1",  x: 135, y: 128, labelX: 139, labelY: 122 },
-        { name: "Fz",  x: 159, y: 129, labelX: 163, labelY: 123 },
-        { name: "F2",  x: 181, y: 128, labelX: 185, labelY: 122 },
-        { name: "FC3", x: 109, y: 149, labelX: 111, labelY: 143 },
-        { name: "FC1", x: 131, y: 152, labelX: 133, labelY: 146 },
-        { name: "M1",  x: 53,  y: 171, labelX: 56,  labelY: 165 },
-        { name: "M2",  x: 264, y: 171, labelX: 267, labelY: 165 },
-        { name: "Cz",  x: 159, y: 178, labelX: 163, labelY: 172 },
-        { name: "P3",  x: 121, y: 214, labelX: 124, labelY: 208 },
-        { name: "Oz",  x: 159, y: 251, labelX: 162, labelY: 245 }
+    // 地形图上的电极：圆形标记 16×16，标签字号 8，标签竖直居中于圆点。
+    // 点位与「电极贴合状态」面板（ElectrodePanel.mapPoints）**同一套 16 路**：
+    // 名字一致，位置也一致 —— 同一个头型、同一套标准 10-20 归一化坐标
+    // （相对头圆心、按头半径归一化），只是本面板头圆为圆心 (166,178)、半径 106。
+    // x/y = 圆心 − 8（16×16 圆点左上角）；labelX/labelY = 圆心 − (6.5|4.5) / −14，
+    // 使 8px 名称在圆点上居中
+    readonly property var electrodeTable: [
+        { name: "Fp1", x: 101.4, y: 81.7,  labelX: 102.9, labelY: 75.7 },
+        { name: "Fp2", x: 214.6, y: 81.7,  labelX: 216.1, labelY: 75.7 },
+        { name: "F7",  x: 68.6,  y: 118.0, labelX: 72.1,  labelY: 112.0 },
+        { name: "F3",  x: 111.5, y: 125.9, labelX: 115.0, labelY: 119.9 },
+        { name: "Fz",  x: 158.0, y: 125.4, labelX: 161.5, labelY: 119.4 },
+        { name: "F4",  x: 204.4, y: 125.9, labelX: 207.9, labelY: 119.9 },
+        { name: "F8",  x: 247.4, y: 118.0, labelX: 250.9, labelY: 112.0 },
+        { name: "M1",  x: 54.1,  y: 169.3, labelX: 57.6,  labelY: 163.3 },
+        { name: "C3",  x: 111.6, y: 168.9, labelX: 115.1, labelY: 162.9 },
+        { name: "Cz",  x: 158.0, y: 170.0, labelX: 161.5, labelY: 164.0 },
+        { name: "C4",  x: 204.3, y: 168.9, labelX: 207.8, labelY: 162.9 },
+        { name: "M2",  x: 261.9, y: 169.3, labelX: 265.4, labelY: 163.3 },
+        { name: "P3",  x: 111.7, y: 211.2, labelX: 115.2, labelY: 205.2 },
+        { name: "P4",  x: 204.2, y: 211.2, labelX: 207.7, labelY: 205.2 },
+        { name: "O1",  x: 121.2, y: 262.8, labelX: 124.7, labelY: 256.8 },
+        { name: "O2",  x: 194.7, y: 262.8, labelX: 198.2, labelY: 256.8 }
     ]
 
-    // 设计稿里有 3 个电极套了一圈白环（当前关注点）
-    readonly property var highlightRings: [
-        { x: 133, y: 126 },
-        { x: 157, y: 127 },
-        { x: 179, y: 126 }
-    ]
+    // 只画当前档位（4/8/16）激活的电极 —— 与「电极贴合状态」面板同一套规则
+    // （Design.activeElectrodes 与 C++ 侧 display_channel_indices 同源）。
+    // 16 档返回空数组，表示全部显示
+    readonly property var electrodes: {
+        var active = Design.activeElectrodes(Acq.channelCount)
+        if (active.length === 0)
+            return electrodeTable
+        var out = []
+        for (var i = 0; i < electrodeTable.length; ++i) {
+            if (active.indexOf(electrodeTable[i].name) >= 0)
+                out.push(electrodeTable[i])
+        }
+        return out
+    }
+
+    // 设计稿里有 3 个电极套了一圈白环（当前关注点），落在额区中线那三路 F3 / Fz / F4 上。
+    // 只给当前档位里确实显示的电极加环，未显示的电极不留空环。
+    // x/y = 电极 16×16 圆点左上角 − 2，环 20×20 正好套住圆点
+    readonly property var highlightRings: {
+        var names = ["F3", "Fz", "F4"]
+        var out = []
+        for (var i = 0; i < electrodes.length; ++i) {
+            if (names.indexOf(electrodes[i].name) >= 0)
+                out.push({ x: electrodes[i].x - 2, y: electrodes[i].y - 2 })
+        }
+        return out
+    }
 
     // 色标条**不再自己抄一份色值**，而是取 Acq.topoPalette —— 与 C++ 画热力图
     // 用的是同一张表。设计稿那 16 段色值和实际渲染用的色标是两套，抄任何一套

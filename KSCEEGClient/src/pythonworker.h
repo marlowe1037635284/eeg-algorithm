@@ -88,10 +88,10 @@ public:
 signals:
     // 算法处理后的样本块（交错布局，单位 µV）：高通/低通 → 陷波 → 重参考 → ASR。
     //
-    // 波形显示**不再**消费它了 —— 显示通路在 GUI 线程上自己过一遍
-    // Python 滤波（见 AcquisitionBridge::pump_display），这样改参数时不会被
-    // 算法线程整条流水线重建带来的瞬变牵连。地形图与频谱用的仍是这份数据。
-    // 自检工具（run_bridge_selfcheck）还挂着它，用来确认算法线程确实在出块
+    // 波形显示、地形图、频谱用的都是这份数据 —— 三者走同一条通路，天然完全一致。
+    // AcquisitionBridge 以队列连接消费它，把波形喂进显示缓冲（见
+    // AcquisitionBridge::on_block_processed / pump_display）。
+    // 自检工具（run_bridge_selfcheck）也挂着它，用来确认算法线程确实在出块
     void block_processed(const SignalChunk &chunk);
     void session_opened(int config_version);
     void session_closed();

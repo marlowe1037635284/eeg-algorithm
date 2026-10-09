@@ -9,6 +9,7 @@
 #include <QTimer>
 
 #include "acquisitionbridge.h"
+#include "postprocess.h"
 #include "pythonengine.h"
 #include "pythonworker.h"
 #include "recordingpreview.h"
@@ -158,6 +159,9 @@ int main(int argc, char *argv[])
         // 与串口、算法会话、采集线程全无关系。
         // 同样**必须声明在 engine 之前** —— provider 里存着指向它的裸指针
         RecordingPreview preview;
+        // 「数据分析与后处理」页的全部计算。同样读磁盘上的记录文件，
+        // 与分析无关的事情一概不碰；重算走 QtConcurrent，不占 GUI 线程
+        PostProcess analysis;
 
         QQmlApplicationEngine engine;
         // 波形与地形图都由 C++ 画好交给 Image 贴。波形留在 QML Canvas 里画的话
@@ -169,10 +173,13 @@ int main(int argc, char *argv[])
                                 bridge.create_topo_image_provider());
         engine.addImageProvider(QStringLiteral("recording"),
                                 preview.create_image_provider());
+        engine.addImageProvider(QStringLiteral("analysis"),
+                                analysis.create_image_provider());
         // 注入成 QML 里的 Acq。用 setContextProperty 而不是注册 QML 类型：
         // 只有一个实例，没有多实例需求，注册类型反而要处理「谁来创建」的问题
         engine.rootContext()->setContextProperty(QStringLiteral("Acq"), &bridge);
         engine.rootContext()->setContextProperty(QStringLiteral("Recording"), &preview);
+        engine.rootContext()->setContextProperty(QStringLiteral("Analysis"), &analysis);
 
         QObject::connect(
             &engine,

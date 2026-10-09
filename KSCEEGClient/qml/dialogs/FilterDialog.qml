@@ -120,7 +120,7 @@ Item {
     Component.onCompleted: load_from_bridge()
 
     DialogFrame {
-        title: qsTr("滤波与后处理")
+        title: qsTr("滤波")
         cardX: 740
         cardY: 309
         cardWidth: 440
@@ -155,7 +155,7 @@ Item {
         Text {
             x: 26
             y: 166
-            text: qsTr("高通（去除漂移）")
+            text: qsTr("高通")
             color: "#3b3b3b"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -186,7 +186,7 @@ Item {
         Text {
             x: 26
             y: 240
-            text: qsTr("低通（平滑噪声）")
+            text: qsTr("低通")
             color: "#3b3b3b"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular

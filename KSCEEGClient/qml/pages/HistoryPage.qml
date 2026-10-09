@@ -21,8 +21,8 @@ Item {
     signal recordDeleteRequested(string recordNo)
     // 导出一条记录：落盘了原始数据就复制它，否则导出记录摘要
     signal recordExportRequested(string recordNo)
-    // 「分析」：后处理整屏。目前按钮不可用，留着这个信号是为了后处理接上去时
-    // 不用再改一次页面结构
+    // 「分析」：整屏的「数据分析与后处理」。页面自己不认识那一页，
+    // 只把记录号交回 Main，由它换页
     signal analysisRequested(string recordNo)
 
     // 设计稿的电极质量小胶囊：描边与文字同色，良好=绿、不良=橙（描边色即 #ff8d1a）。
@@ -264,9 +264,7 @@ Item {
                     x: 1429
                     y: rowY + 11
                     text: qsTr("分析")
-                    // 「数据分析与后处理」是另一整屏，还没实现。按钮留着（设计稿有），
-                    // 但压暗并说明原因 —— 点下去毫无反应比暂时不可用更让人困惑
-                    enabled: false
+                    // 「数据分析与后处理」是另一整屏，由 Main 换页（见 AnalysisPage）
                     onClicked: root.analysisRequested(modelData.no)
                 }
                 TableRowButton {

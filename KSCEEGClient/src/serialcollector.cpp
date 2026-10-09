@@ -148,6 +148,13 @@ struct RunState
     bool save_failed = false;
     QString save_error;
 
+    // 最近解析到的一帧阻抗（kΩ，16 路，无效为 -1）。
+    // parse_frames 交不出去（它 emit 不了信号、也碰不到成员），所以先放这里，
+    // 由 run() 在每轮末尾搬到线程安全的 m_latest_impedance。
+    // impedance_updated 是「这一轮解析到过新阻抗帧」的一次性标记
+    QVector<double> impedance_kohm;
+    bool impedance_updated = false;
+
     Recorder recorder;
 };
 
@@ -353,8 +360,24 @@ void parse_frames(RunState &state, int frame_size, int channel_count, int sample
     const qint64 sample_period_ns = 1000000000LL / std::max(1, sample_rate);
 
     QByteArray frame;
-    while (serial_protocol::take_frame(&state.rx_buffer, frame_size, &state.dropped_bytes, &frame))
+    serial_protocol::FrameKind kind = serial_protocol::FrameKind::Data;
+    while (serial_protocol::take_frame(&state.rx_buffer, frame_size, &state.dropped_bytes,
+                                       &frame, &kind))
     {
+        // 阻抗帧（B0…D0）不是脑电数据：解析出 16 路阻抗存下来，就直接跳过 ——
+        // 它既不进样本块（否则会当成 µV 混进波形），也不落盘。
+        // 放在 collecting 闸之前，是因为扫描时常在采集之中，此时 collecting 为真
+        if (kind == serial_protocol::FrameKind::Impedance)
+        {
+            const QVector<double> values = serial_protocol::parse_impedance_kohm(frame);
+            if (!values.isEmpty())
+            {
+                state.impedance_kohm = values;
+                state.impedance_updated = true;
+            }
+            continue;
+        }
+
         // 帧号只当观察值。协议里没有校验和，帧号既不参与任何运算、语义也未经确认
         // （是否回绕、是否在掉电后归零都不知道），所以不据此丢帧、也不据此声明
         // 数据缺口 —— 误判一次就要白清一次算法的滤波状态与滚动缓存
@@ -530,6 +553,30 @@ void SerialCollector::post_stop()
     m_commands.append(command);
 }
 
+void SerialCollector::post_impedance_start()
+{
+    Command command;
+    command.kind = CommandKind::ImpedanceStart;
+
+    const QMutexLocker locker(&m_command_mutex);
+    m_commands.append(command);
+}
+
+void SerialCollector::post_impedance_stop()
+{
+    Command command;
+    command.kind = CommandKind::ImpedanceStop;
+
+    const QMutexLocker locker(&m_command_mutex);
+    m_commands.append(command);
+}
+
+QVector<double> SerialCollector::latest_impedance_kohm() const
+{
+    const QMutexLocker locker(&m_impedance_mutex);
+    return m_latest_impedance;
+}
+
 // 采集线程主体：开串口 → 循环（执行命令 / 收字节 / 切帧解析 / 按节拍投递）
 // → 收尾关串口。整条命脉都在这一个函数里。
 //
@@ -688,6 +735,28 @@ void SerialCollector::run()
                 port.write(command.payload);
                 break;
             }
+            case CommandKind::ImpedanceStart:
+            {
+                // 清掉上一次扫描的残留：这次若没收到新帧，界面应报「未收到阻抗数据」，
+                // 而不是拿到上一次的旧值
+                {
+                    const QMutexLocker locker(&m_impedance_mutex);
+                    m_latest_impedance.clear();
+                }
+                port.write(QByteArray(1, serial_protocol::kCommandImpedanceStart));
+                break;
+            }
+            case CommandKind::ImpedanceStop:
+            {
+                // 's' 让设备停发（通常连常规数据帧一起停）。若当时正在采集，
+                // 立刻补发 'b' 把常规数据流接回来，否则界面会一直收不到脑电数据
+                port.write(QByteArray(1, serial_protocol::kCommandStop));
+                if (state.collecting)
+                {
+                    port.write(QByteArray(1, serial_protocol::kCommandStart));
+                }
+                break;
+            }
             }
         }
 
@@ -707,6 +776,14 @@ void SerialCollector::run()
 
         // ---- 3) 切帧、解析、落盘 ----
         parse_frames(state, frame_size, channel_count, m_config.sample_rate, m_raw_buffer);
+
+        // 解析到新阻抗帧就搬到线程安全的快照里，供 GUI 线程读取
+        if (state.impedance_updated)
+        {
+            state.impedance_updated = false;
+            const QMutexLocker locker(&m_impedance_mutex);
+            m_latest_impedance = state.impedance_kohm;
+        }
 
         if (state.save_failed)
         {
@@ -967,6 +1044,58 @@ int run_serial_selfcheck()
         const bool taken_now = serial_protocol::take_frame(&buffer, frame_size, &dropped, &frame);
         check_serial(taken_now && buffer.isEmpty() && frame == whole,
                      QStringLiteral("补足后立刻切出完整的一帧"));
+    }
+
+    // ---- 阻抗帧：切帧要认 B0…D0，数据帧仍认 A0…C0 ----
+    {
+        // 数据帧（A0…C0）要被认成 FrameKind::Data，别被阻抗帧的引入带偏
+        QVector<qint32> raw;
+        raw.fill(0, serial_protocol::kChannelCount);
+        QByteArray buffer = make_test_frame(1, raw);
+        QByteArray frame;
+        serial_protocol::FrameKind kind = serial_protocol::FrameKind::Impedance;
+        qint64 dropped = 0;
+        const bool taken =
+            serial_protocol::take_frame(&buffer, frame_size, &dropped, &frame, &kind);
+        check_serial(taken && kind == serial_protocol::FrameKind::Data,
+                     QStringLiteral("A0…C0 仍被识别为数据帧"));
+    }
+
+    {
+        // 真实样例帧：B0 起始、D0 结尾，16 路阻抗（单位 Ω，0xFFFFFF = -1 未连接）
+        const QByteArray impedance = QByteArray::fromHex(
+            "B007001450000C4E0030700022C40055F000125C003B6000189C0010040016A800238C000CE4006978FFFFFF001C20002A30D0");
+        check_serial(impedance.size() == frame_size,
+                     QStringLiteral("阻抗帧长 = %1（实际 %2）")
+                         .arg(frame_size).arg(impedance.size()));
+
+        QByteArray buffer = impedance;
+        QByteArray frame;
+        serial_protocol::FrameKind kind = serial_protocol::FrameKind::Data;
+        qint64 dropped = 0;
+        const bool taken =
+            serial_protocol::take_frame(&buffer, frame_size, &dropped, &frame, &kind);
+        check_serial(taken && buffer.isEmpty() && frame == impedance && dropped == 0
+                         && kind == serial_protocol::FrameKind::Impedance,
+                     QStringLiteral("B0…D0 被识别为阻抗帧并完整取出"));
+
+        // 手算：每路 3 字节大端有符号 24 位 Ω ÷ 1000 → kΩ；0xFFFFFF → -1（未连接）
+        const QVector<double> expected{5.2,  3.15, 12.4, 8.9, 22.0, 4.7,  15.2, 6.3,
+                                       4.1,  5.8,  9.1,  3.3, 27.0, -1.0, 7.2,  10.8};
+        const QVector<double> kohm = serial_protocol::parse_impedance_kohm(frame);
+        bool all_ok = (kohm.size() == expected.size());
+        if (all_ok)
+        {
+            for (int i = 0; i < kohm.size(); ++i)
+            {
+                if (!nearly(kohm.at(i), expected.at(i), 1e-9))
+                {
+                    all_ok = false;
+                    break;
+                }
+            }
+        }
+        check_serial(all_ok, QStringLiteral("样例阻抗帧解析出 16 路 kΩ 值与手算一致"));
     }
 
     if (g_serial_selfcheck_failures == 0)

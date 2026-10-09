@@ -2,7 +2,6 @@
 #define PYTHONENGINE_H
 
 #include <QString>
-#include <QVector>
 
 #include <memory>
 
@@ -35,7 +34,8 @@ public:
     //
     // 返回值的**完整含义**（调用方必须两个都看）：
     //   false              解释器没起来，error_message 是原因
-    //   true + error 非空   解释器起来了，但算法接口不可用（模块导入失败等）
+    //   true + error 非空   解释器起来了，但算法接口不可用（模块导入失败、
+    //                       接口主版本不受支持等）
     //   true + error 为空   一切正常
     // 只判断返回值的话，第二种情况下最有价值的那行原因会被丢掉
     bool start(QString *error_message);
@@ -58,29 +58,6 @@ public:
     QString project_dir() const;
     QString bridge_dir() const;
     QString venv_dir() const;
-
-    // ---- 显示通路的独立滤波（不经过算法线程）----
-    //
-    // 波形显示不复用算法线程的处理结果，而是自己跑一遍滤波：算法侧的滤波器状态
-    // 是按「输入恒为直流偏置」的稳态初始化的，一旦按真实信号启动/改参，IIR 状态
-    // 与信号不匹配就会冲出与直流偏置同量级的瞬变（几百 µV、要几秒才衰减）。
-    // 显示侧改用 Realtime_IIR.py —— C++ 侧在改参/启动后用本块首个样本把它的历史
-    // buffer 预热到稳态（seed_display_filter_history，思路同参考实现的 _zi_seed），
-    // 启动与改参都不会有瞬变（参考项目 pybindwithqt 就是这么做显示通路的）。
-    //
-    // 为什么放在这里而不是 acquisitionbridge：pybind11 必须先于 Qt 头文件包含，
-    // 而 acquisitionbridge.cpp 头一个 include 就是自己的头（内含 Qt），
-    // 没法再引入 pybind11。这里把 pybind11 关在 .cpp 里，对外只暴露普通类型。
-
-    // 按滤波参数重建显示侧滤波状态。channels 是显示缓冲的通道数（16）。
-    // 内部会重写 Realtime_IIR 的模块级 b/a 并清空历史 buffer，下一块数据进来时
-    // 由 C++ 侧用该块首帧完成稳态预热，于是「改参数」与「刚启动」都不会有瞬变
-    bool configure_display_filter(const ProcessingParams &params, int channels,
-                                  QString *error_message);
-    // 对一块交错样本做显示滤波。samples 的长度必须是 channels 的整数倍。
-    // 成功时把结果写进 out（同长度，float32）；失败返回 false 并填 error_message
-    bool process_display_filter(const float *samples, int total_samples, int channels,
-                                QVector<float> *out, QString *error_message);
 
 private:
     struct Impl;

@@ -181,19 +181,29 @@ Item {
                 onActivated: (index) => Analysis.downsampleIndex = index
             }
 
-            // ---------- ASR 去伪迹 ----------
-            SectionTitle { x: 25; y: 652; text: qsTr("ASR 去伪迹") }
+            // ---------- 伪迹检测 ----------
+            SectionTitle { x: 25; y: 652; text: qsTr("伪迹检测") }
             SwitchPill {
                 x: 340; y: 648
+                on_: Analysis.artifactDetectionEnabled
+                onToggled: Analysis.artifactDetectionEnabled = !Analysis.artifactDetectionEnabled
+            }
+
+            PanelDivider { x: 21; y: 692; width: 373 }
+
+            // ---------- ASR 去伪迹 ----------
+            SectionTitle { x: 25; y: 704; text: qsTr("ASR 去伪迹") }
+            SwitchPill {
+                x: 340; y: 700
                 on_: Analysis.asrEnabled
                 onToggled: Analysis.asrEnabled = !Analysis.asrEnabled
             }
 
-            RowLabel { x: 25; y: 696; text: qsTr("Cutoff 程度") }
+            RowLabel { x: 25; y: 748; text: qsTr("Cutoff 程度") }
 
             // 滑块：值域 5~100，与 C++ 侧 set_asr_cutoff 的夹取范围一致
             Item {
-                x: 150; y: 688
+                x: 150; y: 740
                 width: 200
                 height: 30
                 opacity: Analysis.asrEnabled ? 1.0 : 0.45
@@ -240,7 +250,7 @@ Item {
 
             Text {
                 x: 352
-                y: 693
+                y: 745
                 width: 38
                 height: 20
                 horizontalAlignment: Text.AlignRight
@@ -250,16 +260,6 @@ Item {
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
                 font.pixelSize: 15
-            }
-
-            PanelDivider { x: 21; y: 734; width: 373 }
-
-            // ---------- 伪迹检测 ----------
-            SectionTitle { x: 25; y: 746; text: qsTr("伪迹检测") }
-            SwitchPill {
-                x: 340; y: 742
-                on_: Analysis.artifactDetectionEnabled
-                onToggled: Analysis.artifactDetectionEnabled = !Analysis.artifactDetectionEnabled
             }
 
             PanelDivider { x: 21; y: 786; width: 373 }

@@ -120,6 +120,9 @@ Item {
         frozen = false
         elapsedSeconds = 0
         Acq.clear_events()
+        // 开始采集时把阻抗扫描关掉：先复位面板上可能还在跑的扫描动画，
+        // 再由 C++ 侧的 start_collection() 发 's' 让设备停发阻抗帧、切回脑电数据流
+        electrodePanel.cancelScan()
         Acq.start_collection(recordDir)
     }
 

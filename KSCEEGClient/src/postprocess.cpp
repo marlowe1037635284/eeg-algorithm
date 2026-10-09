@@ -808,8 +808,10 @@ QImage render_spectrum_image(const Psd &psd, double f_min, double f_max,
 }
 
 // 通道相关性矩阵。正相关偏红、负相关偏绿（与设计稿一致），
-// 复用地形图那套「白底 → 饱和色」的插值思路，只是换成发散色标
-QImage render_correlation_image(const QVector<QVector<double>> &matrix, int size)
+// 复用地形图那套「白底 → 饱和色」的插值思路，只是换成发散色标。
+// highlight 落在有效范围时，给该通道的整行、整列描一圈边（十字准星）：
+// 与下方「当前导联」联动，一眼看出该导联与其余各路的相关系数分布
+QImage render_correlation_image(const QVector<QVector<double>> &matrix, int size, int highlight)
 {
     const int count = matrix.size();
     QImage image(std::max(2, size), std::max(2, size), QImage::Format_ARGB32_Premultiplied);
@@ -845,6 +847,19 @@ QImage render_correlation_image(const QVector<QVector<double>> &matrix, int size
             painter.fillRect(QRect(x0, y0, x1 - x0, y1 - y0), color);
         }
     }
+
+    // 所选通道的十字准星。往格内内缩 1 px，2 px 的线不至于糊到相邻格上
+    if (highlight >= 0 && highlight < count)
+    {
+        const int first = static_cast<int>(std::lround(highlight * cell));
+        const int last = static_cast<int>(std::lround((highlight + 1) * cell));
+        const int span = last - first;
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(0x70, 0x92, 0xab), 2));
+        painter.drawRect(QRect(1, first + 1, size - 2, span - 2));
+        painter.drawRect(QRect(first + 1, 1, span - 2, size - 2));
+    }
+
     return image;
 }
 
@@ -1861,13 +1876,26 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                  + QString::fromUtf8(kBands[dominant].name)},
         });
 
-        QVariantList share_list;
+        // 该通道的五档绝对功率（Welch 平均功率谱密度，µV²/Hz）。统计页右上那五根
+        // 大柱随「当前导联」切换，读的就是这里 —— 与整段全通道平均（band_distribution）
+        // 同口径、同一份 spectra，只是不做跨通道平均
+        QVector<double> band_psd(kBandCount, 0.0);
         for (int band = 0; band < kBandCount; ++band)
+            band_psd[band] = band_mean_psd(spectra.at(channel), kBands[band].low_hz,
+                                           kBands[band].high_hz);
+
+        QVariantList share_list;
+        QVariantList psd_list;
+        for (int band = 0; band < kBandCount; ++band)
+        {
             share_list.append(share.at(band));
+            psd_list.append(band_psd.at(band));
+        }
         channel_bands.append(QVariantMap{
             {QStringLiteral("name"), name},
             {QStringLiteral("color"), color},
             {QStringLiteral("ratio"), share_list},
+            {QStringLiteral("mean"), psd_list},
         });
     }
     result.channel_stats = channel_stats;
@@ -1912,8 +1940,10 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
 
     // ---------- 11. 通道相关性 ----------
     // 算法的 correlation_matrix 就是逐通道的 Pearson 相关（np.corrcoef），
-    // 直接拿来配色标，不必在这里按定义重算一遍
-    result.correlation_image = render_correlation_image(output.correlation, 420);
+    // 直接拿来配色标，不必在这里按定义重算一遍。矩阵数值与窗口无关，
+    // 但十字准星跟着「当前导联」走 —— 换导联时整条流水线本来就重算，这里顺带重画出图
+    result.correlation_image =
+        render_correlation_image(output.correlation, 420, job.current_channel);
 
     // ---------- 12. 质检 ----------
     // 检测口径（弱信号 / 范围外值 / 低相关）与阈值都交给算法，这里只把返回的片段

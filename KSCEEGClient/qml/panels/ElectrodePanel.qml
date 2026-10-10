@@ -19,7 +19,7 @@ Item {
     property bool scanning: false
     property string scanError: ""
 
-    // 设备实际采到的 16 路。有扫描结果就按结果走，否则退回设计稿那套静态示意
+    // 设备实际采到的 16 路。有扫描结果就按结果走，没有则退回「未扫描」全灰默认
     readonly property var quality: Acq.electrodeScanValid ? Acq.electrodeQuality : []
     readonly property bool hasScan: quality.length > 0
 
@@ -62,25 +62,16 @@ Item {
         return table
     }
 
-    // 设计稿那套静态示意值。没做过扫描时用，保证打开就是设计稿的样子
-    readonly property var placeholder: [
-        { name: "Fp1", text: "—", level: "良好", ratio: 0.26 },
-        { name: "Fp2", text: "—", level: "一般", ratio: 0.52 },
-        { name: "F3",  text: "—", level: "不良", ratio: 0.62 },
-        { name: "F4",  text: "—", level: "脱落", ratio: 0.19 },
-        { name: "C3",  text: "—", level: "良好", ratio: 0.30 },
-        { name: "C4",  text: "—", level: "良好", ratio: 0.28 },
-        { name: "P3",  text: "—", level: "一般", ratio: 0.42 },
-        { name: "P4",  text: "—", level: "脱落", ratio: 0.15 },
-        { name: "O1",  text: "—", level: "良好", ratio: 0.32 },
-        { name: "O2",  text: "—", level: "良好", ratio: 0.34 },
-        { name: "F7",  text: "—", level: "一般", ratio: 0.47 },
-        { name: "F8",  text: "—", level: "不良", ratio: 0.58 },
-        { name: "T3",  text: "—", level: "良好", ratio: 0.29 },
-        { name: "T4",  text: "—", level: "良好", ratio: 0.27 },
-        { name: "T5",  text: "—", level: "良好", ratio: 0.35 },
-        { name: "T6",  text: "—", level: "良好", ratio: 0.36 }
-    ]
+    // 未扫描时的默认行：设备那 16 路，全部按「未扫描」灰色展示。
+    // 没有实测阻抗，进度条留空（ratio 0）。**不能**再摆设计稿那套假的
+    // 良好/一般/不良/脱落示意值 —— 否则用户一打开软件就以为已经扫过一遍了
+    readonly property var unscanned: {
+        var list = Acq.electrodeMap
+        var out = []
+        for (var i = 0; i < list.length; ++i)
+            out.push({ name: list[i].name, text: "—", level: "未扫描", ratio: 0.0 })
+        return out
+    }
 
     // 当前档位（4/8/16）下头型图上**激活**的电极名。未激活的位置在头型图上只画
     // 浅灰占位点；16 档返回空数组，表示全部激活（见 Design.activeElectrodes，
@@ -94,7 +85,7 @@ Item {
     // **只列当前档位激活的通道** —— 头型图上没亮的电极不该出现在列表里，
     // 8 档列 8 行、4 档列 4 行
     readonly property var rows: {
-        var source = hasScan ? quality : placeholder
+        var source = hasScan ? quality : unscanned
         var out = []
         for (var i = 0; i < source.length; ++i) {
             if (isActive(source[i].name))
@@ -108,8 +99,8 @@ Item {
     readonly property real maxScroll: Math.max(0, rows.length * rowHeight - viewHeight)
 
     // 头部图上某个点位对应的接触等级。
-    // 数据源与下方列表**同一份**（rows）：有扫描结果是设备 16 路，没有则是设计稿
-    // 示意值 —— 两边同源，同名字的电极在图上与列表里永远是同一个档位。
+    // 数据源与下方列表**同一份**（rows）：有扫描结果是设备 16 路，没有则是
+    // 「未扫描」全灰默认行 —— 两边同源，同名字的电极在图上与列表里永远是同一个档位。
     // 图上那 16 个位置就是设备那 16 路，名字全部能对上；万一有对不上的点，
     // 取最近的几路做反距离加权、取最差档兜底
     function levelAtPoint(name, pointX, pointY) {
@@ -457,7 +448,7 @@ Item {
                 Rectangle {
                     x: 46
                     y: rowY + 10
-                    width: 168
+                    width: 150
                     height: 10
                     radius: 5
                     color: Qt.rgba(0, 0, 0, 0.07)
@@ -466,19 +457,19 @@ Item {
                 Rectangle {
                     x: 46
                     y: rowY + 10
-                    width: 168 * modelData.ratio
+                    width: 150 * modelData.ratio
                     height: 10
                     radius: 5
                     color: Design.impedanceColor(modelData.level)
                 }
 
                 // 数值列：右对齐。阻抗文案（如「122.4kΩ」）比原来 50px 的列宽，
-                // 之前会溢出到右侧把等级文字压住 —— 这里加宽到 70 并右对齐，
+                // 之前会溢出到右侧把等级文字压住 —— 这里加宽并右对齐，
                 // 保证「kΩ」贴齐等级列左侧留出间隙，不再互相遮挡
                 Text {
-                    x: 218
+                    x: 198
                     y: rowY
-                    width: 70
+                    width: 72
                     height: 28
                     horizontalAlignment: Text.AlignRight
                     verticalAlignment: Text.AlignVCenter
@@ -489,11 +480,15 @@ Item {
                     font.pixelSize: 14
                 }
 
+                // 等级列：右对齐，右边缘固定 316（面板 331 / 滚动条 319 之内）。
+                // 宽度给到 42 是为了容下三字的「未扫描」—— 之前只有 32，两个汉字
+                // 刚好够，三个字会一路溢出到面板右边界之外
                 Text {
-                    x: 292
+                    x: 274
                     y: rowY
-                    width: 32
+                    width: 42
                     height: 28
+                    horizontalAlignment: Text.AlignRight
                     verticalAlignment: Text.AlignVCenter
                     text: modelData.level
                     color: Design.impedanceColor(modelData.level)

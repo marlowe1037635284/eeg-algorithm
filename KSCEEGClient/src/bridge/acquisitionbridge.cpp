@@ -1363,14 +1363,15 @@ QStringList AcquisitionBridge::channel_names() const
 
 QStringList AcquisitionBridge::channel_colors() const
 {
-    // 配色表收在 eeg_montage 里（实时波形、回放预览、后处理三处同源）；
-    // 8 个颜色一循环，16 通道时后 8 路沿用同一张表取色
+    // 配色表收在 eeg_montage 里（实时波形、回放预览、后处理三处同源），
+    // 下标即通道序号，所以这里按**该路在蒙太奇里的序号**取色，而不是按屏幕上的
+    // 第几条泳道 —— 否则切到 8 通道档时 F3 会被涂成 F7 的颜色
     const QStringList palette = eeg_montage::channel_colors();
     QStringList colors;
     const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
-    for (int i = 0; i < indices.size(); ++i)
+    for (const int index : indices)
     {
-        colors.append(palette.at(i % palette.size()));
+        colors.append(palette.at(index % palette.size()));
     }
     return colors;
 }

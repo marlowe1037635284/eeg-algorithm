@@ -149,8 +149,11 @@ QtObject {
     }
 
     // ---------- 波形通道 ----------
-    // 8 个通道各自的曲线颜色，取自设计稿
-    readonly property var channelColors: ["#0e9fbf", "#36a772", "#daa82a", "#e07a2e",
-                                          "#d675a4", "#876ee3", "#299fbb", "#6baa40"]
+    // 16 个通道各自的曲线颜色，下标对应通道序号，与 C++ 的
+    // eeg_montage::channel_colors() 是同一套色值（两处必须一致）
+    readonly property var channelColors: ["#8e44ad", "#c2185b", "#e2582a", "#f0a02e",
+                                          "#e8c019", "#ef6f6c", "#96c93d", "#2fa85a",
+                                          "#22b8d8", "#16a085", "#3f7bd8", "#2f56c8",
+                                          "#6a5acd", "#a05fc0", "#4b3fa0", "#e64980"]
     readonly property var channelNames: ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4"]
 }

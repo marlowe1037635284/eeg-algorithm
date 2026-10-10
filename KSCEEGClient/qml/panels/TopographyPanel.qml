@@ -61,6 +61,50 @@ Item {
         return out
     }
 
+    // 本帧地形图的峰值电极名：C++ 侧 topoStats[0]，就是功率最大的那一路
+    //（见 pythonworker.cpp fill_electrode_stats，逐电极取 argmax）。
+    // 没出图时配色上限是 0，C++ 给的是一排「—」，这里直接判空返回，
+    // 徽标随之隐藏 —— 一进界面、还没出图时不该有峰值标记
+    readonly property string peakElectrodeName: {
+        if (Acq.topoScaleMax <= 0.0)
+            return ""
+        var stats = Acq.topoStats
+        return (stats && stats.length > 0) ? stats[0] : ""
+    }
+
+    // 「峰值」徽标该落在哪：跟着峰值电极走。
+    // 优先在面板这套点位表里按名字查（徽标正好压在那个电极圆点上）；
+    // 查不到（设备那套里的 T5/T6 等本面板没有的点位）再退回 Acq.electrodeMap
+    // 的设备坐标，按与热力图同一套换算（相对头半径的百分比）落到头型圆内。
+    // 没出图、或名字对不上任何点位 → null，徽标不显示
+    readonly property var peakPlacement: {
+        var name = peakElectrodeName
+        if (name.length === 0)
+            return null
+
+        for (var i = 0; i < electrodes.length; ++i) {
+            if (electrodes[i].name === name)
+                return badgePlacement(electrodes[i].x + 8, electrodes[i].y + 8)
+        }
+
+        // 本面板头圆圆心 (166,178)、半径 106（与 electrodeTable 同一套换算）。
+        // 设备那套里的 T3/T4/T5/T6 本面板点位表没有，按设备坐标落进来，
+        // 位置仍与已画出的点基本重合（T3→M1 点、T4→M2 点各差 3px）
+        var list = Acq.electrodeMap
+        for (var j = 0; j < list.length; ++j) {
+            if (list[j].name === name)
+                return badgePlacement(166 + list[j].x / 100.0 * 106,
+                                      178 + list[j].y / 100.0 * 106)
+        }
+        return null
+    }
+
+    // 徽标是 41×22 的气泡，箭头尖在 (20.5, 22)。让尖点落在电极圆心：
+    // 徽标左上角 = 圆心 − (20.5, 22)
+    function badgePlacement(centerX, centerY) {
+        return { x: centerX - 20.5, y: centerY - 22 }
+    }
+
     // 色标条**不再自己抄一份色值**，而是取 Acq.topoPalette —— 与 C++ 画热力图
     // 用的是同一张表。设计稿那 16 段色值和实际渲染用的色标是两套，抄任何一套
     // 都会与图对不上，而色标是按图读值的唯一依据。
@@ -225,28 +269,37 @@ Item {
         }
     }
 
-    // 「峰值」小徽标
-    Image {
-        x: 168
-        y: 102
+    // 「峰值」小徽标：位置由 peakPlacement 决定（跟着本帧功率最大的电极走），
+    // 没出图 / 峰值电极没匹配到任何点位时 peakPlacement 为 null，整块不显示
+    Item {
+        id: peakMarker
+        x: root.peakPlacement ? root.peakPlacement.x : 0
+        y: root.peakPlacement ? root.peakPlacement.y : 0
         width: 41
         height: 22
-        source: Design.assetRoot + "icons/peak-badge.svg"
-        fillMode: Image.Stretch
-    }
+        visible: root.peakPlacement !== null
 
-    Text {
-        x: 177
-        y: 103
-        width: 24
-        height: 16
-        horizontalAlignment: Text.AlignHCenter
-        verticalAlignment: Text.AlignVCenter
-        text: qsTr("峰值")
-        color: "#ffffff"
-        font.family: Design.fontFamily
-        font.styleName: Design.styleRegular
-        font.pixelSize: 12
+        Image {
+            anchors.fill: parent
+            source: Design.assetRoot + "icons/peak-badge.svg"
+            fillMode: Image.Stretch
+        }
+
+        // 文字居中于气泡本体。气泡 41×22、箭头尖在 (20.5,22)，
+        // 圆角气泡有效区偏上，故文字上移 1px
+        Text {
+            x: 9
+            y: 1
+            width: 24
+            height: 16
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: qsTr("峰值")
+            color: "#ffffff"
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 12
+        }
     }
 
     // ---------- 色标 ----------

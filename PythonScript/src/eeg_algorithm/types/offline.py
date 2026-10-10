@@ -161,6 +161,14 @@ class OfflineStatisticsQuery:
 
 
 @dataclass(frozen=True)
+class OfflineQualityQuery:
+    request_id: int
+    preprocess_version: int
+    selected_range: AbsoluteTimeRange
+    quality_control: QualityControlConfig
+
+
+@dataclass(frozen=True)
 class PreprocessedDataset:
     preprocess_version: int
     layout: ChannelLayout

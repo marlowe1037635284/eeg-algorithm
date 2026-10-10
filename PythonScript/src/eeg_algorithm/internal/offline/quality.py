@@ -20,16 +20,12 @@ AMPLITUDE_OUTLIER = "amplitude_outlier"
 LOW_CORRELATION = "low_correlation"
 
 
-def run_quality_control(
+def detect_quality(
     signal: SignalBlock,
     layout: ChannelLayout,
     config: QualityControlConfig,
-) -> tuple[SignalBlock, QualityReport]:
-    """执行离线质检，可选线性插值修复。
-
-    始终返回质检报告（检测到的异常段列表 + 逐样本掩码）；
-    repair_enabled 为 True 时对异常样本做线性插值修复并返回修复后的信号。
-    """
+) -> QualityReport:
+    """只执行质检检测（不修改信号），返回质检报告。"""
     values = signal.values
     empty = np.zeros(values.shape, dtype=np.bool_)
 
@@ -53,15 +49,35 @@ def run_quality_control(
     segments += _extract_segments(amplitude_mask, channel_names, timestamps, AMPLITUDE_OUTLIER)
     segments += _extract_segments(correlation_mask, channel_names, timestamps, LOW_CORRELATION)
 
-    repaired = config.repair_enabled and bool(combined_mask.any())
-    if repaired:
-        values = _repair_by_linear_interpolation(values, combined_mask)
-
-    report = QualityReport(
+    return QualityReport(
         segments=tuple(segments),
         artifact_mask=np.ascontiguousarray(combined_mask),
-        repaired=repaired,
+        repaired=False,
     )
+
+
+def run_quality_control(
+    signal: SignalBlock,
+    layout: ChannelLayout,
+    config: QualityControlConfig,
+) -> tuple[SignalBlock, QualityReport]:
+    """执行离线质检，可选线性插值修复。
+
+    始终返回质检报告（检测到的异常段列表 + 逐样本掩码）；
+    repair_enabled 为 True 时对异常样本做线性插值修复并返回修复后的信号。
+    """
+    report = detect_quality(signal, layout, config)
+    combined_mask = report.artifact_mask
+
+    values = signal.values
+    if config.repair_enabled and bool(combined_mask.any()):
+        values = _repair_by_linear_interpolation(values, combined_mask)
+        report = QualityReport(
+            segments=report.segments,
+            artifact_mask=report.artifact_mask,
+            repaired=True,
+        )
+
     return copy_block(signal, np.ascontiguousarray(values, dtype=np.float32)), report
 
 

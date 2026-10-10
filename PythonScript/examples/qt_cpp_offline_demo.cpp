@@ -159,12 +159,20 @@ int main(int argc, char** argv) {
         std::cout << "频带能量: " << band_energies.shape(0) << "x" << band_energies.shape(1) << std::endl;
         std::cout << "频带名称: " << py::str(band_names).cast<std::string>() << std::endl;
 
-        // 12. 查看离线会话状态
+        // 12. 查询离线质检（在预处理后选段数据上独立检测，只检测不修改数据）
+        py::object qc = types_mod.attr("QualityControlConfig")();
+        py::object quality_query = types_mod.attr("OfflineQualityQuery")(
+            4, version, selected, qc);
+        py::object quality = api.attr("query_offline_quality")(session_id, quality_query);
+        py::tuple segments = quality.attr("segments").cast<py::tuple>();
+        std::cout << "质检异常段数量: " << segments.size() << std::endl;
+
+        // 13. 查看离线会话状态
         py::object status = api.attr("get_offline_status")(session_id);
         std::string state = status.attr("state").attr("value").cast<std::string>();
         std::cout << "离线状态: " << state << std::endl;
 
-        // 13. 关闭（释放全部会话与资源）
+        // 14. 关闭（释放全部会话与资源）
         api.attr("close")();
         std::cout << "已关闭 API" << std::endl;
     } catch (const py::error_already_set& e) {

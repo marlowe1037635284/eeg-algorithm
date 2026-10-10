@@ -9,6 +9,7 @@ from .offline import (
     LowPassConfig,
     NotchConfig,
     OfflineAsrConfig,
+    OfflineQualityQuery,
     OfflineReferenceConfig,
     OfflineSessionStatus,
     OfflineSpectrumQuery,

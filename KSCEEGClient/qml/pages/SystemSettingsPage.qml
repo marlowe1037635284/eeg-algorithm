@@ -46,7 +46,7 @@ Item {
     // ---------- 设置项草稿 ----------
     // 打开页面时从库里读一次，之后改的是本地副本；点「保存设置」才整体写回。
     // 边改边写的话，改错了连反悔的机会都没有
-    property string recordDir: "D:\\EEGData\\Records"
+    property string recordDir: Acq.defaultRecordDir
     property int saveIntervalIndex: 1
     property int fileFormatIndex: 0
     property int channelCountIndex: 2
@@ -64,7 +64,7 @@ Item {
     function loadSettings() {
         if (!database)
             return
-        recordDir = database.setting("record_dir", "D:\\EEGData\\Records")
+        recordDir = database.setting("record_dir", Acq.defaultRecordDir)
         saveIntervalIndex = Math.max(0, saveIntervalValues.indexOf(
                                         database.setting("auto_save_minutes", "10")))
         fileFormatIndex = Math.max(0, fileFormatValues.indexOf(

@@ -12,7 +12,6 @@
 #include <QPolygonF>
 #include <QThread>
 #include <QSerialPortInfo>
-#include <QStandardPaths>
 #include <QtMath>
 
 #include <cstring>
@@ -52,14 +51,11 @@ constexpr int kTopographyImageSize = 256;
 // 队列只在算法投递追不上界面重绘时才会积压
 constexpr int kDisplayPendingCapacity = 64;
 
-// 落盘目录：%LOCALAPPDATA%\EEG-KSC\records
+// 落盘目录：程序执行目录下的 records 子目录
+// 默认落在 exe 旁边，方便随程序一起拷贝/归档，不依赖 %LOCALAPPDATA%
 QString default_record_directory()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    if (base.isEmpty())
-    {
-        base = QDir::tempPath() + QStringLiteral("/EEG-KSC");
-    }
+    const QString base = QCoreApplication::applicationDirPath();
     return QDir::fromNativeSeparators(base) + QStringLiteral("/records");
 }
 
@@ -1326,6 +1322,11 @@ void AcquisitionBridge::set_dc_removal(bool enabled)
     // 下一帧就会按新设置重画，不用额外通知：波形每 33ms 重画一次，
     // 而 dcRemovalChanged 只用于让界面上的开关回读状态
     emit dcRemovalChanged();
+}
+
+QString AcquisitionBridge::default_record_dir() const
+{
+    return default_record_directory();
 }
 
 QStringList AcquisitionBridge::channel_names() const

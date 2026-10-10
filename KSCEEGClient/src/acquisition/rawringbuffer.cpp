@@ -1,4 +1,4 @@
-#include "rawringbuffer.h"
+#include "acquisition/rawringbuffer.h"
 
 #include <QMutexLocker>
 

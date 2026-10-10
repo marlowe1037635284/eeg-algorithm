@@ -1,4 +1,4 @@
-#include "acquisitionbridge.h"
+#include "bridge/acquisitionbridge.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -19,11 +19,11 @@
 #include <functional>
 #include <limits>
 
-#include "eegmontage.h"
-#include "pythonengine.h"
-#include "serialprotocol.h"
-#include "topographypalette.h"
-#include "bridgeimageproviders.h"
+#include "common/eegmontage.h"
+#include "algorithm/pythonengine.h"
+#include "acquisition/serialprotocol.h"
+#include "common/topographypalette.h"
+#include "bridge/bridgeimageproviders.h"
 
 #include <algorithm>
 #include <cmath>

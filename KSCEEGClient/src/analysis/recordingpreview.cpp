@@ -1,4 +1,4 @@
-#include "recordingpreview.h"
+#include "analysis/recordingpreview.h"
 
 #include <QDateTime>
 #include <QDebug>
@@ -9,8 +9,8 @@
 #include <cmath>
 #include <cstring>
 
-#include "eegbinformat.h"
-#include "eegmontage.h"
+#include "common/eegbinformat.h"
+#include "common/eegmontage.h"
 
 namespace
 {

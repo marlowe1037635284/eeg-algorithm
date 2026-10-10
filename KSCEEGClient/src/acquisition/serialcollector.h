@@ -11,8 +11,8 @@
 
 #include <atomic>
 
-#include "eegtypes.h"
-#include "rawringbuffer.h"
+#include "common/eegtypes.h"
+#include "acquisition/rawringbuffer.h"
 
 // 数据块的消费者。采集线程不关心谁在消费、也不关心有几个 ——
 // 它只按返回值决定「这一块算不算送出去了」。

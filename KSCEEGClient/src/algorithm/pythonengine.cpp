@@ -18,9 +18,9 @@
 #define NOMINMAX
 #include <windows.h>
 
-#include "eegmontage.h"
-#include "pythonengine.h"
-#include "pythontypes.h"
+#include "common/eegmontage.h"
+#include "algorithm/pythonengine.h"
+#include "algorithm/pythontypes.h"
 
 #include <cstring>
 #include <string>

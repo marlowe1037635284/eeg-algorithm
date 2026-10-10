@@ -14,10 +14,10 @@
 
 #include <atomic>
 
-#include "eegtypes.h"
-#include "pythonworker.h"
-#include "rawringbuffer.h"
-#include "serialcollector.h"
+#include "common/eegtypes.h"
+#include "algorithm/pythonworker.h"
+#include "acquisition/rawringbuffer.h"
+#include "acquisition/serialcollector.h"
 
 class QQuickImageProvider;
 class PythonEngine;

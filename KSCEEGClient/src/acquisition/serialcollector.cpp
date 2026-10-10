@@ -1,8 +1,8 @@
-#include "serialcollector.h"
+#include "acquisition/serialcollector.h"
 
-#include "eegbinformat.h"
-#include "pythonengine.h"
-#include "serialprotocol.h"
+#include "common/eegbinformat.h"
+#include "algorithm/pythonengine.h"
+#include "acquisition/serialprotocol.h"
 
 #include <QDateTime>
 #include <QDebug>

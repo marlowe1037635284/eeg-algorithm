@@ -5,7 +5,7 @@
 
 #include <memory>
 
-#include "eegtypes.h"
+#include "common/eegtypes.h"
 
 // 嵌入式 CPython 解释器的生命周期门面。
 //

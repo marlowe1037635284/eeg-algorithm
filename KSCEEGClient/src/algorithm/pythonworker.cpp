@@ -15,10 +15,10 @@
 #include <QStringList>
 #include <QThread>
 
-#include "eegmontage.h"
-#include "pythonengine.h"
-#include "pythontypes.h"
-#include "pythonworker.h"
+#include "common/eegmontage.h"
+#include "algorithm/pythonengine.h"
+#include "algorithm/pythontypes.h"
+#include "algorithm/pythonworker.h"
 
 #include <cmath>
 #include <functional>

@@ -1,4 +1,4 @@
-#include "postprocess.h"
+#include "analysis/postprocess.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -20,10 +20,10 @@
 #include <cstring>
 #include <limits>
 
-#include "eegbinformat.h"
-#include "eegmontage.h"
-#include "offlinealgorithm.h"
-#include "topographypalette.h"
+#include "common/eegbinformat.h"
+#include "common/eegmontage.h"
+#include "algorithm/offlinealgorithm.h"
+#include "common/topographypalette.h"
 
 namespace
 {

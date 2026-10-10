@@ -164,8 +164,9 @@ public:
     // 而 open_port 只表示「已发起」（异步打开），发起后立刻弹框会先显示成「未连接」
     Q_INVOKABLE bool connect_device();
     // 开始采集：开串口（若未开）、建算法会话、开始落盘。
-    // 串口连接在 connect_device() 里已经做过；这里只兜底（直接调用本函数的场景）
-    Q_INVOKABLE bool start_collection(const QString &directory);
+    // 串口连接在 connect_device() 里已经做过；这里只兜底（直接调用本函数的场景）。
+    // patient_no 非空时按患者建子目录落盘（目录名用病历号，不用姓名）
+    Q_INVOKABLE bool start_collection(const QString &directory, const QString &patient_no = QString());
     Q_INVOKABLE void stop_collection();
     Q_INVOKABLE void reset_session();
     Q_INVOKABLE void clear_error();

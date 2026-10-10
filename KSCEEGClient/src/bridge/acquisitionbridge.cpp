@@ -59,6 +59,19 @@ QString default_record_directory()
     return QDir::fromNativeSeparators(base) + QStringLiteral("/records");
 }
 
+// 患者子目录名：用病历号（P-0001 这类），**不用姓名**。
+// 姓名带空格、生僻字，既不好找也不稳定；病历号才是稳定标识。
+// 病历号允许手填，这里把 Windows 不允许出现在文件名里的字符换成下划线，
+// 免得一个 '/' 或 ':' 就让建目录直接失败
+QString patient_folder_name(const QString &patient_no)
+{
+    QString name = patient_no.trimmed();
+    static const QString invalid = QStringLiteral("\\/:*?\"<>|");
+    for (const QChar ch : invalid)
+        name.replace(ch, QLatin1Char('_'));
+    return name;
+}
+
 // 把地形图网格画成一张方形图。
 //
 // 头型掩膜之外画成**透明**：算法会把掩膜外的值置 0，而 0 在掩膜内也是合法功率，
@@ -523,7 +536,7 @@ bool AcquisitionBridge::connect_device()
     return m_port_open;
 }
 
-bool AcquisitionBridge::start_collection(const QString &directory)
+bool AcquisitionBridge::start_collection(const QString &directory, const QString &patient_no)
 {
     // 演示模式下已经在灌数据了，不需要串口也不需要落盘
     if (m_demo_enabled)
@@ -551,8 +564,14 @@ bool AcquisitionBridge::start_collection(const QString &directory)
 
     // 目录不存在时由采集线程的 recording_start() 建出来（它本来就要处理
     // 落盘失败的各种情况，建目录属于同一件事），这里不重复
-    const QString folder = directory.trimmed().isEmpty() ? default_record_directory()
-                                                        : directory.trimmed();
+    QString folder = directory.trimmed().isEmpty() ? default_record_directory()
+                                                   : directory.trimmed();
+    // 按患者分目录：同一台机器上多位患者的记录各自成夹，便于整份归档/删除。
+    // 夹名用病历号而不是姓名（见 patient_folder_name）
+    const QString patient_dir = patient_folder_name(patient_no);
+    if (!patient_dir.isEmpty())
+        folder = QDir(folder).filePath(patient_dir);
+
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     request.save_path = QDir(folder).filePath(stamp + QStringLiteral(".eegbin"));
     // 同一秒内重复开始会撞名，加后缀而不是覆盖 —— 覆盖会静默丢掉上一段

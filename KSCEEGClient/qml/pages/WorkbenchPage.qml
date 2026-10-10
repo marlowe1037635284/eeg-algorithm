@@ -184,6 +184,7 @@ Item {
     // ---------- 左侧导航条（与各业务页共用同一个组件）----------
     AppNavRail {
         current: root.selectedNav
+        userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
     }
 

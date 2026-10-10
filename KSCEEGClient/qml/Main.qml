@@ -65,6 +65,11 @@ ApplicationWindow {
     readonly property string defaultUserName: qsTr("管理员")
     readonly property string defaultUserRole: qsTr("管理员")
 
+    // 只有管理员能进「用户管理」。角色为空（未登录）时按登录页给的默认口径走，
+    // 与顶栏显示的角色保持同一个判断
+    readonly property bool isAdmin: (currentUserRole.length > 0 ? currentUserRole : defaultUserRole)
+                                    === defaultUserRole
+
     // 应用数据库：账号、偏好、患者共用同一个实例。
     //
     // 做成 Main 里的一个对象再显式传给需要的页面/弹窗，而不是让各处自己去开
@@ -181,7 +186,12 @@ ApplicationWindow {
         else if (label === qsTr("历史记录"))
             currentPage = "history"
         else if (label === qsTr("用户管理"))
-            currentPage = "user"
+        {
+            // 非管理员在导航条里看不到这一项。这里再挡一道：万一被别处触发，
+            // 也不让「用户管理」页切过去
+            if (window.isAdmin)
+                currentPage = "user"
+        }
         else if (label === qsTr("系统设置"))
             currentPage = "settings"
     }

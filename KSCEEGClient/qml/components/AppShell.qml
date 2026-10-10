@@ -58,6 +58,7 @@ Item {
     // ---------- 左侧导航 ----------
     AppNavRail {
         current: shell.currentNav
+        userRole: shell.userRole
         onNavRequested: (label) => shell.navRequested(label)
     }
 

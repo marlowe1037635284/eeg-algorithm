@@ -9,6 +9,7 @@
 #include <atomic>
 
 #include "common/eegtypes.h"
+#include "acquisition/rawringbuffer.h"
 #include "acquisition/serialcollector.h"
 
 // 只用于下面的自检签名。前置声明而不是包含 pythonengine.h：

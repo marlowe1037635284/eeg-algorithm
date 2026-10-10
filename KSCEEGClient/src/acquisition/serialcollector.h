@@ -12,7 +12,6 @@
 #include <atomic>
 
 #include "common/eegtypes.h"
-#include "acquisition/rawringbuffer.h"
 
 // 数据块的消费者。采集线程不关心谁在消费、也不关心有几个 ——
 // 它只按返回值决定「这一块算不算送出去了」。
@@ -79,8 +78,6 @@ public:
     void set_config(const Config &config);
     // 算法侧的数据块消费者。所有权不在采集线程，调用方必须保证它比线程活得久
     void set_sink(ChunkSink *sink);
-    // ASR 参考用的原始数据缓存。未设置时不做缓存（也不报错）
-    void set_raw_buffer(RawRingBuffer *raw_buffer);
 
     // 请求退出采集循环。线程会在下一轮循环（最多一次 waitForReadyRead 超时）后收尾
     void request_stop();
@@ -149,7 +146,6 @@ private:
 
     Config m_config;
     ChunkSink *m_sink = nullptr;
-    RawRingBuffer *m_raw_buffer = nullptr;
 
     mutable QMutex m_command_mutex;
     QVector<Command> m_commands;

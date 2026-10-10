@@ -358,7 +358,14 @@ void PythonWorker::run()
     log_timer.start();
     status_timer.start();
 
+    // 循环体用 try 包住：循环里十几处 Python 调用各自只 catch 了
+    // py::error_already_set，而 py::cast_error 与它是**兄弟类型**（都直接继承
+    // std::runtime_error），前者接不住后者。一旦有异常穿出 QThread::run()，
+    // Qt 会调用 std::terminate —— 表现为界面毫无征兆地整个消失。写成
+    // while(...) try{...} catch(...) 的形式：catch 属于循环体，处理完这一轮
+    // 异常后循环照常继续，而不是把整个算法线程带走
     while (!m_stop_requested.load(std::memory_order_relaxed))
+    try
     {
         // ---- 取数据。数据优先于一切：它是硬实时路径，不处理完，
         //      采集线程的有界队列就一直占着位置 ----
@@ -1183,6 +1190,17 @@ void PythonWorker::run()
                 emit algorithm_failed(drain_error);
             }
         }
+    }
+    catch (const std::exception &exc)
+    {
+        // 兜底：上面每一处精确 catch 都只认 py::error_already_set，任何别的
+        // std::exception（典型是 py::cast_error）都在这里落地成一条告警，
+        // 绝不放它穿出 run()
+        const AlgorithmErrorInfo info{
+            QStringLiteral("INTERNAL_ERROR"),
+            QStringLiteral("算法线程内部异常：%1").arg(QString::fromUtf8(exc.what())),
+            QStringLiteral("run"), -1, -1};
+        emit algorithm_failed(info);
     }
 
     // ---- 收尾：显式关会话再关 API ----

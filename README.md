@@ -149,13 +149,30 @@ dist/EEG-KSC/
   `analysis/recordingpreview.cpp`。
 - **日志与本地数据**：`QStandardPaths::AppLocalDataLocation`，应用名为 `EEG-KSC`。
 
-## 已知待办
+## 已知问题与修复记录
 
-代码审查中确认、尚未修复的问题（按影响排序），修复时请逐项单独验证：
+代码审查中确认的问题及处置（按影响排序）：
 
-1. 原始环形缓冲被采集线程与 GUI 线程各写一次 → ASR 参考数据翻倍、时间戳回跳；
-2. 算法线程主循环缺少兜底 `catch`，`py::cast_error` 会穿出 `QThread::run()` 触发 `std::terminate`；
-3. 后处理重算的 pending 补跑在 `generation` 不匹配时被提前 `return` 跳过；
-4. 断线重连后 `m_impedance_pending` 未复位，可能误发停止阻抗命令。
+1. **原始环形缓冲被采集线程与 GUI 线程各写一次** → 已修复。ASR 参考样本只由
+   `AcquisitionBridge`（唯一 `ChunkSink`）写入，`SerialCollector` 侧的那次重复写已移除；
+2. **算法线程主循环缺少兜底 `catch`** → 已修复。[pythonworker.cpp](KSCEEGClient/src/algorithm/pythonworker.cpp)
+   主循环补了 `catch (const std::exception &)`：`py::cast_error` 等非 `py::error_already_set`
+   的异常不再穿出 `QThread::run()` 触发 `std::terminate`；
+3. **后处理 pending 补跑在 `generation` 不匹配时被提前 `return` 跳过** → 未能复现（按现有
+   调用路径不会走到），本轮未改动；
+4. **断线重连后 `m_impedance_pending` 未复位** → 已修复。`reset_port_flags()` 一并清零该标志。
 
-其余中低优先级项（`removePatient` 不删磁盘文件、口令存储、若干返回值未检查等）见代码审查记录。
+中低优先级项的处置：
+
+- **`removePatient` 只删库行、不删磁盘 `.eegbin`** → 已修复：删行前先查出该患者名下所有
+  `file_path`，删库后逐个 `QFile::remove`（删不掉只记日志，与 `removeSession` 同口径）；
+- **单条记录的读 / 改 / 删 / 导出缺少患者归属校验** → 已修复：新增
+  `patientBelongsToCurrentUser()` / `sessionBelongsToCurrentUser()`，`updatePatient`、
+  `removePatient`、`session`、`removeSession`、`exportSession` 均按与列表查询一致的
+  可见性规则（管理员放行，其余角色限 `created_by`）拦截越权；
+- **`port.write()` 返回值未检查** → 已修复：[serialcollector.cpp](KSCEEGClient/src/acquisition/serialcollector.cpp)
+  中 7 处写串口的调用均检查返回值，失败时 `emit failed(...)`；
+- **口令明文存储** → 未修复（保持现状，改动涉及既有账号数据的迁移）；
+- 其余（`RawRingBuffer` 锁外读 `m_channels`、EDF 字段非 ASCII 丢字、`copy_*` 返回值）
+  为技术性 / 标准限制或已有兜底，暂不处理。
+

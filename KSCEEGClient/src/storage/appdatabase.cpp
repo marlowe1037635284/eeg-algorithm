@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
 #include <QTextStream>
 #include <QTimeZone>
 #include <QUrl>
@@ -457,6 +458,52 @@ bool AppDatabase::currentUserIsAdmin() const
     return m_current_role == QStringLiteral("管理员");
 }
 
+bool AppDatabase::patientBelongsToCurrentUser(const QString &patient_no) const
+{
+    // 管理员看全部，直接放行，省一次查询
+    if (currentUserIsAdmin())
+        return true;
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM patients WHERE patient_no = ? AND created_by = ? LIMIT 1"));
+    query.addBindValue(patient_no.trimmed());
+    query.addBindValue(m_current_user);
+    if (!query.exec())
+    {
+        // 查询本身出错（表缺失、库损坏等）与「不是本人录入」必须分开：
+        // 前者要留下日志，否则会被静默当成一次越权拒绝，排障时毫无线索。
+        // 返回值仍是拒绝 —— 出错时按安全策略默认不放行
+        qWarning() << "[db] 检查患者归属失败:" << query.lastError().text();
+        return false;
+    }
+    // 走到这里 exec 已成功，查不到行就说明该患者不存在或不是自己录入的，
+    // 两种情况对外不作区分
+    return query.next();
+}
+
+bool AppDatabase::sessionBelongsToCurrentUser(int record_id) const
+{
+    if (currentUserIsAdmin())
+        return true;
+
+    // 记录本身没存录入人，归属得看它挂在哪位患者上 —— 与 sessions() 的过滤口径一致
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM recording_sessions s"
+        "  JOIN patients p ON p.patient_no = s.patient_no"
+        " WHERE s.id = ? AND p.created_by = ? LIMIT 1"));
+    query.addBindValue(record_id);
+    query.addBindValue(m_current_user);
+    if (!query.exec())
+    {
+        // 与 patientBelongsToCurrentUser 同一口径：出错记日志并拒绝，不静默
+        qWarning() << "[db] 检查记录归属失败:" << query.lastError().text();
+        return false;
+    }
+    return query.next();
+}
+
 QString AppDatabase::nextPatientNo() const
 {
     // 取现有病历号里数字最大的那个再加一。
@@ -600,6 +647,29 @@ bool AppDatabase::removePatient(const QString &patient_no)
     if (!ensureOpen())
         return false;
 
+    // 非管理员只能删自己录入的患者。列表里看不到的患者，这里也必须改不动
+    if (!patientBelongsToCurrentUser(patient_no))
+    {
+        qWarning() << "[db] 拒绝删除非本人录入的患者:" << patient_no;
+        return false;
+    }
+
+    // 这位患者名下所有记录落盘的文件路径要在删行之前查出来 —— 行一删就再也指不回文件
+    QStringList recorded_files;
+    QSqlQuery locate(m_database);
+    locate.prepare(QStringLiteral(
+        "SELECT file_path FROM recording_sessions WHERE patient_no = ?"));
+    locate.addBindValue(patient_no);
+    if (locate.exec())
+    {
+        while (locate.next())
+        {
+            const QString path = locate.value(0).toString();
+            if (!path.isEmpty())
+                recorded_files.append(path);
+        }
+    }
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("DELETE FROM patients WHERE patient_no = ?"));
     query.addBindValue(patient_no);
@@ -623,6 +693,15 @@ bool AppDatabase::removePatient(const QString &patient_no)
     sessions.prepare(QStringLiteral("DELETE FROM recording_sessions WHERE patient_no = ?"));
     sessions.addBindValue(patient_no);
     sessions.exec();
+
+    // 库行删完再删磁盘文件。删不掉（被占用、已被手工移走）不算删除失败 ——
+    // 记录确实已经没了，只是留一条日志；与 removeSession 同一口径。
+    // 放在最后是为了万一上面 DB 删除失败（提前 return）时，文件先没掉就两头空了
+    for (const QString &path : recorded_files)
+    {
+        if (QFile::exists(path) && !QFile::remove(path))
+            qWarning() << "[db] 患者已删除，但原始文件删不掉:" << path;
+    }
     return true;
 }
 
@@ -637,6 +716,13 @@ QVariantMap AppDatabase::updatePatient(const QString &original_no, const QString
     if (!ensureOpen())
     {
         result[QStringLiteral("message")] = QStringLiteral("数据库不可用");
+        return result;
+    }
+
+    // 非管理员只能改自己录入的患者。归属按改之前的病历号判定
+    if (!patientBelongsToCurrentUser(original_no))
+    {
+        result[QStringLiteral("message")] = QStringLiteral("无权修改该患者");
         return result;
     }
 
@@ -865,6 +951,10 @@ QVariantList AppDatabase::sessionEvents(const QString &record_no)
     if (id < 0 || !ensureOpen())
         return rows;
 
+    // 与 session() 同一口径：越权时返回空列表
+    if (!sessionBelongsToCurrentUser(id))
+        return rows;
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "SELECT offset_s, wall_clock, label, color FROM session_events"
@@ -895,6 +985,11 @@ QVariantMap AppDatabase::session(const QString &record_no)
     QVariantMap row;
     const int id = parse_record_id(record_no);
     if (id < 0 || !ensureOpen())
+        return row;
+
+    // 非管理员只能看自己录入患者的记录。越权时返回空 map（与「记录不存在」同形），
+    // 不给出「存在但无权」这种能用来探测别人数据的信息
+    if (!sessionBelongsToCurrentUser(id))
         return row;
 
     QSqlQuery query(m_database);
@@ -944,6 +1039,13 @@ bool AppDatabase::removeSession(const QString &record_no)
     if (id < 0 || !ensureOpen())
         return false;
 
+    // 非管理员只能删自己录入患者的记录，与 sessions() 的可见性口径一致
+    if (!sessionBelongsToCurrentUser(id))
+    {
+        qWarning() << "[db] 拒绝删除非本人录入的记录:" << record_no;
+        return false;
+    }
+
     // 落盘路径要在删行之前读出来
     QString recorded;
     QSqlQuery locate(m_database);
@@ -987,6 +1089,8 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
     result[QStringLiteral("path")] = QString();
     result[QStringLiteral("isRawFile")] = false;
 
+    // 归属校验在 session() 内部完成：非本人录入的记录会返回空 map，
+    // 下面统一按「记录不存在」处理 —— 导出这条越权路径就此堵上，也不再额外透露存在性
     const QVariantMap row = session(record_no);
     if (row.isEmpty())
     {

@@ -411,9 +411,11 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
 
     m_collector = new SerialCollector(this);
     m_collector->set_config(config);
-    // 本对象就是数据块的消费者：deliver() 里再转交给算法线程
+    // 本对象就是数据块的消费者：deliver() 里再转交给算法线程，并在此把原始样本
+    // 写进原始环形缓冲（供 ASR 拟合参考矩阵）。采集线程不再自己写一份 ——
+    // 那样同一批样本会被采集线程与 deliver() 各写一次，ASR 参考数据翻倍、
+    // 时间戳来回跳
     m_collector->set_sink(this);
-    m_collector->set_raw_buffer(&m_raw_buffer);
 
     // 采集线程的信号一律队列投递（发信方在工作线程）
     QObject::connect(m_collector, &SerialCollector::port_opened, this,
@@ -2129,6 +2131,11 @@ void AcquisitionBridge::reset_port_flags()
 
     m_port_open = false;
     m_collecting = false;
+    // 阻抗扫描的「已发 'Z'、等 1.2 秒读回」状态也要一起清：串口都没了，那次扫描
+    // 不可能有结果。留着它，下次「开始采集」会照发一个 's' 去停阻抗，而新连上的
+    // 设备根本不在阻抗模式 —— 设备把 's' 当停止，紧跟着的 'b' 被冲掉，结果一块
+    // 数据都收不到、波形一片空白（原因见 start_collection 里那段注释）
+    m_impedance_pending = false;
 
     if (was_open)
     {

@@ -44,10 +44,6 @@ constexpr int kMaxChunkSeconds = 1;
 // 落盘缓冲攒到该字节数才真正 write()，避免每帧一次系统调用
 constexpr qint64 kFileFlushBytes = 256 * 1024;
 
-// ASR 参考数据的缓存时长。接口要求参考时长落在 60~180 秒，这里按上限留：
-// 180 秒 × 1000 Hz × 16 通道 × 4 字节 ≈ 11.5 MB，常驻没有负担
-constexpr int kRawBufferSeconds = 180;
-
 // ==================== 二进制格式 ====================
 // 头部字段、magic、头长等常量在 eegbinformat.h 里，**与回放端共用同一份**
 //（recordingpreview.cpp 读的就是它）。以前这里和那边各写一遍、靠注释约定
@@ -354,8 +350,7 @@ bool recording_write_frame(Recorder &recorder, const float *values, int channel_
 
 // 切帧并解析。帧头对不上就丢一个字节继续找：设备上电、串口刚打开时缓冲里
 // 常有半截帧，逐字节收敛比整体丢弃重来稳
-void parse_frames(RunState &state, int frame_size, int channel_count, int sample_rate,
-                  RawRingBuffer *raw_buffer)
+void parse_frames(RunState &state, int frame_size, int channel_count, int sample_rate)
 {
     const qint64 sample_period_ns = 1000000000LL / std::max(1, sample_rate);
 
@@ -434,13 +429,9 @@ void parse_frames(RunState &state, int frame_size, int channel_count, int sample
         ++state.received_frames;
         ++state.next_sequence_id;
 
-        // ASR 参考要用**未经任何处理**的原始数据，所以在这里就存下来，
-        // 而不是等显示缓冲那份（它装的是算法处理后的值，且只留 30 秒）
-        if (raw_buffer != nullptr)
-        {
-            raw_buffer->append(values, 1, channel_count, timestamp_ns, sample_period_ns);
-        }
-
+        // ASR 参考用的原始样本不在这里存：那会让同一批数据被采集线程与
+        // ChunkSink::deliver() 各写一份，翻倍且时间戳来回跳。写入统一在
+        // AcquisitionBridge::deliver() 里做（演示模式也走那条路）
         if (!recording_write_frame(state.recorder, values, channel_count))
         {
             state.save_failed = true;
@@ -524,11 +515,6 @@ void SerialCollector::set_sink(ChunkSink *sink)
     m_sink = sink;
 }
 
-void SerialCollector::set_raw_buffer(RawRingBuffer *raw_buffer)
-{
-    m_raw_buffer = raw_buffer;
-}
-
 void SerialCollector::request_stop()
 {
     m_stop_requested.store(true, std::memory_order_relaxed);
@@ -593,11 +579,6 @@ void SerialCollector::run()
     {
         emit port_open_failed(tr("不支持的通道数: %1").arg(channel_count));
         return;
-    }
-
-    if (m_raw_buffer != nullptr)
-    {
-        m_raw_buffer->reset(channel_count, m_config.sample_rate, kRawBufferSeconds);
     }
 
     QSerialPort port;
@@ -697,7 +678,10 @@ void SerialCollector::run()
             {
                 if (state.collecting)
                 {
-                    port.write(QByteArray(1, serial_protocol::kCommandStop));
+                    if (port.write(QByteArray(1, serial_protocol::kCommandStop)) < 0)
+                    {
+                        emit failed(tr("发送停止命令失败：%1").arg(port.errorString()));
+                    }
                     state.collecting = false;
                 }
                 if (state.chunk_frames > 0)
@@ -732,7 +716,10 @@ void SerialCollector::run()
             }
             case CommandKind::Raw:
             {
-                port.write(command.payload);
+                if (port.write(command.payload) < 0)
+                {
+                    emit failed(tr("发送原始命令失败：%1").arg(port.errorString()));
+                }
                 break;
             }
             case CommandKind::ImpedanceStart:
@@ -743,17 +730,26 @@ void SerialCollector::run()
                     const QMutexLocker locker(&m_impedance_mutex);
                     m_latest_impedance.clear();
                 }
-                port.write(QByteArray(1, serial_protocol::kCommandImpedanceStart));
+                if (port.write(QByteArray(1, serial_protocol::kCommandImpedanceStart)) < 0)
+                {
+                    emit failed(tr("发送阻抗扫描命令失败：%1").arg(port.errorString()));
+                }
                 break;
             }
             case CommandKind::ImpedanceStop:
             {
                 // 's' 让设备停发（通常连常规数据帧一起停）。若当时正在采集，
                 // 立刻补发 'b' 把常规数据流接回来，否则界面会一直收不到脑电数据
-                port.write(QByteArray(1, serial_protocol::kCommandStop));
+                if (port.write(QByteArray(1, serial_protocol::kCommandStop)) < 0)
+                {
+                    emit failed(tr("发送阻抗停止命令失败：%1").arg(port.errorString()));
+                }
                 if (state.collecting)
                 {
-                    port.write(QByteArray(1, serial_protocol::kCommandStart));
+                    if (port.write(QByteArray(1, serial_protocol::kCommandStart)) < 0)
+                    {
+                        emit failed(tr("恢复采集的命令发送失败：%1").arg(port.errorString()));
+                    }
                 }
                 break;
             }
@@ -775,7 +771,7 @@ void SerialCollector::run()
         }
 
         // ---- 3) 切帧、解析、落盘 ----
-        parse_frames(state, frame_size, channel_count, m_config.sample_rate, m_raw_buffer);
+        parse_frames(state, frame_size, channel_count, m_config.sample_rate);
 
         // 解析到新阻抗帧就搬到线程安全的快照里，供 GUI 线程读取
         if (state.impedance_updated)
@@ -857,7 +853,10 @@ void SerialCollector::run()
     //     关串口可能抢在这一个字节真正发出去之前
     if (state.collecting)
     {
-        port.write(QByteArray(1, serial_protocol::kCommandStop));
+        if (port.write(QByteArray(1, serial_protocol::kCommandStop)) < 0)
+        {
+            emit failed(tr("收尾时发送停止命令失败：%1").arg(port.errorString()));
+        }
         port.waitForBytesWritten(kPollTimeoutMs);
         state.collecting = false;
     }

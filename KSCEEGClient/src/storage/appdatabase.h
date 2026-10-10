@@ -181,6 +181,13 @@ private:
     // 宁可少看也不要让未登录状态看到全部患者
     bool currentUserIsAdmin() const;
 
+    // 归属校验：管理员放行；其余角色要求目标由当前账号录入
+    //（patients.created_by = 当前账号）。patients()/sessions() 里的可见性过滤
+    // 只管「读列表」，这里是「改 / 删 / 导出单条」那一侧 —— 两侧必须是同一套规则，
+    // 否则别人看不到的患者仍然能被改、被删、被导出
+    bool patientBelongsToCurrentUser(const QString &patient_no) const;
+    bool sessionBelongsToCurrentUser(int record_id) const;
+
     QSqlDatabase m_database;
     QString m_path;
     // 当前登录账号（users.username）。新增患者时写进 patients.created_by，

@@ -119,6 +119,11 @@ public:
     Q_INVOKABLE QString setting(const QString &key, const QString &fallback = QString()) const;
     Q_INVOKABLE bool setSetting(const QString &key, const QString &value);
 
+    // 记录保存目录（record_dir 的专用读法）。库里存的值若指向本机不存在的路径
+    // （典型是换一台机器后残留的旧路径），回退到默认值（exe 同级 records）并写回库，
+    // 保证界面显示和实际落盘用的是同一个目录
+    Q_INVOKABLE QString recordDirectory();
+
     // ==================== 标注标签 ====================
     // 标签管理页与工作台的「手动标记」共用这一份。每一项：
     //   { id, name, code, color }

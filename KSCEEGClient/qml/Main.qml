@@ -365,8 +365,9 @@ ApplicationWindow {
             // 事件标签取自系统设置里维护的那一份。工作台每次进入都会重建，
             // 所以这里读一次就是最新的
             tags: appDatabase.tags()
-            // 落盘目录同理：工作台重建时读一次设置，采集时就近用它
-            recordDir: appDatabase.setting("record_dir", "")
+            // 落盘目录同理：工作台重建时读一次设置，采集时就近用它。
+            // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录
+            recordDir: appDatabase.recordDirectory()
 
             onLogoutRequested: window.handleLogout()
             onNavRequested: (label) => window.navigateTo(label)

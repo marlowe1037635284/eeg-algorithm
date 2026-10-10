@@ -128,29 +128,6 @@ AppDatabase::AppDatabase(QObject *parent)
     query.addBindValue(QStringLiteral("管理员"));
     if (!query.exec())
         qWarning() << "[db] 预置管理员账号失败:" << query.lastError().text();
-
-    // 记录保存目录：始终落库保存，默认与可执行文件同目录（<exe目录>\records）。
-    // 只有两种情形会写默认值：
-    //   1) 库里还没有这条设置（第一次运行）→ 补上；
-    //   2) 值等于老版本硬编码的默认值 D:\EEGData\Records —— 那是用户没选过、
-    //      却被「保存设置」当成选择写进去的，默认改到程序目录后要一并更新。
-    // 用户自己选过的其它目录一律原样保留
-    const QString default_dir = defaultRecordDirectory();
-    QSqlQuery dir_seed(m_database);
-    dir_seed.prepare(QStringLiteral(
-        "INSERT OR IGNORE INTO app_settings(setting_key, setting_value) VALUES('record_dir', ?)"));
-    dir_seed.addBindValue(default_dir);
-    if (!dir_seed.exec())
-        qWarning() << "[db] 预置记录目录失败:" << dir_seed.lastError().text();
-
-    QSqlQuery dir_migrate(m_database);
-    dir_migrate.prepare(QStringLiteral(
-        "UPDATE app_settings SET setting_value = ? "
-        "WHERE setting_key = 'record_dir' AND setting_value = ?"));
-    dir_migrate.addBindValue(default_dir);
-    dir_migrate.addBindValue(QStringLiteral("D:\\EEGData\\Records"));
-    if (!dir_migrate.exec())
-        qWarning() << "[db] 迁移记录目录默认值失败:" << dir_migrate.lastError().text();
 }
 
 AppDatabase::~AppDatabase()
@@ -1234,6 +1211,22 @@ bool AppDatabase::setSetting(const QString &key, const QString &value)
         return false;
     }
     return true;
+}
+
+QString AppDatabase::recordDirectory()
+{
+    const QString fallback = defaultRecordDirectory();
+    const QString stored = settingValue(QStringLiteral("record_dir")).trimmed();
+
+    // 存过、且本机这个目录真的在 → 尊重用户选的
+    if (!stored.isEmpty() && stored != fallback && QDir(stored).exists())
+        return QDir::toNativeSeparators(stored);
+
+    // 其余情况统一回退默认值：从没存过，或存的是别处（换机器/重装）残留的旧路径。
+    // 回退时把库里的值也改成默认，否则会出现「界面显示默认、落盘仍用旧路径」的裂脑
+    if (stored != fallback)
+        setSetting(QStringLiteral("record_dir"), fallback);
+    return fallback;
 }
 
 // ==================== 标注标签 ====================

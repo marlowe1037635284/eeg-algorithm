@@ -64,7 +64,7 @@ Item {
     function loadSettings() {
         if (!database)
             return
-        recordDir = database.setting("record_dir", Acq.defaultRecordDir)
+        recordDir = database.recordDirectory()
         saveIntervalIndex = Math.max(0, saveIntervalValues.indexOf(
                                         database.setting("auto_save_minutes", "10")))
         fileFormatIndex = Math.max(0, fileFormatValues.indexOf(

@@ -490,6 +490,11 @@ private:
     QString m_electrode_summary;
     bool m_electrode_scan_valid = false;
 
+    // 设备此刻是否停在阻抗上传模式：begin_electrode_scan() 发 'Z' 时置真，
+    // scan_electrodes() 发 's' 时置假。开始采集时只有它为真才需要补发一条 's'
+    // 把设备从阻抗模式拉回来 —— 没扫描过还发 's' 会把刚开始的 'b' 冲掉，波形全无
+    bool m_impedance_pending = false;
+
     QStringList m_available_ports;
     bool m_port_open = false;
     bool m_collecting = false;

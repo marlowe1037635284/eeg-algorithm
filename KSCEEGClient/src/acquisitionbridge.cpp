@@ -572,11 +572,17 @@ bool AcquisitionBridge::start_collection(const QString &directory)
     // 新样本接在后面写，画面看起来就像没重新开始
     clear_display();
 
-    // 开始采集前先发一条 's'：若设备此刻还停在阻抗上传模式（刚点过「阻抗扫描」，
-    // 或那次扫描的 1.2 秒还没走完），只发 'b' 并不能让它切回常规数据流 —— 必须先用
-    // 's' 把阻抗帧停掉，紧接着 post_start() 的 'b' 再把脑电数据接上。
+    // 仅当设备此刻还停在阻抗上传模式（点过「阻抗扫描」，且那次扫描的 1.2 秒等待
+    // 还没走完 / 结果还没读回）才补发 's'：只发 'b' 不足以让它切回常规脑电流。
     // 两条命令按入队顺序执行（见 SerialCollector::run 的命令批处理），线上顺序即 's' → 'b'
-    m_collector->post_impedance_stop();
+    //
+    // 没扫描过就**不能**发 's'：设备会把它当成一次停止，紧跟着的 'b' 被冲掉，
+    // 结果是点了「开始采集」却收不到任何数据帧、波形一片空白
+    if (m_impedance_pending)
+    {
+        m_collector->post_impedance_stop();
+        m_impedance_pending = false;
+    }
     m_collector->post_start(request);
     return true;
 }
@@ -1893,6 +1899,7 @@ void AcquisitionBridge::begin_electrode_scan()
         return;
     }
     m_collector->post_impedance_start();
+    m_impedance_pending = true;
 }
 
 bool AcquisitionBridge::scan_electrodes()
@@ -1910,6 +1917,7 @@ bool AcquisitionBridge::scan_electrodes()
     // 读回采集线程缓存的最新一帧阻抗（内部加锁），随后立刻发 's' 让设备停止上传
     const QVector<double> kohm_values = m_collector->latest_impedance_kohm();
     m_collector->post_impedance_stop();
+    m_impedance_pending = false;
 
     if (kohm_values.size() < eeg_montage::kChannelCount)
     {

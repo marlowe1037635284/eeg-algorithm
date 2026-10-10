@@ -166,7 +166,11 @@ bool AppDatabase::createTables()
                        "setting_value TEXT NOT NULL)"),
 
         // 患者档案。patient_no 是界面上叫「病历号」的那一列，留空时自动生成，
-        // 所以给它 UNIQUE —— 撞号要当场报错，不能悄悄存成两条
+        // 所以给它 UNIQUE —— 撞号要当场报错，不能悄悄存成两条。
+        //
+        // created_by 记录录入人的账号（users.username）。患者可见性与角色挂钩：
+        // 管理员看全部，其余角色只看自己录入的 —— 就靠这一列。老库里补出来的
+        // 这一列为空串，于是那些历史患者只对管理员可见，这是安全的默认值
         QStringLiteral("CREATE TABLE IF NOT EXISTS patients ("
                        "patient_no TEXT PRIMARY KEY NOT NULL,"
                        "name TEXT NOT NULL,"
@@ -175,6 +179,7 @@ bool AppDatabase::createTables()
                        "department TEXT NOT NULL DEFAULT '',"
                        "diagnosis TEXT NOT NULL DEFAULT '',"
                        "note TEXT NOT NULL DEFAULT '',"
+                       "created_by TEXT NOT NULL DEFAULT '',"
                        "created_at TEXT NOT NULL)"),
 
         // 采集记录。患者列表的「采集次数 / 最近采集」和历史记录页都来自这张表。
@@ -242,6 +247,11 @@ bool AppDatabase::createTables()
     ensure_column(QStringLiteral("users"), QStringLiteral("status"),
                   QStringLiteral("TEXT NOT NULL DEFAULT '启用'"));
     ensure_column(QStringLiteral("users"), QStringLiteral("last_login"),
+                  QStringLiteral("TEXT NOT NULL DEFAULT ''"));
+
+    // 患者可见性按录入人区分，老库上没有这一列 —— 不补的话，非管理员的
+    // patients() 查询会直接报「no such column」
+    ensure_column(QStringLiteral("patients"), QStringLiteral("created_by"),
                   QStringLiteral("TEXT NOT NULL DEFAULT ''"));
     return true;
 }
@@ -430,7 +440,22 @@ void AppDatabase::saveLoginRecord(const QString &phone, const QString &password,
     }
 }
 
+// ==================== 会话 ====================
+
+void AppDatabase::setCurrentUser(const QString &account, const QString &role)
+{
+    m_current_user = account.trimmed();
+    m_current_role = role.trimmed();
+}
+
 // ==================== 患者 ====================
+
+bool AppDatabase::currentUserIsAdmin() const
+{
+    // 角色文本与用户管理页、预置管理员一致。未登录（空角色）按非管理员处理：
+    // 宁可少看，也不要让一个没登录的状态拿到全部患者
+    return m_current_role == QStringLiteral("管理员");
+}
 
 QString AppDatabase::nextPatientNo() const
 {
@@ -464,16 +489,25 @@ QVariantList AppDatabase::patients()
 
     // 采集次数与最近采集时间用一条子查询汇总，避免在主查询里写两遍患者表。
     // LEFT JOIN 而不是 INNER JOIN：一次都没采过的患者也必须出现（次数 0、时间为空）
-    QSqlQuery query(m_database);
-    query.prepare(QStringLiteral(
+    //
+    // 可见性过滤：管理员不加条件看全部，其余角色只看自己录入的（created_by = 账号）。
+    // 与 LEFT JOIN 搭配时条件写在 WHERE 里针对的是患者行，语义正确
+    QString sql = QStringLiteral(
         "SELECT p.patient_no, p.name, p.gender, p.age, p.department, p.diagnosis, p.note,"
         "       p.created_at,"
         "       COUNT(s.id) AS record_count,"
         "       COALESCE(MAX(s.started_at), '') AS last_record"
         "  FROM patients p"
-        "  LEFT JOIN recording_sessions s ON s.patient_no = p.patient_no"
-        " GROUP BY p.patient_no"
-        " ORDER BY p.patient_no"));
+        "  LEFT JOIN recording_sessions s ON s.patient_no = p.patient_no");
+    if (!currentUserIsAdmin())
+        sql += QStringLiteral(" WHERE p.created_by = ?");
+    sql += QStringLiteral(" GROUP BY p.patient_no ORDER BY p.patient_no");
+
+    QSqlQuery query(m_database);
+    query.prepare(sql);
+    // 绑定值必须与占位符同进同出 —— 只在拼了 WHERE 时才 bind
+    if (!currentUserIsAdmin())
+        query.addBindValue(m_current_user);
     if (!query.exec())
     {
         qWarning() << "[db] 查询患者失败:" << query.lastError().text();
@@ -532,8 +566,9 @@ QVariantMap AppDatabase::addPatient(const QString &patient_no, const QString &na
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "INSERT INTO patients(patient_no, name, gender, age, department, diagnosis, note, created_at) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, datetime('now'))"));
+        "INSERT INTO patients(patient_no, name, gender, age, department, diagnosis, note,"
+        "                    created_by, created_at) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"));
     query.addBindValue(number);
     query.addBindValue(trimmed_name);
     query.addBindValue(gender.trimmed());
@@ -541,6 +576,8 @@ QVariantMap AppDatabase::addPatient(const QString &patient_no, const QString &na
     query.addBindValue(department.trimmed());
     query.addBindValue(diagnosis.trimmed());
     query.addBindValue(note.trimmed());
+    // 记下录入人：非管理员之后只能看到自己登记的患者（见 patients()）
+    query.addBindValue(m_current_user);
 
     if (!query.exec())
     {
@@ -672,15 +709,31 @@ QVariantList AppDatabase::sessions(const QString &patient_no)
                        "  FROM recording_sessions s"
                        "  LEFT JOIN patients p ON p.patient_no = s.patient_no");
 
-    if (patient_no.trimmed().isEmpty())
+    // 可见性过滤与患者列表同一口径：管理员看全部，其余角色只看自己录入患者的记录。
+    // 记录本身没存录入人，归属得看它挂在哪位患者上（patients.created_by）。
+    // 「按患者筛选」和「按录入人过滤」是并且关系，必须拼进同一句 WHERE
+    const bool filter_by_patient = !patient_no.trimmed().isEmpty();
+    const bool restrict_owner = !currentUserIsAdmin();
+
+    QString sql = columns;
+    if (filter_by_patient || restrict_owner)
     {
-        query.prepare(columns + QStringLiteral(" ORDER BY s.id DESC"));
+        sql += QStringLiteral(" WHERE ");
+        if (filter_by_patient)
+            sql += QStringLiteral("s.patient_no = ?");
+        if (filter_by_patient && restrict_owner)
+            sql += QStringLiteral(" AND ");
+        if (restrict_owner)
+            sql += QStringLiteral("p.created_by = ?");
     }
-    else
-    {
-        query.prepare(columns + QStringLiteral(" WHERE s.patient_no = ? ORDER BY s.id DESC"));
+    sql += QStringLiteral(" ORDER BY s.id DESC");
+    query.prepare(sql);
+
+    // 绑定顺序必须跟占位符出现的顺序一致
+    if (filter_by_patient)
         query.addBindValue(patient_no.trimmed());
-    }
+    if (restrict_owner)
+        query.addBindValue(m_current_user);
 
     if (!query.exec())
     {

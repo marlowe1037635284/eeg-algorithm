@@ -121,6 +121,9 @@ ApplicationWindow {
                 // 存设置属于「锦上添花」，不该因为它出错就把登录卡住。
                 window.currentUserName = result.displayName
                 window.currentUserRole = result.role
+                // 把这个身份告诉数据层：管理员看全部患者，其余角色只看自己录入的。
+                // 必须在读患者之前设置 —— 登录后进入的工作台/患者管理页都会按它取数据
+                appDatabase.setCurrentUser(account, result.role)
                 window.loggedIn = true
                 window.enterWorkbench()
                 // 登录成功后自动连接设备：串口从此独立于采集，一次连上后常开，
@@ -334,6 +337,9 @@ ApplicationWindow {
         Acq.close_port()
         activeDialog = ""
         loggedIn = false
+        // 清掉会话身份：不这样做的话，下一个登录的人在数据层眼里仍是上一个人，
+        // 非管理员会继承到别人的可见范围
+        appDatabase.setCurrentUser("", "")
         if (!loginPage.rememberChecked)
             loginPage.clearPassword()
     }

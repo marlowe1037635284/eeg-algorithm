@@ -572,6 +572,11 @@ bool AcquisitionBridge::start_collection(const QString &directory)
     // 新样本接在后面写，画面看起来就像没重新开始
     clear_display();
 
+    // 开始采集前先发一条 's'：若设备此刻还停在阻抗上传模式（刚点过「阻抗扫描」，
+    // 或那次扫描的 1.2 秒还没走完），只发 'b' 并不能让它切回常规数据流 —— 必须先用
+    // 's' 把阻抗帧停掉，紧接着 post_start() 的 'b' 再把脑电数据接上。
+    // 两条命令按入队顺序执行（见 SerialCollector::run 的命令批处理），线上顺序即 's' → 'b'
+    m_collector->post_impedance_stop();
     m_collector->post_start(request);
     return true;
 }

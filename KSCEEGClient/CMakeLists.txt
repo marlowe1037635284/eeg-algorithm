@@ -85,6 +85,9 @@ qt_add_executable(appKSCEEGClient
     # 「数据分析与后处理」页：预处理流水线、统计、频谱、相关性、地形图、导出
     src/postprocess.h
     src/postprocess.cpp
+    # 后处理算法统一走 Python 离线接口的调用层（pybind11 只在本翻译单元里出现）
+    src/offlinealgorithm.h
+    src/offlinealgorithm.cpp
     # 地形图配色表（实时与后处理共用一份）
     src/topographypalette.h
     # 把一条记录排成 A4 报告（导出 PDF）

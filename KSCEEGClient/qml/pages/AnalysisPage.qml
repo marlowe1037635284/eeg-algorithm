@@ -43,23 +43,28 @@ Item {
         { key: "report",     label: qsTr("报告") }
     ]
 
-    // 底部那条「通道条」只在波形 / 频谱 / 通道三页出现：它是**选当前导联**的，
-    // 而统计页有每通道小柱、地形图页有六张全脑图、报告页是整段描述 ——
-    // 那三页没有「当前导联」这个概念，摆一条条上去只会让人以为点了会变
+    // 底部那条「通道条」只在波形 / 频谱两页出现：它是**选当前导联**的，
+    // 而通道页是一张只读的 16 行统计表（设计稿 post-channel.png 里表格直接
+    // 铺到状态行、下方没有通道条）、统计页有每通道小柱、地形图页有六张全脑
+    // 图、报告页是整段描述 —— 那几页没有「当前导联」这个概念，摆一条条上去
+    // 只会让人以为点了会变
     readonly property bool tabHasChannelStrip:
-        currentTab === "wave" || currentTab === "spectrum" || currentTab === "channel"
+        currentTab === "wave" || currentTab === "spectrum"
 
-    // 时间轴是「换波形 / 频谱窗口」的导航条，只有看图那几页用得上；
-    // 报告页是一份从头读到尾的静态文档，底部不再摆时间轴
-    readonly property bool tabHasTimeline: currentTab !== "report"
+    // 时间轴是「换窗口」的导航条：波形、频谱两页用它换时间窗，地形图页用它换
+    // 六张全脑图对应的时段；通道页是只读的 16 行统计表、统计页是一组汇总图、
+    // 报告页是整段描述，底部都不摆时间轴
+    readonly property bool tabHasTimeline:
+        currentTab === "wave" || currentTab === "spectrum" || currentTab === "topography"
 
     // 舞台内容区（相对舞台左上角，见上面的坐标说明）
     readonly property int contentX: 10
     readonly property int contentY: 71
     readonly property int contentWidth: 1323
-    // 有通道条时内容压在通道条（y=692）上沿；其余页面内容压到时间轴（y=754）
-    // 上沿，否则正文会盖住时间轴。报告页没有时间轴，内容一路铺到状态行（y=848）
-    // 上方的留白处。统计页最低到 668、地形图页到 674，都在 683 之内，不会被裁
+    // 有通道条时内容压在通道条（y=692）上沿；其余有图页的内容压到时间轴
+    // （y=754）上沿，否则正文会盖住时间轴。通道页 / 统计页 / 报告页没有时间轴，
+    // 内容一路铺到状态行（y=848）上方的留白处；地形图页最低到 674，在 683
+    // 之内，不会被裁
     readonly property int contentHeight:
         tabHasChannelStrip ? 608
                            : (tabHasTimeline ? 683 : 767)
@@ -554,30 +559,64 @@ Item {
             }
 
             // ---------- 状态行 ----------
+            // 文案很长（导联 / 片段内范围 / 处理链 / 质检一长串），窄窗口放不下。
+            // 不再直接省略号截断，而是横向可滚动：内容溢出时底部才浮出一条细滑块，
+            // 提示「还能往右拖」。放得下时滑块不出现、文字照旧左对齐，视觉与原来一致
             Rectangle {
                 x: root.contentX
                 y: 848
                 width: root.contentWidth
                 height: 30
                 radius: 6
+                clip: true
                 color: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.28)
 
-                Text {
-                    x: 14
-                    width: parent.width - 28
-                    height: parent.height
-                    verticalAlignment: Text.AlignVCenter
-                    elide: Text.ElideRight
-                    text: Analysis.statusLine.length > 0
-                          ? Analysis.statusLine
-                          : (Analysis.busy ? qsTr("正在计算…")
-                                           : (Analysis.errorText.length > 0
-                                              ? Analysis.errorText
-                                              : qsTr("正在等待分析结果")))
-                    color: Design.textSecondary
-                    font.family: Design.fontFamily
-                    font.styleName: Design.styleRegular
-                    font.pixelSize: 13
+                Flickable {
+                    id: statusFlick
+                    anchors.fill: parent
+                    contentWidth: Math.max(width, statusText.implicitWidth + 28)
+                    contentHeight: height
+                    boundsBehavior: Flickable.StopAtBounds
+                    flickableDirection: Flickable.HorizontalFlick
+                    // 放得下就别让它有可拖动的余量，免得跟点击/滚轮抢事件
+                    interactive: contentWidth > width + 1
+
+                    Text {
+                        id: statusText
+                        x: 14
+                        height: statusFlick.height
+                        verticalAlignment: Text.AlignVCenter
+                        text: Analysis.statusLine.length > 0
+                              ? Analysis.statusLine
+                              : (Analysis.busy ? qsTr("正在计算…")
+                                               : (Analysis.errorText.length > 0
+                                                  ? Analysis.errorText
+                                                  : qsTr("正在等待分析结果")))
+                        color: Design.textSecondary
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 13
+                    }
+
+                    // 细滑块。只在内容溢出时出现（AsNeeded），不画底槽、只留滑块，
+                    // 左右各留 15px 避开圆角；贴在状态条下沿，不挡正文
+                    ScrollBar.horizontal: ScrollBar {
+                        id: statusScroll
+                        policy: ScrollBar.AsNeeded
+                        height: 8
+                        topPadding: 1
+                        bottomPadding: 3
+                        leftPadding: 15
+                        rightPadding: 15
+
+                        contentItem: Rectangle {
+                            implicitHeight: 4
+                            radius: 2
+                            color: statusScroll.pressed
+                                   ? Design.primary
+                                   : Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.55)
+                        }
+                    }
                 }
             }
         }

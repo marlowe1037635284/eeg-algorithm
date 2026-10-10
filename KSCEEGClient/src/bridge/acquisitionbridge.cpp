@@ -1326,7 +1326,9 @@ void AcquisitionBridge::set_dc_removal(bool enabled)
 
 QString AcquisitionBridge::default_record_dir() const
 {
-    return default_record_directory();
+    // 面向界面显示：转成 Windows 风格的反斜杠。内部落盘用正斜杠（QDir 两者都认），
+    // 但设置页里一条 d:/... 的路径看着不像本机目录，容易被当成没生效
+    return QDir::toNativeSeparators(default_record_directory());
 }
 
 QStringList AcquisitionBridge::channel_names() const

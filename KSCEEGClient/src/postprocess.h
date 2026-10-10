@@ -322,11 +322,11 @@ signals:
 private:
     struct Result;
 
-    // 「窗口无关」那部分输入的指纹。拖动时间轴只改变波形图那一张，整条重流水线
-    //（滤波 / 重参考 / 降采样 / Welch / 相关性 / 地形图）与窗口无关。把它们的输入
-    // 摘成一个可比对的指纹：指纹没变就说明可以整份复用上一轮结果，只重画波形 ——
-    // 拖动的延迟从「整条流水线」降到「出图」。窗口（位移/长度）、当前导联幅度、
-    // 幅度标尺、波形绘制区尺寸、事件都不算在内，因为它们只进波形图那一张
+    // 「重流水线」那部分输入的指纹。拖动时间轴只影响波形图、频谱图与六张地形图，
+    // 整条重流水线（滤波 / 重参考 / 降采样 / 相关性 / 统计 / 频带占比）与窗口无关。
+    // 把它们的输入摘成一个可比对的指纹：指纹没变就说明可以整份复用上一轮结果，
+    // 只重画波形、频谱与地形图 —— 拖动的延迟从「整条流水线」降到「出图」。窗口（位移/
+    // 长度）、当前导联幅度、幅度标尺、绘制区尺寸、事件都不算在内，因为它们只进那几张图。
     struct Fingerprint
     {
         bool high_pass_enabled = true;
@@ -351,9 +351,6 @@ private:
         double segment_seconds = 0.0;
         // 当前导联会进频谱、报告、底栏，所以必须算在指纹里：换导联就走整条流水线
         int current_channel = 0;
-        // 频谱绘制区尺寸只影响频谱图那张，但那张不做增量重算，所以也算进来
-        int spectrum_width = 0;
-        int spectrum_height = 0;
         // 原始数据身份：换记录必然换指纹
         const void *raw = nullptr;
 
@@ -380,8 +377,6 @@ private:
                 && segment_start == other.segment_start
                 && segment_seconds == other.segment_seconds
                 && current_channel == other.current_channel
-                && spectrum_width == other.spectrum_width
-                && spectrum_height == other.spectrum_height
                 && raw == other.raw;
         }
     };
@@ -433,8 +428,9 @@ private:
         QVariantList events;
         // 基本信息那五行。报告页的「记录信息」一节直接用它，不再从 info 重新拼一遍
         QVariantList record_info;
-        // 上一轮的结果快照。窗口类改动命中指纹时，compute 直接复用它、只重画波形，
-        // 不再重跑整条流水线。与 raw 同寿命（shared_ptr 保证在工作线程用完前不析构）
+        // 上一轮的结果快照。窗口类改动命中指纹时，compute 直接复用它、只重画波形、
+        // 频谱与地形图，不再重跑整条流水线。与 raw 同寿命（shared_ptr 保证在工作线程
+        // 用完前不析构）
         std::shared_ptr<const Result> previous;
     };
 
@@ -484,7 +480,7 @@ private:
         double processed_rate = 0.0;
 
         // 这一轮窗口无关输入的指纹。下一轮拖动时间轴时与它比对：相等就直接复用
-        // 本结果的中间产物（processed / 频谱 / 统计 / 地形图…），只重画波形
+        // 本结果的中间产物（processed / 统计 / 相关性…），只重画波形、频谱与地形图
         Fingerprint fingerprint;
     };
 
@@ -506,6 +502,17 @@ private:
     // 影响它，所以命中指纹的增量重算也只调它，不碰整条流水线
     static void compute_wave(Result &result, const QVector<QVector<double>> &data,
                              double sample_rate, const Job &job);
+
+    // 频谱图那张的出图（按当前窗口做 Welch + 渲染）。与波形图一样只依赖窗口与
+    // 当前导联，所以命中指纹的增量重算也要调它 —— 拖动时间轴时频谱随之变化
+    static void compute_spectrum(Result &result, const QVector<QVector<double>> &data,
+                                 double sample_rate, const Job &job);
+
+    // 六张地形图的出图（按当前窗口逐通道做 Welch + 取各频段平均功率谱密度 + 渲染）。
+    // 与频谱图同一扇窗、同一份 Welch，所以命中指纹的增量重算也要调它 ——
+    // 拖动时间轴时六张地形图随之变化
+    static void compute_topography(Result &result, const QVector<QVector<double>> &data,
+                                   double sample_rate, const Job &job);
 
     // 基本信息面板那五行，从 open() 收到的 info 拼出来
     void build_record_info();

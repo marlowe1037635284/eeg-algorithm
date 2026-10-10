@@ -114,11 +114,30 @@ Item {
     }
 
     // ---------- 五频段绝对功率 ----------
-    // 高度取**整段全通道平均**的功率谱密度（µV²/Hz），与报告页的占比同源
+    // 高度取**所选通道**的功率谱密度（µV²/Hz，整段 Welch 均值）：点击下方小卡切换
+    // 「当前导联」，这五根柱随之变化，与报告页「频带分布（通道）」同源（同一份 spectra）
+    readonly property var bandRows: {
+        const bands = Analysis.channelBands
+        const index = Analysis.currentChannel
+        if (index < 0 || index >= bands.length)
+            return []
+        const means = bands[index].mean
+        const ratios = bands[index].ratio
+        var rows = []
+        for (var i = 0; i < Analysis.bandKeys.length; ++i)
+            rows.push({
+                label: Analysis.bandNames[i],
+                color: Analysis.bandColors[i],
+                mean: means[i],
+                ratio: ratios[i]
+            })
+        return rows
+    }
+
     Item {
         id: bandChart
 
-        readonly property int bandCount: Analysis.bandDistribution.length
+        readonly property int bandCount: root.bandRows.length
         // 右侧可用宽度。五根柱子铺满整个剩余宽度的话柱间距会拉到 160 像素，
         // 五根孤零零的柱子散在 800 像素里，看着不像一组数据 —— 封顶后居中
         readonly property real available:
@@ -131,14 +150,14 @@ Item {
 
         readonly property real peak: {
             var maximum = 0
-            const rows = Analysis.bandDistribution
+            const rows = root.bandRows
             for (var i = 0; i < rows.length; ++i)
                 maximum = Math.max(maximum, rows[i].mean)
             return maximum > 0 ? maximum : 1
         }
 
         Repeater {
-            model: Analysis.bandDistribution
+            model: root.bandRows
 
             delegate: Item {
                 required property var modelData

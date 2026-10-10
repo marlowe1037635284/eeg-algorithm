@@ -142,10 +142,12 @@ Item {
             }
 
             // 量程标注只画在**当前导联**那一条上：每一路都标一遍的话，
-            // 16 路上百个数字糊成一片，反而看不出标尺是多少
+            // 16 路上百个数字糊成一片，反而看不出标尺是多少。
+            // 竖直位置必须和波形对得上：波形在泳道里按 ±量程 取值，+N 落在泳道顶、
+            // −N 落在泳道底、0 落在泳道中线（画图侧 centre = 泳道中线、half_lane = 半泳道）
             Text {
                 x: root.nameWidth + root.traceWidth + 6
-                y: parent.height / 2 - height
+                y: 0
                 visible: index === Analysis.currentChannel
                 text: "+" + Math.round(Analysis.waveRangeUV)
                 color: Design.waveCurrent
@@ -167,7 +169,7 @@ Item {
 
             Text {
                 x: root.nameWidth + root.traceWidth + 6
-                y: parent.height / 2 + 2
+                y: parent.height - height
                 visible: index === Analysis.currentChannel
                 text: "−" + Math.round(Analysis.waveRangeUV)
                 color: Design.waveCurrent

@@ -159,6 +159,17 @@ Item {
         scanTimer.restart()
     }
 
+    // 「开始采集」时由工作台调用：把正在进行的阻抗扫描关掉（停掉 1.2 秒的等待计时、
+    // 复位按钮），免得那次迟到的读回再补发一条 's' 把刚开始的采集打断。
+    // 停发阻抗帧的 's' 由 C++ 侧在 start_collection() 里发，这里只管界面状态
+    function cancelScan() {
+        if (!scanning)
+            return
+        scanTimer.stop()
+        scanning = false
+        scanError = ""
+    }
+
     Timer {
         id: scanTimer
         interval: 1200

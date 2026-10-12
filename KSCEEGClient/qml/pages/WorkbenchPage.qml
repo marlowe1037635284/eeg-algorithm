@@ -147,7 +147,16 @@ Item {
         })
     }
 
-    onClearRequested: eventPanel.clearEvents()
+    // 「清空」：抹掉当前显示的波形重来。清掉显示缓冲后画面立刻变成空泳道，
+    // 采集不中断 —— 随后进来的样本从空屏右侧接上。
+    // 顺带解冻：否则画面还停在冻结的那一帧，看不到清空效果。
+    // 只动波形，不动事件列表（事件有自己的清空按钮）
+    function clearWaveform() {
+        frozen = false
+        Acq.clear_display()
+    }
+
+    onClearRequested: clearWaveform()
     onSnapshotRequested: saveSnapshot()
 
     // 波形不再由定时器推进：数据由 C++ 侧的采集线程经算法处理后推过来，

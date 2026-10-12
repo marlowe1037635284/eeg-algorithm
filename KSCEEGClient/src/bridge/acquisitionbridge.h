@@ -224,6 +224,10 @@ public:
                                      const QString &color = QString());
     Q_INVOKABLE void remove_event(int index);
     Q_INVOKABLE void clear_events();
+    // 清空**当前显示的波形**：清掉显示缓冲与还没处理完的待处理块，并立即把波形
+    // 重画成空图。采集不中断 —— 之后进来的样本从空屏右侧接上。
+    // 与「开始采集」时那次清空（clear_display）是同一套逻辑
+    Q_INVOKABLE void clear_display();
     // 本次采集已经过去多少秒。波形面板用它把事件定位到当前显示窗口里的横向位置
     Q_INVOKABLE double elapsed_seconds() const;
     // 原始数据缓冲里已经攒了多少秒。ASR 需要先攒够 60 秒才能建参考，
@@ -389,10 +393,6 @@ private:
     void pump_display();
     // 往显示缓冲追加一块样本（算法线程处理后的结果）。加锁
     void append_to_display(const SignalChunk &chunk);
-    // 清空显示缓冲与还没处理完的待处理块，并立即把波形重画成空图。
-    // 「开始采集」时调用：不清的话上一段的样本还在缓冲里，新样本只是接在
-    // 后面写，画面上滚动的仍是一整屏上一段的波形，像没重新开始
-    void clear_display();
     // 由 m_display_timer 驱动：有新数据时才重画并自增 revision
     void render_wave();
     // 把当前显示窗口画进 m_wave_image。锁内取快照、锁外绘制 ——

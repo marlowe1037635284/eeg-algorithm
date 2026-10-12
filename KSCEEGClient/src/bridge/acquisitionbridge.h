@@ -178,6 +178,10 @@ public:
     Q_INVOKABLE void reset_session();
     Q_INVOKABLE void clear_error();
 
+    // 截图存放目录：程序执行目录下的 snapshoot 子目录（与 records 并列）。
+    // 目录不存在时创建。创建失败返回空串，界面据此提示保存失败
+    Q_INVOKABLE QString snapshot_dir();
+
     // 演示数据源：不接设备，直接在进程内合成 16 通道样本，按真实采集的节拍
     // 走**同一条** deliver() 通路灌进去。
     //

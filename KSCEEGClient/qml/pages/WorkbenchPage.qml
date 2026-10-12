@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls.Basic
-import QtCore
 import KSCEEGClient
 
 // 采集工作台。按设计稿「采集工作台」画板 1:1 还原。
@@ -127,15 +126,24 @@ Item {
         Acq.start_collection(recordDir, patientNo)
     }
 
-    // 「截图」：把当前界面存成 PNG 放到系统图片目录下，失败就静默跳过
+    // 「截图」：只抓当前显示的波形 + 波形左边的通道名，
+    // 存成 PNG 放到程序运行目录下的 snapshoot 子目录
     function saveSnapshot() {
-        canvas.grabToImage(function(result) {
+        waveformPanel.grabWaveform(function(result) {
+            if (!result) {
+                root.notifyRequested(qsTr("截图失败"), "error")
+                return
+            }
+            var folder = Acq.snapshot_dir()
+            if (!folder) {
+                root.notifyRequested(qsTr("截图目录创建失败"), "error")
+                return
+            }
             var stamp = Qt.formatDateTime(new Date(), "yyyyMMdd-hhmmss")
-            var folder = StandardPaths.writableLocation(StandardPaths.PicturesLocation)
-            if (!folder)
-                folder = StandardPaths.writableLocation(StandardPaths.HomeLocation)
-            if (folder)
-                result.saveToFile(folder + "/EEG-KSC-" + stamp + ".png")
+            if (result.saveToFile(folder + "/EEG-KSC-" + stamp + ".png"))
+                root.notifyRequested(qsTr("截图已保存"), "success")
+            else
+                root.notifyRequested(qsTr("截图保存失败"), "error")
         })
     }
 
@@ -152,7 +160,6 @@ Item {
     }
 
     DesignCanvas {
-        id: canvas
         anchors.fill: parent
 
     // ---------- 背景 ----------
@@ -738,6 +745,7 @@ Item {
 
     // ---------- 三个主面板 ----------
     WaveformPanel {
+        id: waveformPanel
         x: 450
         y: 150
         width: 1109

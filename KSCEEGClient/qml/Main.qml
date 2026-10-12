@@ -22,7 +22,7 @@ ApplicationWindow {
     height: 1080
     visibility: Window.FullScreen
     visible: true
-    color: "#eef2f5"
+    color: Design.windowFill
     title: loggedIn ? qsTr("EEG-KSC 采集工作台") : qsTr("EEG-KSC 登录")
 
     // ---------- 登录态 ----------

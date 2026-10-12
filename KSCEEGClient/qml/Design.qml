@@ -23,6 +23,11 @@ QtObject {
     // 所以统一走这个绝对前缀（模块资源固定在 qrc 的这个位置）。
     readonly property string assetRoot: "qrc:/qt/qml/KSCEEGClient/assets/"
 
+    // 窗口底色。面板底 panelFill 是**半透明**色，屏幕上的实际观感是它叠在这层底色上的
+    // 合成结果；截图（grabToImage）只渲染目标子树、画布初始为透明，脱离窗口后就会
+    // 透成白底、与程序显示不一致。凡是要独立成像的地方，都得自己把这层底色补上
+    readonly property color windowFill: "#eef2f5"
+
     // ---------- 主色 ----------
     readonly property color primary: "#7092ab"       // 主蓝灰：面板描边、按钮、主色文字
     readonly property color brand: "#ff8d1a"         // 品牌橙：Logo、登录页标题

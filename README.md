@@ -93,6 +93,39 @@ cmake --build KSCEEGClient/build/release --parallel 1
 | `build/rebuild.cmd` | 复用 Qt Creator 的 Debug 构建目录做增量编译 |
 | `build/configure-nmake-debug.cmd` / `build-nmake-debug.cmd` | 手工配置 / 构建 `build/nmake-debug` |
 
+### 改完代码后启动/退出崩溃：陈旧增量构建
+
+**症状**：Debug 构建下改完代码（尤其是改了某个类的成员，或改动了头文件）后，程序能启动、界面也正常，
+但**退出时**弹出：
+
+```
+Run-Time Check Failure #2 - Stack around the variable 'bridge' was corrupted.
+```
+
+也可能表现为其它内存错乱 / 随机崩溃，或行为与改动的代码对不上。
+
+**根因**：Qt Creator 的构建目录 `build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug` 由 **CMake 4.3 + `NMake Makefiles JOM`**
+生成，其头文件依赖跟踪已失效 —— `CMakeFiles/appKSCEEGClient.dir/src/main.cpp.obj.d` 是 0 字节，
+`compiler_depend.make` 里 `main.cpp` 的依赖项**只列源文件、不列任何头文件**。于是当
+[acquisitionbridge.h](KSCEEGClient/src/bridge/acquisitionbridge.h) 新增成员 `int m_record_sample_rate`
+（`sizeof(AcquisitionBridge)` 由 `0x670` 变 `0x678`）后，`main.cpp` **没有被重编**，最终链接出
+「旧布局的 `main.o` + 新布局的 `acquisitionbridge.o`」混合的 exe。构造函数按新布局多写的 8 字节正好覆盖了
+`main` 栈帧中 `bridge` 变量之后的保护字节 —— MSVC `/RTC1`（含 `/RTCs`）会在函数返回时用
+`_RTC_CheckStackVars` 逐一校验局部变量的保护字节，于是 `main` 返回时报出该错。
+
+**判定**：凡是「改了类定义 / 头文件后出现行为异常、崩溃、内存错乱」，先怀疑此因。快速自查：比对
+`build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug/CMakeFiles/appKSCEEGClient.dir/src/main.cpp.obj`
+与所改头文件的时间戳，若 obj 更早，即为未重编：
+
+```powershell
+Get-Item "KSCEEGClient\build\Desktop_Qt_6_6_3_MSVC2019_64bit_Debug\CMakeFiles\appKSCEEGClient.dir\src\main.cpp.obj",
+         "KSCEEGClient\src\bridge\acquisitionbridge.h" | Select LastWriteTime,Name
+```
+
+**处理**：对该目录执行「**清理 + 重新构建**」，或直接删除 `build/Desktop_Qt_6_6_3_MSVC2019_64bit_Debug`
+后让 Qt Creator 重新配置。注意：**只跑 `cmake --build`（增量）不足以强制重编 `main.cpp`**，`build/rebuild.cmd`
+只做增量构建，不能解决本问题。
+
 ## 运行参数
 
 | 参数 | 作用 |

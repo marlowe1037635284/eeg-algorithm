@@ -1377,6 +1377,17 @@ QString AcquisitionBridge::default_record_dir() const
     return QDir::toNativeSeparators(default_record_directory());
 }
 
+QString AcquisitionBridge::snapshot_dir()
+{
+    // 与 records 一样落在 exe 旁边：截图随程序一起拷贝/归档，不依赖 %LOCALAPPDATA%
+    const QString base = QCoreApplication::applicationDirPath();
+    const QString dir = QDir::fromNativeSeparators(base) + QStringLiteral("/snapshoot");
+    if (!QDir().mkpath(dir))
+        return QString();
+    // 返回正斜杠路径，QML 直接拼 "/文件名" 即可，不必再管分隔符
+    return dir;
+}
+
 QStringList AcquisitionBridge::channel_names() const
 {
     QStringList names;

@@ -125,7 +125,8 @@ Item {
             renderType: Text.NativeRendering
         }
 
-        // 账号输入框：7% 黑底 + 1px 主色描边 + 圆角 10
+        // 账号输入框：7% 黑底 + 1px 描边 + 圆角 10。
+        // 描边随焦点变化：聚焦时高亮成主色，失焦时退回浅灰
         Rectangle {
             id: accountField
             x: 3
@@ -135,7 +136,11 @@ Item {
             radius: 10
             color: Qt.rgba(0, 0, 0, 0.07)
             border.width: 1
-            border.color: Design.primary
+            border.color: accountInput.activeFocus ? Design.primary : "#d9d9d9"
+
+            Behavior on border.color {
+                ColorAnimation { duration: 120 }
+            }
 
             TextInput {
                 id: accountInput
@@ -184,6 +189,7 @@ Item {
 
         // 密码输入框：设计稿里这个框画成了直角（账号框是圆角），
         // 应是设计疏漏，这里按账号框统一成圆角 10。
+        // 描边规则与账号框一致：聚焦高亮主色，失焦浅灰
         Rectangle {
             id: passwordField
             x: 3
@@ -192,6 +198,12 @@ Item {
             height: 50
             radius: 10
             color: Qt.rgba(0, 0, 0, 0.07)
+            border.width: 1
+            border.color: passwordInput.activeFocus ? Design.primary : "#d9d9d9"
+
+            Behavior on border.color {
+                ColorAnimation { duration: 120 }
+            }
 
             TextInput {
                 id: passwordInput

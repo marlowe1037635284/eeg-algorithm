@@ -786,6 +786,8 @@ Item {
         y: 225
         width: 331
         height: 499
+        // 采集中禁用「阻抗扫描」按钮（见 ElectrodePanel）
+        collecting: root.collecting
         // 扫描结果由面板自己算，这里只负责把小结交给外层弹提示 ——
         // 16 行列表在 331 宽的格子里只能露出 4 行，不看提示就不知道整体如何
         onScanFinished: (summary) => {

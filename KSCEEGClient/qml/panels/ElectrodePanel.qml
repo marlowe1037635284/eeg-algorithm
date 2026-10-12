@@ -18,6 +18,8 @@ Item {
     // 扫描一下就闪完，用户根本来不及看清「刚才那下点上了没有」
     property bool scanning: false
     property string scanError: ""
+    // 是否正在采集（由工作台注入 root.collecting）。采集中禁止再发起阻抗扫描
+    property bool collecting: false
 
     // 设备实际采到的 16 路。有扫描结果就按结果走，没有则退回「未扫描」全灰默认
     readonly property var quality: Acq.electrodeScanValid ? Acq.electrodeQuality : []
@@ -227,6 +229,8 @@ Item {
         color: Design.primarySoft
         border.width: 1
         border.color: Design.panelBorder
+        // 采集中置灰，提示这一刻不可用
+        opacity: root.collecting ? 0.45 : 1.0
 
         // 扫描中把图标转起来：1.2 秒的等待里没有动效，看着像卡住
         Image {
@@ -259,12 +263,12 @@ Item {
             font.pixelSize: 16
         }
 
-        // 按钮始终可点，由扫描本身判断数据够不够并给出原因。
-        // 按「是否在采集」来禁用是错的：串口开着但没在录制时信号照样在流，
-        // 那时数据是有的，禁用反而把一个能用的功能挡在外面
+        // 采集中禁用：C++ 侧 start_collection() 已发 's' 让设备停发阻抗帧、切回脑电
+        // 数据流，此时再按 'Z' 会把设备又拽回阻抗帧，打断正在采集的脑电数据。
+        // 未采集时串口开着就有数据，按钮保持可点，由扫描本身判断数据够不够并给出原因
         MouseArea {
             anchors.fill: parent
-            enabled: !root.scanning
+            enabled: !root.scanning && !root.collecting
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             onClicked: root.startScan()

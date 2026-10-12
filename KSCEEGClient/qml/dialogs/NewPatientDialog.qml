@@ -119,14 +119,29 @@ Item {
                     visible: !parent.isChoice
                 }
 
-                Text {
+                // 标签。必填项的星号单独拆出来画成红色：
+                // 整条标签只用一个 Text 的话没法只染色末尾那个星号
+                Row {
                     x: modelData.labelX
                     y: modelData.fieldY + 8
-                    text: modelData.label
-                    color: Design.textPrimary
-                    font.family: Design.fontFamily
-                    font.styleName: Design.styleRegular
-                    font.pixelSize: 18
+                    spacing: 1
+
+                    Text {
+                        text: modelData.label.replace("*", "")
+                        color: Design.textPrimary
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 18
+                    }
+
+                    Text {
+                        text: "*"
+                        visible: modelData.label.indexOf("*") !== -1
+                        color: Design.bad
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 18
+                    }
                 }
 
                 // 下拉：点开一个列表来选

@@ -84,7 +84,16 @@ Item {
         FormLabel { x: 26;  y: 152; text: qsTr("性别") }
         FormLabel { x: 26;  y: 217; text: qsTr("科室") }
         FormLabel { x: 26;  y: 282; text: qsTr("备注") }
-        FormLabel { x: 321; y: 87;  text: qsTr("姓名*") }
+        // 姓名是必填项，星号单独拆出来画成红色（与「新增患者」一致）：
+        // 整条标签只用一个 Text 的话没法只染色末尾那个星号
+        Row {
+            x: 321
+            y: 87
+            spacing: 0
+
+            FormLabel { text: qsTr("姓名") }
+            FormLabel { text: "*"; color: Design.bad }
+        }
         FormLabel { x: 321; y: 152; text: qsTr("年龄") }
         FormLabel { x: 321; y: 217; text: qsTr("诊断") }
 

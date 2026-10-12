@@ -561,6 +561,9 @@ bool AcquisitionBridge::start_collection(const QString &directory, const QString
     SerialCollector::StartRequest request;
     request.format = SerialCollector::SaveFormat::Binary;
     request.channel_names = eeg_montage::channel_names();
+    // 落盘采样率：与设备不同（整数倍）时采集线程会在写文件时升采样。
+    // 只影响文件，采集/算法/显示仍按设备原始速率（见 set_record_sample_rate）
+    request.save_sample_rate = m_record_sample_rate;
 
     // 目录不存在时由采集线程的 recording_start() 建出来（它本来就要处理
     // 落盘失败的各种情况，建目录属于同一件事），这里不重复
@@ -1262,6 +1265,30 @@ void AcquisitionBridge::set_channel_count(int count)
     // 从十几万 µV 衰减下来的巨大瞬变，波形、地形图、频谱一起受影响
     reset_channels(clamped);
     emit logMessage(tr("显示通道数改为 %1").arg(clamped));
+}
+
+void AcquisitionBridge::set_record_sample_rate(int rate)
+{
+    // 非正数归零（=与设备一致）；上限与设备采样率取同一范围，挡住离谱值
+    const int clamped = rate > 0 ? std::clamp(rate, 1, 100000) : 0;
+    if (clamped == m_record_sample_rate)
+    {
+        return;
+    }
+    m_record_sample_rate = clamped;
+    emit recordSampleRateChanged();
+}
+
+// 与 SerialCollector 里决定要不要升采样的规则保持一致：只有落盘速率是设备
+// 速率的**整数倍且更大**时才升采样，其余情况原样落盘（速率即设备速率）
+int AcquisitionBridge::effective_record_sample_rate() const
+{
+    const int source = std::max(1, m_sample_rate);
+    if (m_record_sample_rate <= source || m_record_sample_rate % source != 0)
+    {
+        return source;
+    }
+    return m_record_sample_rate;
 }
 
 bool AcquisitionBridge::is_channel_visible(int channel) const

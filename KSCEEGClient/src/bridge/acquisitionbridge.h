@@ -60,6 +60,13 @@ class AcquisitionBridge : public QObject, public ChunkSink
     // 未显式指定落盘目录时的默认值（程序执行目录下的 records）。
     // 暴露给 QML 是为了让「系统设置」页显示的就是真正会用的目录，避免两处各写一份默认值
     Q_PROPERTY(QString defaultRecordDir READ default_record_dir CONSTANT)
+    // 落盘采样率。设备固定以 1000 Hz 出帧（见 serialprotocol.h），若这里设成它的
+    // 整数倍（如 2000），采集线程会在写文件时按线性插值升采样，让记录文件以这个
+    // 速率标注与存放。**只影响文件**：内存采集、算法与显示都仍按设备原始速率。
+    // 0 表示与设备一致（不重采样）。
+    // 由「系统设置」页在进入/保存时写入
+    Q_PROPERTY(int recordSampleRate READ record_sample_rate WRITE set_record_sample_rate
+                   NOTIFY recordSampleRateChanged)
 
     // ---- 波形 ----
     // 界面上的 4/8/16 档位。**纯显示**：它决定画几条泳道，串口与算法侧永远是
@@ -190,6 +197,12 @@ public:
 
     // 采样率，状态栏与「数据点」显示用
     Q_INVOKABLE int sample_rate() const { return m_sample_rate; }
+    // 落盘采样率（见 Q_PROPERTY 说明）。0 表示与设备一致
+    int record_sample_rate() const { return m_record_sample_rate; }
+    void set_record_sample_rate(int rate);
+    // 记录文件里**实际**写入的采样率：落盘速率是设备速率的整数倍时才是它，
+    // 否则采集线程会原样落盘。界面的采集记录要用它，才与文件头一致
+    Q_INVOKABLE int effective_record_sample_rate() const;
     // 电极接触质量扫描（面板上的「阻抗扫描」按钮）。
     //
     // 分两步：按下按钮时调 begin_electrode_scan() 发 'Z'，设备改为上传**真实阻抗**
@@ -317,6 +330,7 @@ signals:
     void errorTextChanged();
     void statsChanged();
     void channelCountChanged();
+    void recordSampleRateChanged();
     void channelVisibilityChanged();
     void waveRevisionChanged();
     void timeWindowChanged();
@@ -402,6 +416,8 @@ private:
     PythonWorker m_worker;
 
     int m_sample_rate = 1000;
+    // 落盘采样率，0 表示与设备一致（不重采样）。只影响写文件，见 Q_PROPERTY 说明
+    int m_record_sample_rate = 0;
     int m_channel_count = 16;
     QVector<bool> m_channel_visible;
 

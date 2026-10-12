@@ -571,8 +571,11 @@ ApplicationWindow {
                 // 先开一条采集记录再开采集：患者管理页的「采集次数 / 最近采集」
                 // 两列和历史记录页都是从 recording_sessions 来的
                 if (page.patientNo && page.patientNo.length > 0) {
+                    // 采样率用**实际落盘**的速率：设备固定 1000Hz，系统设置选 2000 时
+                    // 文件会升采样成 2000Hz，记录行要与文件头一致（否则历史列表和
+                    // 分析页会对同一次采集显示出两个采样率）
                     appDatabase.recordCollection(page.patientNo, Acq.acquired_channel_count(),
-                                                 Acq.sample_rate())
+                                                 Acq.effective_record_sample_rate())
                     // 记下这次会话属于谁，停止时用它补全记录
                     window.openSessionPatient = page.patientNo
                 }

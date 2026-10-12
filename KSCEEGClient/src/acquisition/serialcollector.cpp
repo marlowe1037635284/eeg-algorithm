@@ -81,6 +81,18 @@ struct Recorder
     // 还在正常落盘。磁盘满、盘掉线时置 false，此后 recording_write_frame()
     // 直接返回、不再尝试写 —— 每帧重试一次只会把采集循环拖慢
     bool active = false;
+
+    // ---- 升采样（落盘采样率是设备采样率的整数倍时用，如 1000 → 2000）----
+    // 设备固定按设备速率出帧，这里在写文件时按线性插值补点，让文件以目标速率
+    // 标注与存放。只影响写进文件的数据，采集/算法/显示仍走设备原始速率
+    int channels = 0;          // 每帧通道数，插值要逐通道算
+    int ratio = 1;             // 输出帧数 / 输入帧数；<=1 表示原样落盘
+    bool has_prev = false;     // 已经攒下上一帧、可以插值了
+    QVector<float> prev;       // 上一帧样本（插值区间的左端点）
+    QVector<float> scratch;    // 插值输出帧的临时缓冲，避免每帧重新分配
+    // 已喂进来的输入帧数。状态栏「已存 N 帧」用它，才与「已收 N 帧」可比 ——
+    // 升采样后写进文件的帧数是它的 ratio 倍，拿文件帧数去显示会像丢/多了数据
+    qint64 source_frames = 0;
 };
 
 // 一次采集过程的全部可变状态。在 run() 里建**一份**，从打开串口一直用到关闭。
@@ -186,6 +198,10 @@ void reset_for_new_run(RunState &state)
 // 失败是「单向」的：一旦写不进去就把 recorder.active 置 false，之后
 // recording_write_frame 直接返回 true（当作没这回事），采集本身不受影响。
 // 落盘失败该不该中断采集的答案是不该 —— 串口上的数据仍有显示与处理价值
+//
+// write_raw_frame 的前向声明：recording_stop()（升采样补尾帧）在它定义之前就会用到
+void write_raw_frame(Recorder &recorder, const float *values, int channel_count);
+
 void recording_flush(Recorder &recorder)
 {
     if (recorder.buffer.isEmpty())
@@ -212,6 +228,16 @@ QString recording_stop(Recorder &recorder)
         recorder.format = SerialCollector::SaveFormat::None;
         recorder.buffer.clear();
         return QString();
+    }
+
+    // 升采样：最后一帧没有「下一帧」可插值，到这里按保持（重复）把它的 ratio 个
+    // 输出点补满。少了这一步，输出会比输入少一整块、文件尾部缺一小段
+    if (recorder.active && recorder.ratio > 1 && recorder.has_prev)
+    {
+        for (int j = 0; j < recorder.ratio && recorder.active; ++j)
+        {
+            write_raw_frame(recorder, recorder.prev.constData(), recorder.channels);
+        }
     }
 
     recording_flush(recorder);
@@ -244,10 +270,28 @@ bool recording_start(Recorder &recorder, const SerialCollector::StartRequest &re
     // 保险：上一轮没关干净时先收尾
     recording_stop(recorder);
 
+    // 先回到「原样落盘」的中性状态，避免上一轮的升采样状态残留到这一段
+    recorder.ratio = 1;
+    recorder.has_prev = false;
+    recorder.source_frames = 0;
+
     if (request.save_path.isEmpty() || request.format == SerialCollector::SaveFormat::None)
     {
         return true;
     }
+
+    // 落盘采样率（见 Recorder 里升采样的说明）：目标必须是设备速率的整数倍
+    // 才做升采样，否则一律原样落盘。effective_rate 是文件里该写的采样率
+    const int source_rate = std::max(1, sample_rate);
+    const int target_rate = request.save_sample_rate > 0 ? request.save_sample_rate : source_rate;
+    recorder.ratio = (target_rate > source_rate && target_rate % source_rate == 0)
+                         ? target_rate / source_rate
+                         : 1;
+    const int effective_rate = recorder.ratio > 1 ? target_rate : source_rate;
+
+    recorder.channels = channel_count;
+    recorder.prev = QVector<float>(channel_count, 0.0f);
+    recorder.scratch.resize(channel_count);
 
     const QFileInfo info(request.save_path);
     if (!QDir().mkpath(info.absolutePath()))
@@ -279,7 +323,7 @@ bool recording_start(Recorder &recorder, const SerialCollector::StartRequest &re
         header += "# EEG 采集记录（单位 uV）\n";
         header += "# 起始时间: "
                   + QDateTime::currentDateTime().toString(Qt::ISODate).toUtf8() + "\n";
-        header += "# 采样率: " + QByteArray::number(sample_rate) + " Hz\n";
+        header += "# 采样率: " + QByteArray::number(effective_rate) + " Hz\n";
         header += "# 通道数: " + QByteArray::number(channel_count) + "\n";
         header += "# 通道名: " + names.join(',').toUtf8() + "\n";
         header += names.join(',').toUtf8() + "\n";
@@ -291,7 +335,7 @@ bool recording_start(Recorder &recorder, const SerialCollector::StartRequest &re
         header.append(eegbin::kMagic, int(sizeof(eegbin::kMagic)));
         append_u32_le(header, eegbin::kVersion);
         append_u32_le(header, static_cast<quint32>(channel_count));
-        append_u32_le(header, static_cast<quint32>(sample_rate));
+        append_u32_le(header, static_cast<quint32>(effective_rate));
         append_u32_le(header, eegbin::kHeaderSize);
         append_i64_le(header, QDateTime::currentMSecsSinceEpoch());
         append_i64_le(header, 0);                          // frame_count，收尾回填
@@ -309,15 +353,10 @@ bool recording_start(Recorder &recorder, const SerialCollector::StartRequest &re
     return true;
 }
 
-// 写一帧。返回 false 表示落盘失败（此时 recorder.active 已被置 false，
-// 原因留在 recorder.file 的 errorString 里）
-bool recording_write_frame(Recorder &recorder, const float *values, int channel_count)
+// 按落盘格式把一帧追加进缓冲。采样率换算（升采样）由调用方在调用它之前完成 ——
+// 这一层只负责「一帧怎么落到文件里」，格式分支与攒批/落盘都在这里
+void write_raw_frame(Recorder &recorder, const float *values, int channel_count)
 {
-    if (!recorder.active)
-    {
-        return true;
-    }
-
     if (recorder.format == SerialCollector::SaveFormat::Csv)
     {
         QByteArray line;
@@ -345,6 +384,51 @@ bool recording_write_frame(Recorder &recorder, const float *values, int channel_
     {
         recording_flush(recorder);
     }
+}
+
+// 写一帧。返回 false 表示落盘失败（此时 recorder.active 已被置 false，
+// 原因留在 recorder.file 的 errorString 里）
+//
+// 落盘采样率是设备速率的整数倍时在这里做线性插值升采样：设备每送来一帧，
+// 就补出 ratio 个输出点。插值要用到「上一帧 → 当前帧」这一段，所以第一帧先攒着，
+// 等第二帧到了再一起发；最后一帧的尾块由 recording_stop() 收尾时补上
+bool recording_write_frame(Recorder &recorder, const float *values, int channel_count)
+{
+    if (!recorder.active)
+    {
+        return true;
+    }
+
+    ++recorder.source_frames;
+
+    // 原样落盘：设备速率与落盘速率一致，一帧进一帧出
+    if (recorder.ratio <= 1)
+    {
+        write_raw_frame(recorder, values, channel_count);
+        return recorder.active;
+    }
+
+    if (!recorder.has_prev)
+    {
+        std::memcpy(recorder.prev.data(), values,
+                    static_cast<size_t>(channel_count) * sizeof(float));
+        recorder.has_prev = true;
+        return true;
+    }
+
+    // 在这一段 [上一帧, 当前帧] 上均匀取 ratio 个点：t=0 就是上一帧，
+    // t 越接近 1 越靠近当前帧
+    for (int j = 0; j < recorder.ratio && recorder.active; ++j)
+    {
+        const float t = static_cast<float>(j) / static_cast<float>(recorder.ratio);
+        for (int ch = 0; ch < channel_count; ++ch)
+        {
+            recorder.scratch[ch] = recorder.prev[ch] * (1.0f - t) + values[ch] * t;
+        }
+        write_raw_frame(recorder, recorder.scratch.constData(), channel_count);
+    }
+    std::memcpy(recorder.prev.data(), values,
+                static_cast<size_t>(channel_count) * sizeof(float));
     return recorder.active;
 }
 
@@ -701,7 +785,9 @@ void SerialCollector::run()
                     gap_pending = false;
                 }
 
-                const qint64 saved_frames = state.recorder.frames;
+                // 状态栏「已存 N 帧」用输入帧数：升采样后文件里的帧数是它的 ratio 倍，
+                // 拿文件帧数去显示会让人以为存进去的数据多了一倍
+                const qint64 saved_frames = state.recorder.source_frames;
                 const QString summary = recording_stop(state.recorder);
                 if (!summary.isEmpty())
                 {

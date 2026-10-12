@@ -49,6 +49,7 @@ Item {
     property string recordDir: Acq.defaultRecordDir
     property int saveIntervalIndex: 1
     property int fileFormatIndex: 0
+    property int sampleRateIndex: 0
     property int channelCountIndex: 2
     property int impedanceThresholdIndex: 1
 
@@ -56,6 +57,10 @@ Item {
     readonly property var saveIntervalValues: ["5", "10", "30"]
     readonly property var fileFormatChoices: [qsTr("BDF（.bdf）"), qsTr("EDF（.edf）"), qsTr("EEG（.eeg）")]
     readonly property var fileFormatValues: ["bdf", "edf", "eeg"]
+    // 「默认采样率」选的是**落盘**采样率：设备固定按 1000 Hz 出帧，选 2000 时
+    // 保存记录文件会做线性插值升采样（见 AcquisitionBridge.recordSampleRate）
+    readonly property var sampleRateChoices: ["1000Hz", "2000Hz"]
+    readonly property var sampleRateValues: ["1000", "2000"]
     readonly property var channelCountChoices: [qsTr("4通道"), qsTr("8通道"), qsTr("16通道")]
     readonly property var channelCountValues: [4, 8, 16]
     readonly property var impedanceChoices: [qsTr("5kΩ"), qsTr("10kΩ"), qsTr("20kΩ")]
@@ -69,10 +74,16 @@ Item {
                                         database.setting("auto_save_minutes", "10")))
         fileFormatIndex = Math.max(0, fileFormatValues.indexOf(
                                       database.setting("record_format", "bdf")))
+        sampleRateIndex = Math.max(0, sampleRateValues.indexOf(
+                                      database.setting("default_sample_rate", "1000")))
         channelCountIndex = Math.max(0, channelCountValues.indexOf(
                                         Number(database.setting("default_channels", "16"))))
         impedanceThresholdIndex = Math.max(0, impedanceValues.indexOf(
                                               database.setting("low_impedance_kohm", "10")))
+
+        // 采样率是「保存时」才生效的落盘参数，但进页面就得同步给 Acq ——
+        // 否则设过 2000 之后重启程序，这一项会悄悄退回默认（等于没生效）
+        Acq.recordSampleRate = Number(sampleRateValues[sampleRateIndex])
     }
 
     function saveSettings() {
@@ -82,6 +93,7 @@ Item {
         database.setSetting("record_dir", recordDir)
         database.setSetting("auto_save_minutes", saveIntervalValues[saveIntervalIndex])
         database.setSetting("record_format", fileFormatValues[fileFormatIndex])
+        database.setSetting("default_sample_rate", sampleRateValues[sampleRateIndex])
         database.setSetting("default_channels", String(channelCountValues[channelCountIndex]))
         database.setSetting("low_impedance_kohm", impedanceValues[impedanceThresholdIndex])
 
@@ -90,6 +102,10 @@ Item {
         // 会让人以为数据出了问题
         if (!Acq.collecting)
             Acq.channelCount = channelCountValues[channelCountIndex]
+
+        // 采样率只在「开始采集」时被读取，改完立刻同步给 Acq 即可；
+        // 正在采集的那一段不受影响，下一段才按新值落盘
+        Acq.recordSampleRate = Number(sampleRateValues[sampleRateIndex])
 
         saved()
     }
@@ -107,10 +123,6 @@ Item {
         title: qsTr("选择记录保存目录")
         onAccepted: root.recordDir = root.pathFromUrl(selectedFolder)
     }
-
-    // 采集默认值的「默认采样率」是只读的：设备按固定的 1000 Hz 出帧，
-    // 这个值必须与设备一致，不能由用户改（改了只会让时间轴与算法的时间基准全错）
-    readonly property string deviceRateText: Acq.sample_rate() + "Hz"
 
     AppShell {
         anchors.fill: parent
@@ -273,14 +285,15 @@ Item {
                 font.pixelSize: 18
             }
 
-            // 只读：设备的采样率不能改，写成下拉框只会让人以为能改
+            // 「默认采样率」选的是**落盘**采样率：设备固定按 1000 Hz 出帧，
+            // 选 2000 时保存记录文件会做线性插值升采样
             SettingRow {
                 x: 0
                 y: 64
                 label: qsTr("默认采样率")
-                readOnly: true
-                value: root.deviceRateText
-                hint: qsTr("由设备决定")
+                choices: root.sampleRateChoices
+                currentIndex: root.sampleRateIndex
+                onActivated: (index) => root.sampleRateIndex = index
             }
 
             SettingRow {
@@ -639,13 +652,9 @@ Item {
         id: settingRow
 
         property string label: ""
-        // 只读行直接显示这个值
-        property string value: ""
         // 「阈值」这类夹在标签和下拉框之间的灰字提示，只有低阻抗那一行有
         property string hint: ""
         property bool dividerBelow: true
-        // 只读：不画下拉框也不可点，值直接写在框里（设备决定的值，如采样率）
-        property bool readOnly: false
 
         property var choices: []
         property int currentIndex: 0
@@ -664,8 +673,7 @@ Item {
             font.pixelSize: 16
         }
 
-        // 右对齐贴着下拉框左侧：只读行那个「由设备决定」比「阈值」长得多，
-        // 从固定 x 左对齐会一路顶进右边的数值框，和「1000Hz」叠在一起
+        // 右对齐贴着下拉框左侧：从固定 x 左对齐会和右边的数值框叠在一起
         Text {
             x: 480
             y: 0
@@ -688,33 +696,11 @@ Item {
             visible: settingRow.dividerBelow
         }
 
-        // 只读行：灰底 + 数值，不给箭头也不给点击 —— 看不出能点，就不会有人去点
-        Rectangle {
-            x: 668
-            y: -4
-            width: 142
-            height: 29
-            radius: 10
-            visible: settingRow.readOnly
-            color: Design.panelFillSoft
-
-            Text {
-                x: 12
-                anchors.verticalCenter: parent.verticalCenter
-                text: settingRow.value
-                color: Design.textSecondary
-                font.family: Design.fontFamily
-                font.styleName: Design.styleRegular
-                font.pixelSize: 14
-            }
-        }
-
         ChoiceField {
             x: 668
             y: -4
             width: 142
             height: 29
-            visible: !settingRow.readOnly
             pixelSize: 14
             fieldRadius: 10
             choices: settingRow.choices

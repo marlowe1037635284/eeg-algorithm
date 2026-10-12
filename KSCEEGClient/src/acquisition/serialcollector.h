@@ -69,6 +69,11 @@ public:
         QString save_path;                    // 空表示不落盘
         SaveFormat format = SaveFormat::None;
         QStringList channel_names;            // 只用于 CSV 表头，可为空
+        // 落盘采样率。设备固定以 Config::sample_rate 出帧，这里若设成它的**整数倍**
+        //（如设备的 1000 设成 2000），写文件时按线性插值升采样，让记录文件以这个
+        // 速率标注与存放。只影响写进文件的数据，采集/算法/显示都仍按设备原始速率。
+        // 0 或缺省表示与设备一致（不重采样）
+        int save_sample_rate = 0;
     };
 
     explicit SerialCollector(QObject *parent = nullptr);

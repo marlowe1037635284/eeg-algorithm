@@ -204,7 +204,7 @@ Item {
         Text {
             x: 732
             y: 668
-            text: qsTr("采集开始后，受试者、通道数将锁定；显示幅度、时集和滤波仍可调整。")
+            text: qsTr("采集开始后，受试者、通道数将锁定；显示幅值、时基和滤波仍可调整。")
             color: Design.brand
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular

@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls.Basic
-import QtCore
 import KSCEEGClient
 
 // 应用入口。只管三件事：窗口、登录态、页面/弹窗路由。
@@ -271,12 +270,11 @@ ApplicationWindow {
         return null
     }
 
-    // 导出一条采集记录。导出目录固定用「文档」，不再让用户每导一次选一次目录 ——
-    // 提示语里会带上完整路径，想找文件照着路径去就行
+    // 导出一条采集记录。导出目录跟「系统设置 → 记录保存目录」用同一个 —— 记录本来就
+    // 落在那里，导出再落到同一个地方，用户不必跑到两个目录里找东西。
+    // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录，这里直接信它
     function exportRecord(recordNo) {
-        var folder = StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-        if (!folder || folder.length === 0)
-            folder = StandardPaths.writableLocation(StandardPaths.HomeLocation)
+        var folder = appDatabase.recordDirectory()
         if (!folder || folder.length === 0) {
             showToast(qsTr("找不到可用的导出目录"), "error")
             return
@@ -289,9 +287,7 @@ ApplicationWindow {
     // 从预览弹窗里导出 PDF：排版全在 RecordReport 里做，这里只负责选目录与提示。
     // 与 exportRecord 的区别是产物 —— 那个导原始数据，这个导一份可读的报告
     function exportRecordPdf(recordNo) {
-        var folder = StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-        if (!folder || folder.length === 0)
-            folder = StandardPaths.writableLocation(StandardPaths.HomeLocation)
+        var folder = appDatabase.recordDirectory()
         if (!folder || folder.length === 0) {
             showToast(qsTr("找不到可用的导出目录"), "error")
             return

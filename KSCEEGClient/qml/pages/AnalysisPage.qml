@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls.Basic
-import QtCore
 import KSCEEGClient
 
 // 「数据分析与后处理」页。从历史记录页的「分析」进来，整屏替换掉历史记录。
@@ -109,15 +108,11 @@ Item {
     }
 
     // ---------- 导出 ----------
-    // 与历史记录页的导出同一套：目录固定「文档」，提示语里带完整路径。
-    // StandardPaths 返回的是 url 而不是字符串，这里显式 toString() 再判空 ——
-    // 直接对 url 取 length 拿不到长度（那是 undefined），空目录就漏过去了
+    // 与历史记录页的导出同一套：目录跟「系统设置 → 记录保存目录」用同一个 —— 记录本来
+    // 就落在那里，导出再落到同一个地方，用户不必跑到两个目录里找东西。
+    // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录，这里直接信它
     function exportFolder() {
-        const documents = StandardPaths.writableLocation(StandardPaths.DocumentsLocation)
-        if (documents && documents.toString().length > 0)
-            return documents.toString()
-        const home = StandardPaths.writableLocation(StandardPaths.HomeLocation)
-        return home ? home.toString() : ""
+        return database ? database.recordDirectory() : ""
     }
 
     function exportData() {

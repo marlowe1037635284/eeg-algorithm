@@ -78,14 +78,27 @@ inline int index_of(const QString &name)
     return -1;
 }
 
-// 波形配色。八个一循环，取自设计稿。
+// 波形配色。**下标即通道序号**（palette.at(i) 就是第 i 路电极的颜色），
+// 16 个电极各自固定一种颜色，不再像以前那样 8 个一循环 —— 循环会让 CH1/CH9
+// 同色，波形一多就分不清是哪一路。
+//
 // 与 Design.qml 的 channelColors 是同一套色值 —— 那边给 QML 的画布用，
-// 这边给 C++ 的 QPainter 用；两处必须一致，否则同一路波形在两个页面上是两个颜色
+// 这边给 C++ 的 QPainter 用；两处必须一致，否则同一路波形在两个页面上是两个颜色。
+//
+// 色相按 10-20 分区走：额区偏暖（紫/玫红/橙红/橙/黄/浅红），中央与中颞走绿青，
+// 顶区偏蓝，枕区收在靛/亮粉。左右同名区取相近色相，方便按颜色快速定位到脑区。
 inline QStringList channel_colors()
 {
-    return {QStringLiteral("#0e9fbf"), QStringLiteral("#36a772"), QStringLiteral("#daa82a"),
-            QStringLiteral("#e07a2e"), QStringLiteral("#d675a4"), QStringLiteral("#876ee3"),
-            QStringLiteral("#299fbb"), QStringLiteral("#6baa40")};
+    return {
+        QStringLiteral("#8e44ad"), QStringLiteral("#c2185b"),   // Fp1  Fp2
+        QStringLiteral("#e2582a"), QStringLiteral("#f0a02e"),   // F7   F3
+        QStringLiteral("#e8c019"), QStringLiteral("#ef6f6c"),   // F4   F8
+        QStringLiteral("#96c93d"), QStringLiteral("#2fa85a"),   // T3   C3
+        QStringLiteral("#22b8d8"), QStringLiteral("#16a085"),   // C4   T4
+        QStringLiteral("#3f7bd8"), QStringLiteral("#2f56c8"),   // T5   P3
+        QStringLiteral("#6a5acd"), QStringLiteral("#a05fc0"),   // P4   T6
+        QStringLiteral("#4b3fa0"), QStringLiteral("#e64980"),   // O1   O2
+    };
 }
 
 // 通道档位（4/8/16）→ 显示哪几路。

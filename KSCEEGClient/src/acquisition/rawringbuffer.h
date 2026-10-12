@@ -4,7 +4,7 @@
 #include <QMutex>
 #include <QVector>
 
-#include "eegtypes.h"
+#include "common/eegtypes.h"
 
 // 原始样本的环形缓冲，供 ASR 参考拟合取数。
 //

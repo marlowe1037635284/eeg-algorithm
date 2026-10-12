@@ -124,12 +124,13 @@ QtObject {
     // 扫描结果由调用方传进来而不是自己去读 Acq：Design 是纯数据单例，
     // 拿不到 main.cpp 注入的上下文属性。
     //
-    // 没扫过时按设计稿写 16/16 —— 那一处本来只是示意。**扫过之后必须跟着真实
-    // 结果走**：设计稿里顶栏写 16/16、采集前确认弹窗写 14/16、状态栏写 10/16，
-    // 同一页三个数字，用过一次就没人再信这三个数了
+    // 没扫过时**不能**再写设计稿那个 16/16 —— 那是示意值。一打开软件、
+    // 一次阻抗都没扫，就顶着「16/16 良好」，用户会以为已经检过了；等真扫出
+    // 14/16 反而像是变差了。没结果时统一显示「未扫描」，与左侧电极贴合面板
+    // 的默认态一致。扫过之后必须跟着真实结果走
     function electrodePillText(quality) {
         if (!quality || quality.length === 0)
-            return qsTr("电极贴合  16/16 良好")
+            return qsTr("电极贴合  未扫描")
         return qsTr("电极贴合  ") + electrodeQualityText(quality)
     }
 
@@ -148,8 +149,11 @@ QtObject {
     }
 
     // ---------- 波形通道 ----------
-    // 8 个通道各自的曲线颜色，取自设计稿
-    readonly property var channelColors: ["#0e9fbf", "#36a772", "#daa82a", "#e07a2e",
-                                          "#d675a4", "#876ee3", "#299fbb", "#6baa40"]
+    // 16 个通道各自的曲线颜色，下标对应通道序号，与 C++ 的
+    // eeg_montage::channel_colors() 是同一套色值（两处必须一致）
+    readonly property var channelColors: ["#8e44ad", "#c2185b", "#e2582a", "#f0a02e",
+                                          "#e8c019", "#ef6f6c", "#96c93d", "#2fa85a",
+                                          "#22b8d8", "#16a085", "#3f7bd8", "#2f56c8",
+                                          "#6a5acd", "#a05fc0", "#4b3fa0", "#e64980"]
     readonly property var channelNames: ["Fp1", "Fp2", "F3", "F4", "C3", "C4", "P3", "P4"]
 }

@@ -1,6 +1,6 @@
-#include "bridgeimageproviders.h"
+#include "bridge/bridgeimageproviders.h"
 
-#include "acquisitionbridge.h"
+#include "bridge/acquisitionbridge.h"
 
 WaveformImageProvider::WaveformImageProvider(AcquisitionBridge *bridge)
     : QQuickImageProvider(QQuickImageProvider::Image)

@@ -8,8 +8,9 @@
 
 #include <atomic>
 
-#include "eegtypes.h"
-#include "serialcollector.h"
+#include "common/eegtypes.h"
+#include "acquisition/rawringbuffer.h"
+#include "acquisition/serialcollector.h"
 
 // 只用于下面的自检签名。前置声明而不是包含 pythonengine.h：
 // 本头文件会被面向 QML 的头文件包含，少一层包含扩散就少一处编译顺序的坑

@@ -1,4 +1,4 @@
-#include "appdatabase.h"
+#include "storage/appdatabase.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -8,6 +8,7 @@
 #include <QFileInfo>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QStringList>
 #include <QTextStream>
 #include <QTimeZone>
 #include <QUrl>
@@ -32,6 +33,15 @@ QString defaultDatabasePath()
         return source_dir.filePath(QStringLiteral("eeg-ksc.db"));
 #endif
     return QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("eeg-ksc.db"));
+}
+
+// 记录文件默认目录：可执行文件所在目录下的 records 子目录。
+// 与 AcquisitionBridge::default_record_directory() 是同一个约定 —— 那边是采集落盘时
+// 的兜底值，这里是写进 app_settings 的初始值，两处必须保持一致
+QString defaultRecordDirectory()
+{
+    const QString base = QCoreApplication::applicationDirPath();
+    return QDir::toNativeSeparators(base) + QStringLiteral("/records");
 }
 
 const char *kSettingRemember = "remember_login";
@@ -166,7 +176,11 @@ bool AppDatabase::createTables()
                        "setting_value TEXT NOT NULL)"),
 
         // 患者档案。patient_no 是界面上叫「病历号」的那一列，留空时自动生成，
-        // 所以给它 UNIQUE —— 撞号要当场报错，不能悄悄存成两条
+        // 所以给它 UNIQUE —— 撞号要当场报错，不能悄悄存成两条。
+        //
+        // created_by 记录录入人的账号（users.username）。患者可见性与角色挂钩：
+        // 管理员看全部，其余角色只看自己录入的 —— 就靠这一列。老库里补出来的
+        // 这一列为空串，于是那些历史患者只对管理员可见，这是安全的默认值
         QStringLiteral("CREATE TABLE IF NOT EXISTS patients ("
                        "patient_no TEXT PRIMARY KEY NOT NULL,"
                        "name TEXT NOT NULL,"
@@ -175,6 +189,7 @@ bool AppDatabase::createTables()
                        "department TEXT NOT NULL DEFAULT '',"
                        "diagnosis TEXT NOT NULL DEFAULT '',"
                        "note TEXT NOT NULL DEFAULT '',"
+                       "created_by TEXT NOT NULL DEFAULT '',"
                        "created_at TEXT NOT NULL)"),
 
         // 采集记录。患者列表的「采集次数 / 最近采集」和历史记录页都来自这张表。
@@ -242,6 +257,11 @@ bool AppDatabase::createTables()
     ensure_column(QStringLiteral("users"), QStringLiteral("status"),
                   QStringLiteral("TEXT NOT NULL DEFAULT '启用'"));
     ensure_column(QStringLiteral("users"), QStringLiteral("last_login"),
+                  QStringLiteral("TEXT NOT NULL DEFAULT ''"));
+
+    // 患者可见性按录入人区分，老库上没有这一列 —— 不补的话，非管理员的
+    // patients() 查询会直接报「no such column」
+    ensure_column(QStringLiteral("patients"), QStringLiteral("created_by"),
                   QStringLiteral("TEXT NOT NULL DEFAULT ''"));
     return true;
 }
@@ -430,7 +450,68 @@ void AppDatabase::saveLoginRecord(const QString &phone, const QString &password,
     }
 }
 
+// ==================== 会话 ====================
+
+void AppDatabase::setCurrentUser(const QString &account, const QString &role)
+{
+    m_current_user = account.trimmed();
+    m_current_role = role.trimmed();
+}
+
 // ==================== 患者 ====================
+
+bool AppDatabase::currentUserIsAdmin() const
+{
+    // 角色文本与用户管理页、预置管理员一致。未登录（空角色）按非管理员处理：
+    // 宁可少看，也不要让一个没登录的状态拿到全部患者
+    return m_current_role == QStringLiteral("管理员");
+}
+
+bool AppDatabase::patientBelongsToCurrentUser(const QString &patient_no) const
+{
+    // 管理员看全部，直接放行，省一次查询
+    if (currentUserIsAdmin())
+        return true;
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM patients WHERE patient_no = ? AND created_by = ? LIMIT 1"));
+    query.addBindValue(patient_no.trimmed());
+    query.addBindValue(m_current_user);
+    if (!query.exec())
+    {
+        // 查询本身出错（表缺失、库损坏等）与「不是本人录入」必须分开：
+        // 前者要留下日志，否则会被静默当成一次越权拒绝，排障时毫无线索。
+        // 返回值仍是拒绝 —— 出错时按安全策略默认不放行
+        qWarning() << "[db] 检查患者归属失败:" << query.lastError().text();
+        return false;
+    }
+    // 走到这里 exec 已成功，查不到行就说明该患者不存在或不是自己录入的，
+    // 两种情况对外不作区分
+    return query.next();
+}
+
+bool AppDatabase::sessionBelongsToCurrentUser(int record_id) const
+{
+    if (currentUserIsAdmin())
+        return true;
+
+    // 记录本身没存录入人，归属得看它挂在哪位患者上 —— 与 sessions() 的过滤口径一致
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM recording_sessions s"
+        "  JOIN patients p ON p.patient_no = s.patient_no"
+        " WHERE s.id = ? AND p.created_by = ? LIMIT 1"));
+    query.addBindValue(record_id);
+    query.addBindValue(m_current_user);
+    if (!query.exec())
+    {
+        // 与 patientBelongsToCurrentUser 同一口径：出错记日志并拒绝，不静默
+        qWarning() << "[db] 检查记录归属失败:" << query.lastError().text();
+        return false;
+    }
+    return query.next();
+}
 
 QString AppDatabase::nextPatientNo() const
 {
@@ -464,16 +545,25 @@ QVariantList AppDatabase::patients()
 
     // 采集次数与最近采集时间用一条子查询汇总，避免在主查询里写两遍患者表。
     // LEFT JOIN 而不是 INNER JOIN：一次都没采过的患者也必须出现（次数 0、时间为空）
-    QSqlQuery query(m_database);
-    query.prepare(QStringLiteral(
+    //
+    // 可见性过滤：管理员不加条件看全部，其余角色只看自己录入的（created_by = 账号）。
+    // 与 LEFT JOIN 搭配时条件写在 WHERE 里针对的是患者行，语义正确
+    QString sql = QStringLiteral(
         "SELECT p.patient_no, p.name, p.gender, p.age, p.department, p.diagnosis, p.note,"
         "       p.created_at,"
         "       COUNT(s.id) AS record_count,"
         "       COALESCE(MAX(s.started_at), '') AS last_record"
         "  FROM patients p"
-        "  LEFT JOIN recording_sessions s ON s.patient_no = p.patient_no"
-        " GROUP BY p.patient_no"
-        " ORDER BY p.patient_no"));
+        "  LEFT JOIN recording_sessions s ON s.patient_no = p.patient_no");
+    if (!currentUserIsAdmin())
+        sql += QStringLiteral(" WHERE p.created_by = ?");
+    sql += QStringLiteral(" GROUP BY p.patient_no ORDER BY p.patient_no");
+
+    QSqlQuery query(m_database);
+    query.prepare(sql);
+    // 绑定值必须与占位符同进同出 —— 只在拼了 WHERE 时才 bind
+    if (!currentUserIsAdmin())
+        query.addBindValue(m_current_user);
     if (!query.exec())
     {
         qWarning() << "[db] 查询患者失败:" << query.lastError().text();
@@ -532,8 +622,9 @@ QVariantMap AppDatabase::addPatient(const QString &patient_no, const QString &na
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
-        "INSERT INTO patients(patient_no, name, gender, age, department, diagnosis, note, created_at) "
-        "VALUES(?, ?, ?, ?, ?, ?, ?, datetime('now'))"));
+        "INSERT INTO patients(patient_no, name, gender, age, department, diagnosis, note,"
+        "                    created_by, created_at) "
+        "VALUES(?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))"));
     query.addBindValue(number);
     query.addBindValue(trimmed_name);
     query.addBindValue(gender.trimmed());
@@ -541,6 +632,8 @@ QVariantMap AppDatabase::addPatient(const QString &patient_no, const QString &na
     query.addBindValue(department.trimmed());
     query.addBindValue(diagnosis.trimmed());
     query.addBindValue(note.trimmed());
+    // 记下录入人：非管理员之后只能看到自己登记的患者（见 patients()）
+    query.addBindValue(m_current_user);
 
     if (!query.exec())
     {
@@ -562,6 +655,29 @@ bool AppDatabase::removePatient(const QString &patient_no)
 {
     if (!ensureOpen())
         return false;
+
+    // 非管理员只能删自己录入的患者。列表里看不到的患者，这里也必须改不动
+    if (!patientBelongsToCurrentUser(patient_no))
+    {
+        qWarning() << "[db] 拒绝删除非本人录入的患者:" << patient_no;
+        return false;
+    }
+
+    // 这位患者名下所有记录落盘的文件路径要在删行之前查出来 —— 行一删就再也指不回文件
+    QStringList recorded_files;
+    QSqlQuery locate(m_database);
+    locate.prepare(QStringLiteral(
+        "SELECT file_path FROM recording_sessions WHERE patient_no = ?"));
+    locate.addBindValue(patient_no);
+    if (locate.exec())
+    {
+        while (locate.next())
+        {
+            const QString path = locate.value(0).toString();
+            if (!path.isEmpty())
+                recorded_files.append(path);
+        }
+    }
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("DELETE FROM patients WHERE patient_no = ?"));
@@ -586,6 +702,15 @@ bool AppDatabase::removePatient(const QString &patient_no)
     sessions.prepare(QStringLiteral("DELETE FROM recording_sessions WHERE patient_no = ?"));
     sessions.addBindValue(patient_no);
     sessions.exec();
+
+    // 库行删完再删磁盘文件。删不掉（被占用、已被手工移走）不算删除失败 ——
+    // 记录确实已经没了，只是留一条日志；与 removeSession 同一口径。
+    // 放在最后是为了万一上面 DB 删除失败（提前 return）时，文件先没掉就两头空了
+    for (const QString &path : recorded_files)
+    {
+        if (QFile::exists(path) && !QFile::remove(path))
+            qWarning() << "[db] 患者已删除，但原始文件删不掉:" << path;
+    }
     return true;
 }
 
@@ -600,6 +725,13 @@ QVariantMap AppDatabase::updatePatient(const QString &original_no, const QString
     if (!ensureOpen())
     {
         result[QStringLiteral("message")] = QStringLiteral("数据库不可用");
+        return result;
+    }
+
+    // 非管理员只能改自己录入的患者。归属按改之前的病历号判定
+    if (!patientBelongsToCurrentUser(original_no))
+    {
+        result[QStringLiteral("message")] = QStringLiteral("无权修改该患者");
         return result;
     }
 
@@ -672,15 +804,31 @@ QVariantList AppDatabase::sessions(const QString &patient_no)
                        "  FROM recording_sessions s"
                        "  LEFT JOIN patients p ON p.patient_no = s.patient_no");
 
-    if (patient_no.trimmed().isEmpty())
+    // 可见性过滤与患者列表同一口径：管理员看全部，其余角色只看自己录入患者的记录。
+    // 记录本身没存录入人，归属得看它挂在哪位患者上（patients.created_by）。
+    // 「按患者筛选」和「按录入人过滤」是并且关系，必须拼进同一句 WHERE
+    const bool filter_by_patient = !patient_no.trimmed().isEmpty();
+    const bool restrict_owner = !currentUserIsAdmin();
+
+    QString sql = columns;
+    if (filter_by_patient || restrict_owner)
     {
-        query.prepare(columns + QStringLiteral(" ORDER BY s.id DESC"));
+        sql += QStringLiteral(" WHERE ");
+        if (filter_by_patient)
+            sql += QStringLiteral("s.patient_no = ?");
+        if (filter_by_patient && restrict_owner)
+            sql += QStringLiteral(" AND ");
+        if (restrict_owner)
+            sql += QStringLiteral("p.created_by = ?");
     }
-    else
-    {
-        query.prepare(columns + QStringLiteral(" WHERE s.patient_no = ? ORDER BY s.id DESC"));
+    sql += QStringLiteral(" ORDER BY s.id DESC");
+    query.prepare(sql);
+
+    // 绑定顺序必须跟占位符出现的顺序一致
+    if (filter_by_patient)
         query.addBindValue(patient_no.trimmed());
-    }
+    if (restrict_owner)
+        query.addBindValue(m_current_user);
 
     if (!query.exec())
     {
@@ -812,6 +960,10 @@ QVariantList AppDatabase::sessionEvents(const QString &record_no)
     if (id < 0 || !ensureOpen())
         return rows;
 
+    // 与 session() 同一口径：越权时返回空列表
+    if (!sessionBelongsToCurrentUser(id))
+        return rows;
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "SELECT offset_s, wall_clock, label, color FROM session_events"
@@ -842,6 +994,11 @@ QVariantMap AppDatabase::session(const QString &record_no)
     QVariantMap row;
     const int id = parse_record_id(record_no);
     if (id < 0 || !ensureOpen())
+        return row;
+
+    // 非管理员只能看自己录入患者的记录。越权时返回空 map（与「记录不存在」同形），
+    // 不给出「存在但无权」这种能用来探测别人数据的信息
+    if (!sessionBelongsToCurrentUser(id))
         return row;
 
     QSqlQuery query(m_database);
@@ -891,6 +1048,13 @@ bool AppDatabase::removeSession(const QString &record_no)
     if (id < 0 || !ensureOpen())
         return false;
 
+    // 非管理员只能删自己录入患者的记录，与 sessions() 的可见性口径一致
+    if (!sessionBelongsToCurrentUser(id))
+    {
+        qWarning() << "[db] 拒绝删除非本人录入的记录:" << record_no;
+        return false;
+    }
+
     // 落盘路径要在删行之前读出来
     QString recorded;
     QSqlQuery locate(m_database);
@@ -934,6 +1098,8 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
     result[QStringLiteral("path")] = QString();
     result[QStringLiteral("isRawFile")] = false;
 
+    // 归属校验在 session() 内部完成：非本人录入的记录会返回空 map，
+    // 下面统一按「记录不存在」处理 —— 导出这条越权路径就此堵上，也不再额外透露存在性
     const QVariantMap row = session(record_no);
     if (row.isEmpty())
     {
@@ -1045,6 +1211,22 @@ bool AppDatabase::setSetting(const QString &key, const QString &value)
         return false;
     }
     return true;
+}
+
+QString AppDatabase::recordDirectory()
+{
+    const QString fallback = defaultRecordDirectory();
+    const QString stored = settingValue(QStringLiteral("record_dir")).trimmed();
+
+    // 存过、且本机这个目录真的在 → 尊重用户选的
+    if (!stored.isEmpty() && stored != fallback && QDir(stored).exists())
+        return QDir::toNativeSeparators(stored);
+
+    // 其余情况统一回退默认值：从没存过，或存的是别处（换机器/重装）残留的旧路径。
+    // 回退时把库里的值也改成默认，否则会出现「界面显示默认、落盘仍用旧路径」的裂脑
+    if (stored != fallback)
+        setSetting(QStringLiteral("record_dir"), fallback);
+    return fallback;
 }
 
 // ==================== 标注标签 ====================

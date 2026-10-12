@@ -8,12 +8,12 @@
 #include <QStringList>
 #include <QTimer>
 
-#include "acquisitionbridge.h"
-#include "postprocess.h"
-#include "pythonengine.h"
-#include "pythonworker.h"
-#include "recordingpreview.h"
-#include "serialcollector.h"
+#include "bridge/acquisitionbridge.h"
+#include "analysis/postprocess.h"
+#include "algorithm/pythonengine.h"
+#include "algorithm/pythonworker.h"
+#include "analysis/recordingpreview.h"
+#include "acquisition/serialcollector.h"
 
 namespace
 {

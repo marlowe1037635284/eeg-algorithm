@@ -65,6 +65,11 @@ ApplicationWindow {
     readonly property string defaultUserName: qsTr("管理员")
     readonly property string defaultUserRole: qsTr("管理员")
 
+    // 只有管理员能进「用户管理」。角色为空（未登录）时按登录页给的默认口径走，
+    // 与顶栏显示的角色保持同一个判断
+    readonly property bool isAdmin: (currentUserRole.length > 0 ? currentUserRole : defaultUserRole)
+                                    === defaultUserRole
+
     // 应用数据库：账号、偏好、患者共用同一个实例。
     //
     // 做成 Main 里的一个对象再显式传给需要的页面/弹窗，而不是让各处自己去开
@@ -121,6 +126,9 @@ ApplicationWindow {
                 // 存设置属于「锦上添花」，不该因为它出错就把登录卡住。
                 window.currentUserName = result.displayName
                 window.currentUserRole = result.role
+                // 把这个身份告诉数据层：管理员看全部患者，其余角色只看自己录入的。
+                // 必须在读患者之前设置 —— 登录后进入的工作台/患者管理页都会按它取数据
+                appDatabase.setCurrentUser(account, result.role)
                 window.loggedIn = true
                 window.enterWorkbench()
                 // 登录成功后自动连接设备：串口从此独立于采集，一次连上后常开，
@@ -178,7 +186,12 @@ ApplicationWindow {
         else if (label === qsTr("历史记录"))
             currentPage = "history"
         else if (label === qsTr("用户管理"))
-            currentPage = "user"
+        {
+            // 非管理员在导航条里看不到这一项。这里再挡一道：万一被别处触发，
+            // 也不让「用户管理」页切过去
+            if (window.isAdmin)
+                currentPage = "user"
+        }
         else if (label === qsTr("系统设置"))
             currentPage = "settings"
     }
@@ -334,6 +347,9 @@ ApplicationWindow {
         Acq.close_port()
         activeDialog = ""
         loggedIn = false
+        // 清掉会话身份：不这样做的话，下一个登录的人在数据层眼里仍是上一个人，
+        // 非管理员会继承到别人的可见范围
+        appDatabase.setCurrentUser("", "")
         if (!loginPage.rememberChecked)
             loginPage.clearPassword()
     }
@@ -349,8 +365,9 @@ ApplicationWindow {
             // 事件标签取自系统设置里维护的那一份。工作台每次进入都会重建，
             // 所以这里读一次就是最新的
             tags: appDatabase.tags()
-            // 落盘目录同理：工作台重建时读一次设置，采集时就近用它
-            recordDir: appDatabase.setting("record_dir", "")
+            // 落盘目录同理：工作台重建时读一次设置，采集时就近用它。
+            // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录
+            recordDir: appDatabase.recordDirectory()
 
             onLogoutRequested: window.handleLogout()
             onNavRequested: (label) => window.navigateTo(label)

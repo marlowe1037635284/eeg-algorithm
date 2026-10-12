@@ -1,4 +1,4 @@
-#include "recordreport.h"
+#include "analysis/recordreport.h"
 
 #include <QDateTime>
 #include <QDir>
@@ -16,8 +16,8 @@
 #include <algorithm>
 #include <cmath>
 
-#include "eegmontage.h"
-#include "recordingpreview.h"
+#include "common/eegmontage.h"
+#include "analysis/recordingpreview.h"
 
 namespace
 {

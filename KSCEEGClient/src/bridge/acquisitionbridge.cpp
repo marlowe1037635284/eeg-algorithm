@@ -1,4 +1,4 @@
-#include "acquisitionbridge.h"
+#include "bridge/acquisitionbridge.h"
 
 #include <QCoreApplication>
 #include <QDateTime>
@@ -12,18 +12,17 @@
 #include <QPolygonF>
 #include <QThread>
 #include <QSerialPortInfo>
-#include <QStandardPaths>
 #include <QtMath>
 
 #include <cstring>
 #include <functional>
 #include <limits>
 
-#include "eegmontage.h"
-#include "pythonengine.h"
-#include "serialprotocol.h"
-#include "topographypalette.h"
-#include "bridgeimageproviders.h"
+#include "common/eegmontage.h"
+#include "algorithm/pythonengine.h"
+#include "acquisition/serialprotocol.h"
+#include "common/topographypalette.h"
+#include "bridge/bridgeimageproviders.h"
 
 #include <algorithm>
 #include <cmath>
@@ -52,15 +51,25 @@ constexpr int kTopographyImageSize = 256;
 // 队列只在算法投递追不上界面重绘时才会积压
 constexpr int kDisplayPendingCapacity = 64;
 
-// 落盘目录：%LOCALAPPDATA%\EEG-KSC\records
+// 落盘目录：程序执行目录下的 records 子目录
+// 默认落在 exe 旁边，方便随程序一起拷贝/归档，不依赖 %LOCALAPPDATA%
 QString default_record_directory()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    if (base.isEmpty())
-    {
-        base = QDir::tempPath() + QStringLiteral("/EEG-KSC");
-    }
+    const QString base = QCoreApplication::applicationDirPath();
     return QDir::fromNativeSeparators(base) + QStringLiteral("/records");
+}
+
+// 患者子目录名：用病历号（P-0001 这类），**不用姓名**。
+// 姓名带空格、生僻字，既不好找也不稳定；病历号才是稳定标识。
+// 病历号允许手填，这里把 Windows 不允许出现在文件名里的字符换成下划线，
+// 免得一个 '/' 或 ':' 就让建目录直接失败
+QString patient_folder_name(const QString &patient_no)
+{
+    QString name = patient_no.trimmed();
+    static const QString invalid = QStringLiteral("\\/:*?\"<>|");
+    for (const QChar ch : invalid)
+        name.replace(ch, QLatin1Char('_'));
+    return name;
 }
 
 // 把地形图网格画成一张方形图。
@@ -411,9 +420,11 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
 
     m_collector = new SerialCollector(this);
     m_collector->set_config(config);
-    // 本对象就是数据块的消费者：deliver() 里再转交给算法线程
+    // 本对象就是数据块的消费者：deliver() 里再转交给算法线程，并在此把原始样本
+    // 写进原始环形缓冲（供 ASR 拟合参考矩阵）。采集线程不再自己写一份 ——
+    // 那样同一批样本会被采集线程与 deliver() 各写一次，ASR 参考数据翻倍、
+    // 时间戳来回跳
     m_collector->set_sink(this);
-    m_collector->set_raw_buffer(&m_raw_buffer);
 
     // 采集线程的信号一律队列投递（发信方在工作线程）
     QObject::connect(m_collector, &SerialCollector::port_opened, this,
@@ -525,7 +536,7 @@ bool AcquisitionBridge::connect_device()
     return m_port_open;
 }
 
-bool AcquisitionBridge::start_collection(const QString &directory)
+bool AcquisitionBridge::start_collection(const QString &directory, const QString &patient_no)
 {
     // 演示模式下已经在灌数据了，不需要串口也不需要落盘
     if (m_demo_enabled)
@@ -553,8 +564,14 @@ bool AcquisitionBridge::start_collection(const QString &directory)
 
     // 目录不存在时由采集线程的 recording_start() 建出来（它本来就要处理
     // 落盘失败的各种情况，建目录属于同一件事），这里不重复
-    const QString folder = directory.trimmed().isEmpty() ? default_record_directory()
-                                                        : directory.trimmed();
+    QString folder = directory.trimmed().isEmpty() ? default_record_directory()
+                                                   : directory.trimmed();
+    // 按患者分目录：同一台机器上多位患者的记录各自成夹，便于整份归档/删除。
+    // 夹名用病历号而不是姓名（见 patient_folder_name）
+    const QString patient_dir = patient_folder_name(patient_no);
+    if (!patient_dir.isEmpty())
+        folder = QDir(folder).filePath(patient_dir);
+
     const QString stamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"));
     request.save_path = QDir(folder).filePath(stamp + QStringLiteral(".eegbin"));
     // 同一秒内重复开始会撞名，加后缀而不是覆盖 —— 覆盖会静默丢掉上一段
@@ -572,11 +589,17 @@ bool AcquisitionBridge::start_collection(const QString &directory)
     // 新样本接在后面写，画面看起来就像没重新开始
     clear_display();
 
-    // 开始采集前先发一条 's'：若设备此刻还停在阻抗上传模式（刚点过「阻抗扫描」，
-    // 或那次扫描的 1.2 秒还没走完），只发 'b' 并不能让它切回常规数据流 —— 必须先用
-    // 's' 把阻抗帧停掉，紧接着 post_start() 的 'b' 再把脑电数据接上。
+    // 仅当设备此刻还停在阻抗上传模式（点过「阻抗扫描」，且那次扫描的 1.2 秒等待
+    // 还没走完 / 结果还没读回）才补发 's'：只发 'b' 不足以让它切回常规脑电流。
     // 两条命令按入队顺序执行（见 SerialCollector::run 的命令批处理），线上顺序即 's' → 'b'
-    m_collector->post_impedance_stop();
+    //
+    // 没扫描过就**不能**发 's'：设备会把它当成一次停止，紧跟着的 'b' 被冲掉，
+    // 结果是点了「开始采集」却收不到任何数据帧、波形一片空白
+    if (m_impedance_pending)
+    {
+        m_collector->post_impedance_stop();
+        m_impedance_pending = false;
+    }
     m_collector->post_start(request);
     return true;
 }
@@ -1320,6 +1343,13 @@ void AcquisitionBridge::set_dc_removal(bool enabled)
     emit dcRemovalChanged();
 }
 
+QString AcquisitionBridge::default_record_dir() const
+{
+    // 面向界面显示：转成 Windows 风格的反斜杠。内部落盘用正斜杠（QDir 两者都认），
+    // 但设置页里一条 d:/... 的路径看着不像本机目录，容易被当成没生效
+    return QDir::toNativeSeparators(default_record_directory());
+}
+
 QStringList AcquisitionBridge::channel_names() const
 {
     QStringList names;
@@ -1333,14 +1363,15 @@ QStringList AcquisitionBridge::channel_names() const
 
 QStringList AcquisitionBridge::channel_colors() const
 {
-    // 配色表收在 eeg_montage 里（实时波形、回放预览、后处理三处同源）；
-    // 8 个颜色一循环，16 通道时后 8 路沿用同一张表取色
+    // 配色表收在 eeg_montage 里（实时波形、回放预览、后处理三处同源），
+    // 下标即通道序号，所以这里按**该路在蒙太奇里的序号**取色，而不是按屏幕上的
+    // 第几条泳道 —— 否则切到 8 通道档时 F3 会被涂成 F7 的颜色
     const QStringList palette = eeg_montage::channel_colors();
     QStringList colors;
     const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
-    for (int i = 0; i < indices.size(); ++i)
+    for (const int index : indices)
     {
-        colors.append(palette.at(i % palette.size()));
+        colors.append(palette.at(index % palette.size()));
     }
     return colors;
 }
@@ -1893,6 +1924,7 @@ void AcquisitionBridge::begin_electrode_scan()
         return;
     }
     m_collector->post_impedance_start();
+    m_impedance_pending = true;
 }
 
 bool AcquisitionBridge::scan_electrodes()
@@ -1910,6 +1942,7 @@ bool AcquisitionBridge::scan_electrodes()
     // 读回采集线程缓存的最新一帧阻抗（内部加锁），随后立刻发 's' 让设备停止上传
     const QVector<double> kohm_values = m_collector->latest_impedance_kohm();
     m_collector->post_impedance_stop();
+    m_impedance_pending = false;
 
     if (kohm_values.size() < eeg_montage::kChannelCount)
     {
@@ -2121,6 +2154,11 @@ void AcquisitionBridge::reset_port_flags()
 
     m_port_open = false;
     m_collecting = false;
+    // 阻抗扫描的「已发 'Z'、等 1.2 秒读回」状态也要一起清：串口都没了，那次扫描
+    // 不可能有结果。留着它，下次「开始采集」会照发一个 's' 去停阻抗，而新连上的
+    // 设备根本不在阻抗模式 —— 设备把 's' 当停止，紧跟着的 'b' 被冲掉，结果一块
+    // 数据都收不到、波形一片空白（原因见 start_collection 里那段注释）
+    m_impedance_pending = false;
 
     if (was_open)
     {

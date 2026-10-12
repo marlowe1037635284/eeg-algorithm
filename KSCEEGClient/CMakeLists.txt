@@ -52,47 +52,60 @@ add_subdirectory("${PYBIND11_SOURCE_DIR}" pybind11 EXCLUDE_FROM_ALL)
 # 也是 --selfcheck 能看见结果的前提（窗口程序没有控制台，qInfo 会丢）
 option(KSCEEG_CONSOLE "构建为控制台程序以便查看 Python 日志与自检输出" OFF)
 
+# ==================== 源码模块划分 ====================
+# src/ 按职责分成 6 个模块；main.cpp 留在根上，只负责把各门面组装起来，不属于任何单一模块。
+# 依赖方向尽量自下而上（→ 表示「依赖」），便于顺着方向阅读：
+#
+#   common/      跨模块共用的地基：跨线程数据结构、电极蒙太奇、.eegbin 格式、地形图配色
+#   storage/     本地 SQLite（账号 / 偏好 / 患者 / 标签 / 采集记录），与 common 同为底层
+#   acquisition/ 串口采集链路：协议、原始环形缓冲、采集线程                 → common
+#   algorithm/   嵌入式 Python 门面、算法线程、离线算法调用层               → common acquisition
+#   bridge/      QML 门面(AcquisitionBridge) 与波形/地形图图像 provider     → common acquisition algorithm
+#   analysis/    历史回放、后处理页、A4 报告导出                            → common algorithm
+#
+# 注意 acquisition 与 algorithm 之间是双向引用：algorithm 需要 acquisition 的
+# ChunkSink 抽象接口，而 acquisition 的 .cpp 里残留了一个未使用的 algorithm 头 ——
+# 后者清掉之后，整棵树就只剩「自下而上」的单向依赖。
 qt_add_executable(appKSCEEGClient
     src/main.cpp
-    # 账号 / 偏好 / 患者都用 Qt Sql 直接读写一个真正的 SQLite 文件
+    # common/：各模块共用的数据结构、电极表、文件格式与配色表
+    src/common/eegtypes.h
+    src/common/eegmontage.h
+    src/common/eegbinformat.h
+    src/common/topographypalette.h
+    # storage/：账号 / 偏好 / 患者都用 Qt Sql 直接读写一个真正的 SQLite 文件
     # （不用 QML 的 LocalStorage，它把文件藏在 AppData 哈希目录里）
-    src/appdatabase.cpp
-    src/appdatabase.h
-    # 嵌入式 Python 解释器门面（算法线程在后续步骤加进来）
-    src/pythonengine.h
-    src/pythonengine.cpp
-    src/pythontypes.h
-    # 采集与算法共用的数据结构与电极表
-    src/eegtypes.h
-    src/eegmontage.h
-    # 串口采集链路
-    src/serialprotocol.h
-    src/rawringbuffer.h
-    src/rawringbuffer.cpp
-    src/serialcollector.h
-    src/serialcollector.cpp
-    # 算法线程
-    src/pythonworker.h
-    src/pythonworker.cpp
-    # QML 门面与图像 provider
-    src/acquisitionbridge.h
-    src/acquisitionbridge.cpp
-    src/bridgeimageproviders.h
-    src/bridgeimageproviders.cpp
-    # 历史记录的波形回放（读 .eegbin，不走串口）
-    src/recordingpreview.h
-    src/recordingpreview.cpp
-    # 「数据分析与后处理」页：预处理流水线、统计、频谱、相关性、地形图、导出
-    src/postprocess.h
-    src/postprocess.cpp
-    # 后处理算法统一走 Python 离线接口的调用层（pybind11 只在本翻译单元里出现）
-    src/offlinealgorithm.h
-    src/offlinealgorithm.cpp
-    # 地形图配色表（实时与后处理共用一份）
-    src/topographypalette.h
-    # 把一条记录排成 A4 报告（导出 PDF）
-    src/recordreport.h
-    src/recordreport.cpp
+    # 目录名用 storage 而不是 data —— 仓库根的 .gitignore 里有一条 data/，
+    # 叫 data 会让这层源码被 git 忽略
+    src/storage/appdatabase.cpp
+    src/storage/appdatabase.h
+    # acquisition/：串口采集链路
+    src/acquisition/serialprotocol.h
+    src/acquisition/rawringbuffer.h
+    src/acquisition/rawringbuffer.cpp
+    src/acquisition/serialcollector.h
+    src/acquisition/serialcollector.cpp
+    # algorithm/：嵌入式 Python 解释器门面与算法线程
+    src/algorithm/pythonengine.h
+    src/algorithm/pythonengine.cpp
+    src/algorithm/pythontypes.h
+    src/algorithm/pythonworker.h
+    src/algorithm/pythonworker.cpp
+    # 后处理算法统一走 Python 离线接口的调用层（pybind11 只在这些翻译单元里出现）
+    src/algorithm/offlinealgorithm.h
+    src/algorithm/offlinealgorithm.cpp
+    # bridge/：QML 门面与图像 provider
+    src/bridge/acquisitionbridge.h
+    src/bridge/acquisitionbridge.cpp
+    src/bridge/bridgeimageproviders.h
+    src/bridge/bridgeimageproviders.cpp
+    # analysis/：历史记录回放、「数据分析与后处理」页、A4 报告导出
+    src/analysis/recordingpreview.h
+    src/analysis/recordingpreview.cpp
+    src/analysis/postprocess.h
+    src/analysis/postprocess.cpp
+    src/analysis/recordreport.h
+    src/analysis/recordreport.cpp
 )
 
 # Design.qml 是设计变量单例（画板尺寸、色板、字体名），需要在 QML 引擎里注册成 singleton，
@@ -191,10 +204,18 @@ set_target_properties(appKSCEEGClient PROPERTIES
     WIN32_EXECUTABLE $<NOT:$<BOOL:${KSCEEG_CONSOLE}>>
 )
 
-# C++ 源码在 src/ 下，QML 类型注册生成的头文件里是 #include "appdatabase.h"，
-# 得把 src 加进包含路径
+# 源码按模块分子目录存放。源码里用「模块/文件.h」形式互相包含，所以 src 必须在包含路径上；
+# 而 QML 类型注册（appdatabase.h / recordreport.h）生成的代码里用的是 #include "appdatabase.h"
+# 这种不带目录的形式，所以各模块子目录也要加进来
 target_include_directories(appKSCEEGClient
-    PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/common
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/storage
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/acquisition
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/algorithm
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/bridge
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/analysis
 )
 
 # 把源码目录告诉程序：账号库文件放在代码目录里，清理 build 目录不会丢

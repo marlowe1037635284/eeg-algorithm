@@ -23,8 +23,8 @@
 
 #include <algorithm>
 
-#include "eegmontage.h"
-#include "eegtypes.h"
+#include "common/eegmontage.h"
+#include "common/eegtypes.h"
 
 namespace py = pybind11;
 

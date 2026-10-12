@@ -14,10 +14,10 @@
 
 #include <atomic>
 
-#include "eegtypes.h"
-#include "pythonworker.h"
-#include "rawringbuffer.h"
-#include "serialcollector.h"
+#include "common/eegtypes.h"
+#include "algorithm/pythonworker.h"
+#include "acquisition/rawringbuffer.h"
+#include "acquisition/serialcollector.h"
 
 class QQuickImageProvider;
 class PythonEngine;
@@ -57,6 +57,9 @@ class AcquisitionBridge : public QObject, public ChunkSink
     // 再发 collecting_changed(true)，于是 C++ 侧 m_collecting 还是 false 时就发出了
     // collectingChanged —— 订阅方会以为采集停了
     Q_PROPERTY(QString recordingPath READ recording_path NOTIFY recordingPathChanged)
+    // 未显式指定落盘目录时的默认值（程序执行目录下的 records）。
+    // 暴露给 QML 是为了让「系统设置」页显示的就是真正会用的目录，避免两处各写一份默认值
+    Q_PROPERTY(QString defaultRecordDir READ default_record_dir CONSTANT)
 
     // ---- 波形 ----
     // 界面上的 4/8/16 档位。**纯显示**：它决定画几条泳道，串口与算法侧永远是
@@ -161,8 +164,9 @@ public:
     // 而 open_port 只表示「已发起」（异步打开），发起后立刻弹框会先显示成「未连接」
     Q_INVOKABLE bool connect_device();
     // 开始采集：开串口（若未开）、建算法会话、开始落盘。
-    // 串口连接在 connect_device() 里已经做过；这里只兜底（直接调用本函数的场景）
-    Q_INVOKABLE bool start_collection(const QString &directory);
+    // 串口连接在 connect_device() 里已经做过；这里只兜底（直接调用本函数的场景）。
+    // patient_no 非空时按患者建子目录落盘（目录名用病历号，不用姓名）
+    Q_INVOKABLE bool start_collection(const QString &directory, const QString &patient_no = QString());
     Q_INVOKABLE void stop_collection();
     Q_INVOKABLE void reset_session();
     Q_INVOKABLE void clear_error();
@@ -236,6 +240,7 @@ public:
     qint64 received_frames() const { return m_received_frames; }
     qint64 dropped_bytes() const { return m_dropped_bytes; }
     QString recording_path() const { return m_recording_path; }
+    QString default_record_dir() const;
 
     int channel_count() const { return m_channel_count; }
     QStringList channel_names() const;
@@ -489,6 +494,11 @@ private:
     QVariantList m_electrode_quality;
     QString m_electrode_summary;
     bool m_electrode_scan_valid = false;
+
+    // 设备此刻是否停在阻抗上传模式：begin_electrode_scan() 发 'Z' 时置真，
+    // scan_electrodes() 发 's' 时置假。开始采集时只有它为真才需要补发一条 's'
+    // 把设备从阻抗模式拉回来 —— 没扫描过还发 's' 会把刚开始的 'b' 冲掉，波形全无
+    bool m_impedance_pending = false;
 
     QStringList m_available_ports;
     bool m_port_open = false;

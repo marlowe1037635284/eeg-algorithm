@@ -13,20 +13,35 @@ Item {
     id: rail
 
     property string current: ""
+    // 当前登录角色。导航项里「用户管理」只对管理员开放，其余角色整项不显示
+    property string userRole: ""
     signal navRequested(string label)
 
-    readonly property var items: [
-        { icon: Design.assetRoot + "icons/nav-monitor.svg", activeIcon: Design.assetRoot + "icons/nav-monitor-active.svg",
-          label: qsTr("采集工作台"), w: 29, h: 25 },
-        { icon: Design.assetRoot + "icons/nav-patient.svg", activeIcon: Design.assetRoot + "icons/nav-patient-active.svg",
-          label: qsTr("患者管理"), w: 23, h: 24 },
-        { icon: Design.assetRoot + "icons/nav-history.svg", activeIcon: Design.assetRoot + "icons/nav-history-active.svg",
-          label: qsTr("历史记录"), w: 25, h: 24 },
-        { icon: Design.assetRoot + "icons/nav-user.svg", activeIcon: Design.assetRoot + "icons/nav-user-active.svg",
-          label: qsTr("用户管理"), w: 19, h: 24 },
-        { icon: Design.assetRoot + "icons/nav-setting.svg", activeIcon: Design.assetRoot + "icons/nav-setting-active.svg",
-          label: qsTr("系统设置"), w: 26, h: 24 }
-    ]
+    readonly property bool isAdmin: userRole === qsTr("管理员")
+
+    readonly property var items: {
+        var all = [
+            { icon: Design.assetRoot + "icons/nav-monitor.svg", activeIcon: Design.assetRoot + "icons/nav-monitor-active.svg",
+              label: qsTr("采集工作台"), w: 29, h: 25 },
+            { icon: Design.assetRoot + "icons/nav-patient.svg", activeIcon: Design.assetRoot + "icons/nav-patient-active.svg",
+              label: qsTr("患者管理"), w: 23, h: 24 },
+            { icon: Design.assetRoot + "icons/nav-history.svg", activeIcon: Design.assetRoot + "icons/nav-history-active.svg",
+              label: qsTr("历史记录"), w: 25, h: 24 },
+            { icon: Design.assetRoot + "icons/nav-user.svg", activeIcon: Design.assetRoot + "icons/nav-user-active.svg",
+              label: qsTr("用户管理"), w: 19, h: 24 },
+            { icon: Design.assetRoot + "icons/nav-setting.svg", activeIcon: Design.assetRoot + "icons/nav-setting-active.svg",
+              label: qsTr("系统设置"), w: 26, h: 24 }
+        ]
+        if (isAdmin)
+            return all
+        // 非管理员去掉「用户管理」。过滤后其余项按 index 依次排上去，中间不留空位
+        var visible = []
+        for (var i = 0; i < all.length; ++i) {
+            if (all[i].label !== qsTr("用户管理"))
+                visible.push(all[i])
+        }
+        return visible
+    }
 
     width: 92
     height: 1080

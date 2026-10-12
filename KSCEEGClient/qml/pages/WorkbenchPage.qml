@@ -123,7 +123,8 @@ Item {
         // 开始采集时把阻抗扫描关掉：先复位面板上可能还在跑的扫描动画，
         // 再由 C++ 侧的 start_collection() 发 's' 让设备停发阻抗帧、切回脑电数据流
         electrodePanel.cancelScan()
-        Acq.start_collection(recordDir)
+        // 带上病历号：C++ 会按患者建子目录落盘（目录名用病历号，不用姓名）
+        Acq.start_collection(recordDir, patientNo)
     }
 
     // 「截图」：把当前界面存成 PNG 放到系统图片目录下，失败就静默跳过
@@ -184,6 +185,7 @@ Item {
     // ---------- 左侧导航条（与各业务页共用同一个组件）----------
     AppNavRail {
         current: root.selectedNav
+        userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
     }
 

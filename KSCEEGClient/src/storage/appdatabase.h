@@ -57,12 +57,24 @@ public:
     // 记录最近一次登录（remember 为假时不保存密码）
     Q_INVOKABLE void saveLoginRecord(const QString &phone, const QString &password, bool remember);
 
+    // ==================== 会话 ====================
+    // 登录成功后由界面告知「现在是谁」，供患者可见性过滤使用：
+    // 管理员看全部患者，其余角色只看自己录入的那一批（patients.created_by = 账号）。
+    //
+    // 判断放在数据层而不是各页面各写一遍 —— 患者列表有好几个入口
+    //（患者管理页、选患者弹窗、历史记录页的患者下拉），漏一处就是一次越权可见
+    Q_INVOKABLE void setCurrentUser(const QString &account, const QString &role);
+
     // ==================== 患者 ====================
 
     // 全部患者，按病历号排序。每一项的键与患者管理页表格的列一一对应：
     //   { no, name, gender, age, dept, diag, note, count, recordCount, last, createdAt }
     // count 是给表格直接贴的「6 次」；recordCount 是同一个数的原始值，
     // 给需要自己拼文案的地方用（选患者弹窗里的「1次记录」）
+    //
+    // 可见性与角色挂钩：管理员返回全部，其余角色只返回自己录入的
+    //（created_by = 当前账号，见 setCurrentUser）。过滤做在这里而不是各页面，
+    // 是为了让所有入口口径一致
     //
     // 采集次数与最近采集时间是**从 recording_sessions 表汇总出来的**，
     // 不在患者表里另存一份 —— 同一件事存两处，迟早会对不上
@@ -75,6 +87,8 @@ public:
                                           const QString &note);
 
     // 采集记录，最新的排在最前。patient_no 留空表示不过滤。
+    // 可见性与患者列表同一口径：管理员返回全部，其余角色只返回自己录入患者的记录
+    //（记录没存录入人，靠它所属患者的 patients.created_by 判定）。
     // 每一项的键与历史记录页表格的列一一对应：
     //   { no, patientNo, patient, time, duration, channels, rate, events, quality, level }
     // 电极质量没有数据源（协议只给 4 路不带电极名的阻抗），固定返回「—」
@@ -104,6 +118,11 @@ public:
     // 取不到（或存的是空串）时返回 fallback
     Q_INVOKABLE QString setting(const QString &key, const QString &fallback = QString()) const;
     Q_INVOKABLE bool setSetting(const QString &key, const QString &value);
+
+    // 记录保存目录（record_dir 的专用读法）。库里存的值若指向本机不存在的路径
+    // （典型是换一台机器后残留的旧路径），回退到默认值（exe 同级 records）并写回库，
+    // 保证界面显示和实际落盘用的是同一个目录
+    Q_INVOKABLE QString recordDirectory();
 
     // ==================== 标注标签 ====================
     // 标签管理页与工作台的「手动标记」共用这一份。每一项：
@@ -163,7 +182,22 @@ private:
     QString settingValue(const QString &key) const;
     // 下一个可用的病历号（P-0001 起）。生成规则只留这一处，别在别处再拼一次
     QString nextPatientNo() const;
+    // 当前会话是不是管理员。角色为空（未登录）一律按非管理员处理，
+    // 宁可少看也不要让未登录状态看到全部患者
+    bool currentUserIsAdmin() const;
+
+    // 归属校验：管理员放行；其余角色要求目标由当前账号录入
+    //（patients.created_by = 当前账号）。patients()/sessions() 里的可见性过滤
+    // 只管「读列表」，这里是「改 / 删 / 导出单条」那一侧 —— 两侧必须是同一套规则，
+    // 否则别人看不到的患者仍然能被改、被删、被导出
+    bool patientBelongsToCurrentUser(const QString &patient_no) const;
+    bool sessionBelongsToCurrentUser(int record_id) const;
 
     QSqlDatabase m_database;
     QString m_path;
+    // 当前登录账号（users.username）。新增患者时写进 patients.created_by，
+    // 也是非管理员查询时的过滤条件
+    QString m_current_user;
+    // 当前登录角色，用来决定是否放开全部患者
+    QString m_current_role;
 };

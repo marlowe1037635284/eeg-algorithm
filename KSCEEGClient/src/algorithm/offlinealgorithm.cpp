@@ -6,10 +6,10 @@
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
-#include "offlinealgorithm.h"
+#include "algorithm/offlinealgorithm.h"
 
-#include "eegmontage.h"
-#include "pythontypes.h"
+#include "common/eegmontage.h"
+#include "algorithm/pythontypes.h"
 
 #include <algorithm>
 #include <cmath>

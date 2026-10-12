@@ -431,6 +431,8 @@ Item {
         MouseArea {
             anchors.fill: parent
             hoverEnabled: true
+            // 采集中禁止更换患者：数据正按当前患者的病历号建目录落盘，中途换人记录会错挂
+            enabled: !root.collecting
             cursorShape: Qt.PointingHandCursor
             onClicked: root.selectPatientRequested()
 
@@ -511,6 +513,9 @@ Item {
                 MouseArea {
                     anchors.fill: parent
                     anchors.margins: -8
+                    // 采集中禁止切换通道数：在线算法会话已按当前通道数建立，中途改会让
+                    // 波形/阻抗/落盘的通道数对不上
+                    enabled: !root.collecting
                     cursorShape: Qt.PointingHandCursor
                     onClicked: Acq.channelCount = modelData.value
                 }

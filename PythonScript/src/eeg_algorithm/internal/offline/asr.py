@@ -12,6 +12,42 @@ from eeg_algorithm.types import ChannelLayout, OfflineAsrConfig, SignalBlock
 from eeg_algorithm.internal.common.array_utils import copy_block
 
 
+def _patch_asrpy_numpy2_compat() -> None:
+    """修复 asrpy 0.0.8 与 numpy 2.x 不兼容导致的崩溃。
+
+    asrpy 的 ``fit_eeg_distribution`` 中 ``max_width = np.diff(quants)`` 返回
+    长度为 1 的数组；numpy 2.x 起 ``int(np.round(n * max_width))`` 无法把
+    非 0 维数组转换为标量，从而抛出 TypeError。这里把该处收敛为标量后重新
+    定义函数，并同时替换 asrpy.asr 与 asrpy.asr_utils 两个模块中的引用。
+    """
+    import asrpy.asr as asr_mod
+    import asrpy.asr_utils as asr_utils
+
+    if getattr(asr_utils.fit_eeg_distribution, "_eeg_numpy2_patched", False):
+        return
+
+    import inspect
+
+    src = inspect.getsource(asr_utils.fit_eeg_distribution)
+    replacements = (
+        ("max_width = np.diff(quants)", "max_width = np.diff(quants).item()"),
+        ("/ np.diff(opt_bounds)", "/ np.diff(opt_bounds).item()"),
+    )
+    patched_src = src
+    for buggy, fixed in replacements:
+        if buggy not in patched_src:
+            return  # 版本实现有变或已修复，跳过补丁
+        patched_src = patched_src.replace(buggy, fixed)
+
+    namespace = dict(asr_utils.__dict__)
+    exec(patched_src, namespace)
+    patched = namespace["fit_eeg_distribution"]
+    patched._eeg_numpy2_patched = True  # type: ignore[attr-defined]
+
+    asr_utils.fit_eeg_distribution = patched
+    asr_mod.fit_eeg_distribution = patched
+
+
 def asr_clean_offline(
     signal: SignalBlock,
     layout: ChannelLayout,
@@ -79,6 +115,8 @@ def asr_clean_offline(
     try:
         import mne
         from asrpy import ASR
+
+        _patch_asrpy_numpy2_compat()
 
         info = mne.create_info(
             list(layout.channel_names), layout.sample_rate_hz, "eeg"

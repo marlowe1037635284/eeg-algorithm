@@ -24,6 +24,7 @@
 #include "common/eegmontage.h"
 #include "algorithm/offlinealgorithm.h"
 #include "common/topographypalette.h"
+#include "common/auditlog.h"
 
 namespace
 {
@@ -1154,6 +1155,7 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
     build_record_info();
     emit recordChanged();
     schedule_recompute();
+    audit_log::record(QStringLiteral("打开记录进行后处理：%1").arg(record_no));
     return true;
 }
 
@@ -2917,6 +2919,8 @@ QVariantMap PostProcess::export_data(const QString &directory)
         if (!write_edf(target, patient, m_record_no, start_ms, channels, rate, samples,
                        first_frame, frames, &error))
             return export_result(false, error);
+        audit_log::record(QStringLiteral("后处理导出：%1（%2）→ %3")
+                              .arg(m_record_no, typeLabel + rangeLabel, target));
         return export_result(true, tr("已导出 %1：%2").arg(typeLabel, target), target);
     }
 
@@ -2945,6 +2949,8 @@ QVariantMap PostProcess::export_data(const QString &directory)
     }
 
     file.close();
+    audit_log::record(QStringLiteral("后处理导出：%1（%2）→ %3")
+                          .arg(m_record_no, typeLabel + rangeLabel, target));
     return export_result(true, tr("已导出 %1：%2").arg(typeLabel, target), target);
 }
 
@@ -2983,6 +2989,7 @@ QVariantMap PostProcess::export_stats_csv(const QString &directory)
     }
 
     file.close();
+    audit_log::record(QStringLiteral("后处理导出：%1（通道统计）→ %2").arg(m_record_no, target));
     return export_result(true, tr("已导出通道统计：%1").arg(target), target);
 }
 
@@ -3064,5 +3071,6 @@ QVariantMap PostProcess::export_report_txt(const QString &directory)
     }
 
     file.close();
+    audit_log::record(QStringLiteral("后处理导出：%1（分析报告）→ %2").arg(m_record_no, target));
     return export_result(true, tr("已导出分析报告：%1").arg(target), target);
 }

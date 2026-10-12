@@ -23,6 +23,7 @@
 #include "acquisition/serialprotocol.h"
 #include "common/topographypalette.h"
 #include "bridge/bridgeimageproviders.h"
+#include "common/auditlog.h"
 
 #include <algorithm>
 #include <cmath>
@@ -604,6 +605,10 @@ bool AcquisitionBridge::start_collection(const QString &directory, const QString
         m_impedance_pending = false;
     }
     m_collector->post_start(request);
+    audit_log::record(QStringLiteral("开始采集（患者：%1，落盘：%2）")
+                          .arg(patient_no.trimmed().isEmpty() ? QStringLiteral("未指定")
+                                                              : patient_no.trimmed(),
+                               request.save_path));
     return true;
 }
 
@@ -617,6 +622,7 @@ void AcquisitionBridge::stop_collection()
     if (collector_active())
     {
         m_collector->post_stop();
+        audit_log::record(QStringLiteral("停止采集"));
     }
     m_worker.post_close_session();
 }

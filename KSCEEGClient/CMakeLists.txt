@@ -76,6 +76,9 @@ qt_add_executable(appKSCEEGClient
     # 无人值守自动退出：读 client-config.json 的阈值，应用级空闲超时后退出程序
     src/common/unattendedguard.h
     src/common/unattendedguard.cpp
+    # 审计日志：登录/退出、账号增改、采集与后处理导出等事件的落盘记录
+    src/common/auditlog.h
+    src/common/auditlog.cpp
     # storage/：账号 / 偏好 / 患者都用 Qt Sql 直接读写一个真正的 SQLite 文件
     # （不用 QML 的 LocalStorage，它把文件藏在 AppData 哈希目录里）
     # 目录名用 storage 而不是 data —— 仓库根的 .gitignore 里有一条 data/，

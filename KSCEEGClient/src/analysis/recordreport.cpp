@@ -18,6 +18,7 @@
 
 #include "common/eegmontage.h"
 #include "analysis/recordingpreview.h"
+#include "common/auditlog.h"
 
 namespace
 {
@@ -419,5 +420,6 @@ QVariantMap RecordReport::exportPdf(const QVariantMap &session, const QVariantLi
     result[QStringLiteral("success")] = true;
     result[QStringLiteral("path")] = target;
     result[QStringLiteral("message")] = QStringLiteral("已导出报告：%1").arg(target);
+    audit_log::record(QStringLiteral("导出采集报告 PDF：%1 → %2").arg(no, target));
     return result;
 }

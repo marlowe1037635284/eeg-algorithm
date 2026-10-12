@@ -1,5 +1,7 @@
 #include "storage/appdatabase.h"
 
+#include "common/auditlog.h"
+
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
@@ -319,7 +321,10 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
     {
         // 已有账号：校验密码
         if (query.value(0).toString() != password)
+        {
+            audit_log::record_as(phone, QStringLiteral("登录失败：密码不正确"));
             return result;
+        }
 
         // 停用/待审核的账号不许登录。原来只看密码，用户管理页把一个人停用了，
         // 他照样能登进来 —— 那个「停用」按钮就是摆设
@@ -327,11 +332,13 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
         if (status == QStringLiteral("停用"))
         {
             result[QStringLiteral("message")] = QStringLiteral("该账号已停用，请联系管理员");
+            audit_log::record_as(phone, QStringLiteral("登录失败：账号已停用"));
             return result;
         }
         if (status == QStringLiteral("待审核"))
         {
             result[QStringLiteral("message")] = QStringLiteral("该账号尚未通过审核");
+            audit_log::record_as(phone, QStringLiteral("登录失败：账号尚未通过审核"));
             return result;
         }
 
@@ -367,6 +374,7 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
         || count.value(0).toInt() > 0)
     {
         result[QStringLiteral("message")] = QStringLiteral("账号不存在，请联系管理员开通");
+        audit_log::record_as(phone, QStringLiteral("登录失败：账号不存在"));
         return result;
     }
 
@@ -388,6 +396,8 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
     result[QStringLiteral("displayName")] = phone;
     result[QStringLiteral("role")] = QStringLiteral("管理员");
     result[QStringLiteral("isNew")] = true;
+    // 首次初始化时自动登记的管理员也是一次「创建账号」，同样要留痕
+    audit_log::record_as(phone, QStringLiteral("创建账号（首次初始化管理员）"));
     return result;
 }
 
@@ -454,8 +464,21 @@ void AppDatabase::saveLoginRecord(const QString &phone, const QString &password,
 
 void AppDatabase::setCurrentUser(const QString &account, const QString &role)
 {
-    m_current_user = account.trimmed();
+    const QString next_user = account.trimmed();
+    const QString previous_user = m_current_user;
+
+    // 会话身份的变化正好对应「登录 / 退出」两个审计事件，记在这一处比散到
+    // 各页面可靠：任何一次登录成功、任何一次退出登录都会经过这里。
+    // 空 -> 某人 = 登录；某人 -> 空 = 退出
+    if (!next_user.isEmpty() && next_user != previous_user)
+        audit_log::record_as(next_user, QStringLiteral("登录成功"));
+    else if (next_user.isEmpty() && !previous_user.isEmpty())
+        audit_log::record_as(previous_user, QStringLiteral("退出登录"));
+
+    m_current_user = next_user;
     m_current_role = role.trimmed();
+    // 同步给审计日志：登录后后续的操作日志都用这个身份
+    audit_log::set_current_user(m_current_user);
 }
 
 // ==================== 患者 ====================
@@ -1151,6 +1174,8 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
         result[QStringLiteral("isRawFile")] = true;
         result[QStringLiteral("path")] = target;
         result[QStringLiteral("message")] = QStringLiteral("已导出原始数据：%1").arg(target);
+        audit_log::record(QStringLiteral("导出采集记录：%1（原始数据）→ %2")
+                              .arg(record_no, target));
         return result;
     }
 
@@ -1183,6 +1208,7 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
     result[QStringLiteral("success")] = true;
     result[QStringLiteral("path")] = target;
     result[QStringLiteral("message")] = QStringLiteral("该记录没有落盘原始数据，已导出记录摘要：%1").arg(target);
+    audit_log::record(QStringLiteral("导出采集记录：%1（记录摘要）→ %2").arg(record_no, target));
     return result;
 }
 
@@ -1472,7 +1498,9 @@ QVariantMap AppDatabase::addUser(const QString &account, const QString &password
     query.addBindValue(account.trimmed());
     query.addBindValue(password);
     query.addBindValue(name.trimmed());
-    query.addBindValue(role.trimmed().isEmpty() ? QStringLiteral("医生") : role.trimmed());
+    const QString final_role =
+        role.trimmed().isEmpty() ? QStringLiteral("医生") : role.trimmed();
+    query.addBindValue(final_role);
     query.addBindValue(department.trimmed());
     if (!query.exec())
     {
@@ -1480,6 +1508,9 @@ QVariantMap AppDatabase::addUser(const QString &account, const QString &password
         result[QStringLiteral("message")] = query.lastError().text();
         return result;
     }
+
+    audit_log::record(QStringLiteral("创建账号：%1（账号：%2，角色：%3）")
+                          .arg(name.trimmed(), account.trimmed(), final_role));
 
     result[QStringLiteral("success")] = true;
     return result;
@@ -1536,6 +1567,9 @@ QVariantMap AppDatabase::updateUser(const QString &account, const QString &name,
         return result;
     }
 
+    audit_log::record(QStringLiteral("修改账号：%1（角色：%2，状态：%3）")
+                          .arg(account.trimmed(), role.trimmed(), status));
+
     result[QStringLiteral("success")] = true;
     return result;
 }
@@ -1567,6 +1601,9 @@ QVariantMap AppDatabase::resetPassword(const QString &account, const QString &ne
         return result;
     }
 
+    // 只记「重置了谁的密码」，密码本身绝不入日志
+    audit_log::record(QStringLiteral("重置密码：%1").arg(account.trimmed()));
+
     result[QStringLiteral("success")] = true;
     return result;
 }
@@ -1591,6 +1628,8 @@ QVariantMap AppDatabase::setUserStatus(const QString &account, const QString &st
         result[QStringLiteral("message")] = QStringLiteral("用户「%1」不存在").arg(account);
         return result;
     }
+
+    audit_log::record(QStringLiteral("修改账号状态：%1 → %2").arg(account.trimmed(), status));
 
     result[QStringLiteral("success")] = true;
     return result;

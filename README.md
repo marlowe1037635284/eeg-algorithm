@@ -19,7 +19,7 @@
 
 | 模块 | 职责 | 依赖 |
 | --- | --- | --- |
-| `common/` | 跨模块共用的地基：跨线程数据结构、电极蒙太奇、`.eegbin` 文件格式、地形图配色、无人值守自动退出 | — |
+| `common/` | 跨模块共用的地基：跨线程数据结构、电极蒙太奇、`.eegbin` 文件格式、地形图配色、无人值守自动退出、审计日志 | — |
 | `storage/` | 本地 SQLite（账号 / 偏好 / 患者 / 标签 / 采集记录） | — |
 | `acquisition/` | 串口采集链路：协议解析、原始环形缓冲、采集线程 | `common` |
 | `algorithm/` | 嵌入式 Python 解释器门面、算法线程、离线算法调用层 | `common` `acquisition` |
@@ -186,6 +186,13 @@ dist/EEG-KSC/
   为无人值守自动退出的空闲阈值（分钟，默认 60）：连续该时长没有任何鼠标 / 键盘操作即退出程序，
   设为 `0` 关闭该功能。改动后需重启程序生效。
 - **日志与本地数据**：`QStandardPaths::AppLocalDataLocation`，应用名为 `EEG-KSC`。
+- **审计日志**：`%LOCALAPPDATA%\EEG-KSC\logs\audit.log`（UTF-8 纯文本，每行一条）。
+  每条固定四字段 `用户ID | 日期 | 时间 | 事件`，事件置于末列便于前 3 列稳定解析；首行为表头。
+  覆盖三类事件：①用户登录 / 退出及登录失败、账号创建 / 修改 / 重置密码 / 启停用；
+  ②账号管理操作；③核心功能（开始 / 停止采集、打开记录后处理、各类数据与报告导出）。
+  「用户ID」取登录账号 `username`（登录失败时账号可能尚未建立、拿不到 `U-0001` 形式的 uid，
+  而失败尝试同样需要留痕）。实现见 [auditlog.h](KSCEEGClient/src/common/auditlog.h) /
+  [auditlog.cpp](KSCEEGClient/src/common/auditlog.cpp)，经 `QMutex` 保护，可任意线程调用。
 
 ## 已知问题与修复记录
 

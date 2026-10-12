@@ -129,6 +129,7 @@ qt_add_qml_module(appKSCEEGClient
         qml/components/TableRowButton.qml
         qml/components/Toast.qml
         qml/dialogs/ConfirmDialog.qml
+        qml/dialogs/DeviceInfoDialog.qml
         qml/dialogs/EditPatientDialog.qml
         qml/dialogs/FilterDialog.qml
         qml/dialogs/NewPatientDialog.qml

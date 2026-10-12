@@ -236,6 +236,7 @@ ApplicationWindow {
         case "confirmDeleteRecord": return confirmDeleteRecordComponent
         case "confirmDeleteTag":    return confirmDeleteTagComponent
         case "confirmLogout":       return confirmLogoutComponent
+        case "deviceInfo":          return deviceInfoComponent
         default:              return null
         }
     }
@@ -379,6 +380,7 @@ ApplicationWindow {
             onPrecheckRequested: window.activeDialog = "precheck"
             onSelectPatientRequested: window.activeDialog = "selectPatient"
             onFilterRequested: window.activeDialog = "filter"
+            onDeviceInfoRequested: window.activeDialog = "deviceInfo"
         }
     }
 
@@ -871,6 +873,15 @@ ApplicationWindow {
             message: qsTr("确定要退出登录吗？")
             onDismissed: window.closeDialog()
             onAccepted: window.handleLogout()
+        }
+    }
+
+    // 设备连接信息：只读展示，关掉即可
+    Component {
+        id: deviceInfoComponent
+
+        DeviceInfoDialog {
+            onDismissed: window.closeDialog()
         }
     }
 

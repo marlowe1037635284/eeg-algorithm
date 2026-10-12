@@ -21,6 +21,8 @@ Item {
     signal selectPatientRequested()
     // 点工具栏「滤波与后处理」→ 弹滤波配置
     signal filterRequested()
+    // 点顶栏设备状态胶囊 → 弹「设备连接」信息
+    signal deviceInfoRequested()
     // 需要在界面上说一句话（阻抗扫描完成、导出结果之类），由外层弹轻提示
     signal notifyRequested(string message, string kind)
 
@@ -244,6 +246,14 @@ Item {
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 14
+        }
+
+        // 点胶囊看设备铭牌信息。盖住整枚胶囊（含圆点与文字）
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: root.deviceInfoRequested()
         }
     }
 

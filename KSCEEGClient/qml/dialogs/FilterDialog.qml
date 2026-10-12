@@ -36,7 +36,10 @@ Item {
     // 采样率决定 Nyquist，进而在输入阶段就挡住必然被算法拒绝的值。
     // 让用户先拖到 900 Hz 再被拒，不如当场夹住
     readonly property real nyquist: Acq.sample_rate() / 2.0
-    readonly property real lowPassMax: Math.max(2, Math.min(100, nyquist - 1))
+    // 两根滑杆共用同一量程，同一频率在两杆上的填充长度才一致
+    readonly property real freqMin: 0.1
+    readonly property real freqMax: 45.0
+    readonly property real lowPassMax: Math.max(2, Math.min(freqMax, nyquist - 1))
 
     // 频段预设。副标题是真频率范围，不是设计稿里那串复制粘贴出来的占位值
     readonly property var bandPresets: [
@@ -169,8 +172,8 @@ Item {
             height: 24
             on_: root.highPassOn
             value: root.highPassLow
-            from: 0.1
-            to: 45
+            from: root.freqMin
+            to: root.freqMax
             onEdited: (v) => root.highPassLow = v
         }
 
@@ -200,7 +203,7 @@ Item {
             height: 24
             on_: root.lowPassOn
             value: root.lowPassHigh
-            from: 1
+            from: root.freqMin
             to: root.lowPassMax
             onEdited: (v) => root.lowPassHigh = v
         }

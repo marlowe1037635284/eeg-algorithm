@@ -236,6 +236,7 @@ ApplicationWindow {
         case "resetPassword": return resetPasswordComponent
         case "confirmDeleteRecord": return confirmDeleteRecordComponent
         case "confirmDeleteTag":    return confirmDeleteTagComponent
+        case "confirmLogout":       return confirmLogoutComponent
         default:              return null
         }
     }
@@ -331,6 +332,12 @@ ApplicationWindow {
         }
     }
 
+    // 点「退出登录」先弹确认框：退出会断开设备、放掉当前会话，
+    // 手滑点到就得重新登录一遍，值得多问一句。真正的退出在 handleLogout 里
+    function requestLogout() {
+        activeDialog = "confirmLogout"
+    }
+
     function handleLogout() {
         currentPatientNo = ""
         historyPatientFilter = ""
@@ -369,7 +376,7 @@ ApplicationWindow {
             // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录
             recordDir: appDatabase.recordDirectory()
 
-            onLogoutRequested: window.handleLogout()
+            onLogoutRequested: window.requestLogout()
             onNavRequested: (label) => window.navigateTo(label)
             onNotifyRequested: (message, kind) => window.showToast(message, kind)
             // 点「开始采集」先弹确认框，确认后才真正开始
@@ -393,7 +400,7 @@ ApplicationWindow {
             Component.onCompleted: reload()
 
             onNavRequested: (label) => window.navigateTo(label)
-            onLogoutRequested: window.handleLogout()
+            onLogoutRequested: window.requestLogout()
             onNewPatientRequested: {
                 window.newPatientOrigin = "patients"
                 window.activeDialog = "newPatient"
@@ -437,7 +444,7 @@ ApplicationWindow {
                     window.historyPatientFilter = ""
                 window.navigateTo(label)
             }
-            onLogoutRequested: window.handleLogout()
+            onLogoutRequested: window.requestLogout()
             onRecordPreviewRequested: (recordNo) => window.openRecordPreview(recordNo)
             // 删除是不可撤销的，先弹确认框
             onRecordDeleteRequested: (recordNo) => {
@@ -459,7 +466,7 @@ ApplicationWindow {
             recordNo: window.analysisRecordNo
 
             onNavRequested: (label) => window.navigateTo(label)
-            onLogoutRequested: window.handleLogout()
+            onLogoutRequested: window.requestLogout()
             onBackRequested: window.closeAnalysis()
             onNotifyRequested: (message, kind) => window.showToast(message, kind)
         }
@@ -478,7 +485,7 @@ ApplicationWindow {
             Component.onCompleted: reload()
 
             onNavRequested: (label) => window.navigateTo(label)
-            onLogoutRequested: window.handleLogout()
+            onLogoutRequested: window.requestLogout()
 
             onAddUserRequested: {
                 window.pendingUserRow = null
@@ -523,7 +530,7 @@ ApplicationWindow {
             }
 
             onNavRequested: (label) => window.navigateTo(label)
-            onLogoutRequested: window.handleLogout()
+            onLogoutRequested: window.requestLogout()
             // 新增与编辑共用同一个弹窗，靠 pendingTagRow 是否为空区分
             onNewTagRequested: {
                 window.pendingTagRow = null
@@ -853,6 +860,18 @@ ApplicationWindow {
                     page.reload()
                 window.showToast(qsTr("已删除记录「%1」").arg(recordNo), "success")
             }
+        }
+    }
+
+    Component {
+        id: confirmLogoutComponent
+
+        ConfirmDialog {
+            title: qsTr("退出登录")
+            confirmText: qsTr("退出登录")
+            message: qsTr("确定要退出登录吗？")
+            onDismissed: window.closeDialog()
+            onAccepted: window.handleLogout()
         }
     }
 

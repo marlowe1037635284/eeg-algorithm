@@ -72,24 +72,55 @@ class ResampleConfig:
 
 @dataclass(frozen=True)
 class QualityControlConfig:
-    """离线质检与修复配置。
+    """离线质检与修复配置（检测/修复算法对齐 qc.py）。
 
     null_weak_enabled: 空值与弱信号检测开关（合并），默认 True。
     amplitude_outlier_enabled: 异常 EEG 范围外值检测开关，默认 True。
     low_correlation_enabled: 低相关性导联检测开关，默认 True。
-    repair_enabled: 是否执行线性插值修复（off 仅标注，on 修复异常段），默认 False。
-    amplitude_ratio: 异常 EEG 范围外值检测的幅度占比，默认 0.1。
-    correlation_threshold: 低相关性导联检测的相关性阈值，默认 0.1。
-    weak_signal_threshold_uv: 弱信号判定的幅值阈值（μV），默认 1.0。
+    repair_enabled: 是否执行插值修复（off 仅标注，on 修复异常段），默认 False。
+
+    空值:
+    nan_ratio_threshold: 通道级空值比例阈值，默认 0.0。
+
+    弱信号/平线（三口径）:
+    flat_var_threshold: 平线判定方差阈值，默认 1e-3。
+    weak_std_threshold: 弱信号标准差阈值（μV），默认 0.5。
+    weak_ptp_threshold: 弱信号峰峰值阈值（μV），默认 5.0。
+
+    超范围（绝对阈值）:
+    eeg_range: EEG 幅度合法范围（μV），默认 (-100.0, 100.0)。
+    abnormal_ratio_threshold: 通道级超范围样本比例阈值，默认 0.1。
+
+    低相关（固定邻居表）:
+    correlation_threshold: 邻居相关中位数阈值，默认 0.3。
+    corr_method: 相关计算方法 spearman/pearson，默认 spearman。
+
+    修复:
+    interp_method: 插值方法 pchip/linear，默认 pchip。
+    interp_warn_ms: 缺口超该时长告警（仍插值），默认 50.0。
+    repair_bad_channels: 坏导也做时间维修复，默认 True。
     """
 
     null_weak_enabled: bool = True
     amplitude_outlier_enabled: bool = True
     low_correlation_enabled: bool = True
     repair_enabled: bool = False
-    amplitude_ratio: float = 0.1
-    correlation_threshold: float = 0.1
-    weak_signal_threshold_uv: float = 1.0
+
+    nan_ratio_threshold: float = 0.0
+
+    flat_var_threshold: float = 1e-3
+    weak_std_threshold: float = 0.5
+    weak_ptp_threshold: float = 5.0
+
+    eeg_range: tuple[float, float] = (-100.0, 100.0)
+    abnormal_ratio_threshold: float = 0.1
+
+    correlation_threshold: float = 0.3
+    corr_method: str = "spearman"
+
+    interp_method: str = "pchip"
+    interp_warn_ms: float = 50.0
+    repair_bad_channels: bool = True
 
 
 @dataclass(frozen=True)

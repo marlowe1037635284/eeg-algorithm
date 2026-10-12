@@ -100,9 +100,12 @@ int main(int argc, char** argv) {
         py::object artifact = types_mod.attr("ArtifactDetectionConfig")(true);      // 开启伪迹检测
         py::object resample = types_mod.attr("ResampleConfig")(false, 250.0);      // 不降采样
         // 质检配置：空值+弱信号/幅度外值/低相关三个检测开关=true；修复=true；
-        //           幅度占比=0.1, 相关性=0.1, 弱信号阈值=1.0μV
+        //           其余检测/修复参数（eeg_range、三口径阈值、邻居表等）使用默认值
         py::object quality = types_mod.attr("QualityControlConfig")(
-            true, true, true, true, 0.1, 0.1, 1.0);
+            py::arg("null_weak_enabled") = true,
+            py::arg("amplitude_outlier_enabled") = true,
+            py::arg("low_correlation_enabled") = true,
+            py::arg("repair_enabled") = true);
         py::object config = types_mod.attr("PreprocessConfig")(
             1, high_pass, low_pass, notch, reference, asr, artifact, resample, quality);
 

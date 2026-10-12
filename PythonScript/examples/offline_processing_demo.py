@@ -58,6 +58,32 @@ def simulate_signal() -> SignalBlock:
     return SignalBlock(0, timestamps, values)
 
 
+def simulate_signal_with_artifacts() -> SignalBlock:
+    """构造 4 通道、每通道含一类质检异常的模拟信号。
+
+    F3: 注入 NaN（空值）
+    F4: 极小幅度正弦（弱信号，方差/标准差/峰峰值均低于阈值）
+    P3: 注入超范围尖峰（超 EEG 范围，占比超过 abnormal_ratio_threshold）
+    P4: 独立白噪声（与其余 10Hz 正弦通道低相关）
+    """
+    t = np.arange(TOTAL_SAMPLES) / SAMPLE_RATE
+    rng = np.random.default_rng(0)
+    values = np.zeros((len(CHANNELS), TOTAL_SAMPLES), dtype=np.float32)
+    for i in range(len(CHANNELS)):
+        values[i] = (
+            20.0 * np.sin(2.0 * np.pi * 10.0 * t + i * 0.4)
+            + 3.0 * rng.normal(size=TOTAL_SAMPLES)
+        ).astype(np.float32)
+
+    values[0, 500:700] = np.nan                                           # F3: 空值
+    values[1] = (0.001 * np.sin(2.0 * np.pi * 10.0 * t)).astype(np.float32)  # F4: 弱信号
+    values[2, 800:1400] = 500.0                                           # P3: 超范围尖峰
+    values[3] = rng.normal(0.0, 20.0, TOTAL_SAMPLES).astype(np.float32)   # P4: 低相关
+
+    timestamps = np.rint(t * 1e9).astype(np.int64)
+    return SignalBlock(0, timestamps, values)
+
+
 def main() -> None:
     api = create_api()
     layout = build_layout()
@@ -167,11 +193,13 @@ def main() -> None:
     # 三个开关：null_weak_enabled（空值+弱信号）、amplitude_outlier_enabled（幅度范围外值）、
     #          low_correlation_enabled（低相关性导联）。
 
-    # 只测「幅度范围外值」，并把幅度占比阈值从默认 0.1 调大到 0.2
+    # 只测「幅度范围外值」：把幅度合法范围从默认 ±100μV 收紧到 ±50μV，
+    # 并把通道级越界样本占比阈值从默认 0.1 放宽到 0.2（>20% 越界才标注）。
     qc_amplitude_only = QualityControlConfig(
         null_weak_enabled=False,
         low_correlation_enabled=False,
-        amplitude_ratio=0.2,
+        eeg_range=(-50.0, 50.0),
+        abnormal_ratio_threshold=0.2,
     )
     amp_report = api.query_offline_quality(
         session_id,
@@ -183,9 +211,9 @@ def main() -> None:
         ),
     )
     amp_types = {s.artifact_type for s in amp_report.segments}
-    print(f"只测幅度外值(占比0.2): {len(amp_report.segments)} 段, 类型={amp_types}")
+    print(f"只测幅度外值(±50μV): {len(amp_report.segments)} 段, 类型={amp_types}")
 
-    # 只测「低相关性导联」，并把相关性阈值从默认 0.1 调大到 0.5
+    # 只测「低相关性导联」，并把相关性阈值从默认 0.3 调大到 0.5
     qc_corr_only = QualityControlConfig(
         null_weak_enabled=False,
         amplitude_outlier_enabled=False,
@@ -216,6 +244,27 @@ def main() -> None:
     )
     two_types = {s.artifact_type for s in two_report.segments}
     print(f"测空值/弱信号+幅度外值: {len(two_report.segments)} 段, 类型={two_types}")
+
+    # 6.2 质检模块专项测试：用带异常的数据验证四类检测与修复。
+    # 说明：公共 API 的 create_offline_session 会校验并拒绝含 NaN 的原始数据，
+    # 而空值检测的输入正是 NaN/Inf，因此这里直接调用质检核心函数验证。
+    from eeg_algorithm.internal.offline.quality import detect_quality, run_quality_control
+
+    raw_qc = simulate_signal_with_artifacts()
+    qc_report = detect_quality(raw_qc, layout, QualityControlConfig())
+    by_type: dict[str, int] = {}
+    for seg in qc_report.segments:
+        by_type[seg.artifact_type] = by_type.get(seg.artifact_type, 0) + 1
+    print(f"质检检测(异常数据) 各类型异常段数量: {by_type}")
+
+    repaired_signal, repaired_report = run_quality_control(
+        raw_qc, layout, QualityControlConfig(repair_enabled=True)
+    )
+    print(f"质检修复 已修复: {repaired_report.repaired}")
+    v = repaired_signal.values
+    print(f"修复后 F3 残留 NaN 样本数: {int(np.isnan(v[0]).sum())}")
+    print(f"修复后 P3 超范围样本数: {int(((v[2] < -100.0) | (v[2] > 100.0)).sum())}")
+    print(f"修复后 F4 标准差(弱信号未被修复): {float(np.nanstd(v[1])):.4f} μV")
 
     # 7. 查看离线会话状态
     status = api.get_offline_status(session_id)

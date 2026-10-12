@@ -19,7 +19,7 @@
 
 | 模块 | 职责 | 依赖 |
 | --- | --- | --- |
-| `common/` | 跨模块共用的地基：跨线程数据结构、电极蒙太奇、`.eegbin` 文件格式、地形图配色 | — |
+| `common/` | 跨模块共用的地基：跨线程数据结构、电极蒙太奇、`.eegbin` 文件格式、地形图配色、无人值守自动退出 | — |
 | `storage/` | 本地 SQLite（账号 / 偏好 / 患者 / 标签 / 采集记录） | — |
 | `acquisition/` | 串口采集链路：协议解析、原始环形缓冲、采集线程 | `common` |
 | `algorithm/` | 嵌入式 Python 解释器门面、算法线程、离线算法调用层 | `common` `acquisition` |
@@ -147,7 +147,7 @@ build\package.cmd --zip      :: 额外生成 dist\EEG-KSC-portable.zip
 
 组装产物在 `KSCEEGClient/build/dist/EEG-KSC/`，共 6 步：
 
-1. 拷贝 exe、`python311.dll`、设计字体（`assets/fonts`）、数据库模板 `eeg-ksc.db`；
+1. 拷贝 exe、`python311.dll`、设计字体（`assets/fonts`）、数据库模板 `eeg-ksc.db`、运行期配置 `client-config.json`；
 2. `windeployqt` 收集 Qt 运行期（DLL、平台插件、QML 模块）；
 3. 拷贝 Python 3.11 基础安装到 `python\`；
 4. 拷贝 `PythonScript/venv` 到 `venv\`；
@@ -165,6 +165,7 @@ dist/EEG-KSC/
 ├── app/                    # eeg_algorithm 算法包
 ├── bridge/                 # eeg_bridge.py 适配层
 └── eeg-ksc.db              # SQLite 表结构模板（含预置 admin）
+└── client-config.json      # 运行期配置（无人值守自动退出分钟数等）
 ```
 
 运行期 Python 路径由 [pythonengine.cpp](KSCEEGClient/src/algorithm/pythonengine.cpp) 的 `resolve_dir`
@@ -180,6 +181,10 @@ dist/EEG-KSC/
   打包后为 exe 同级 `eeg-ksc.db`。
 - **采集记录波形**：`.eegbin`（64 字节头 + float32 帧优先交错样本），与 UI 同源的读取逻辑在
   `analysis/recordingpreview.cpp`。
+- **运行期配置**：`client-config.json`。解析顺序与数据库模板相反，**exe 同级优先**，其次源码目录
+  （开发期从 `build/` 跑时用），便于现场改配置而不动源码。字段 `unattended_auto_exit_minutes`
+  为无人值守自动退出的空闲阈值（分钟，默认 60）：连续该时长没有任何鼠标 / 键盘操作即退出程序，
+  设为 `0` 关闭该功能。改动后需重启程序生效。
 - **日志与本地数据**：`QStandardPaths::AppLocalDataLocation`，应用名为 `EEG-KSC`。
 
 ## 已知问题与修复记录

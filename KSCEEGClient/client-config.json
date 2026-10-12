@@ -1,0 +1,4 @@
+{
+  "_comment": "客户端运行期配置。改动后需重启程序生效。unattended_auto_exit_minutes：无人值守自动退出的空闲阈值（分钟），超过该时长没有任何鼠标/键盘操作即自动退出程序；设为 0 表示关闭该功能。",
+  "unattended_auto_exit_minutes": 60
+}

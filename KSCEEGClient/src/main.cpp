@@ -14,6 +14,7 @@
 #include "algorithm/pythonworker.h"
 #include "analysis/recordingpreview.h"
 #include "acquisition/serialcollector.h"
+#include "common/unattendedguard.h"
 
 namespace
 {
@@ -115,6 +116,17 @@ int main(int argc, char *argv[])
         }
         return failures == 0 ? 0 : 1;
     }
+
+    // 无人值守自动退出：连续一段时间没有任何鼠标 / 键盘操作就退出程序。
+    // 阈值从 client-config.json 读，缺省 60 分钟。声明在 main 作用域里，
+    // 生命周期与事件循环一致，退出时由事件循环正常收尾。
+    const int auto_exit_minutes =
+        unattended_auto_exit_minutes(kDefaultUnattendedAutoExitMinutes);
+    UnattendedGuard unattended_guard(auto_exit_minutes, &app);
+    if (unattended_guard.is_active())
+        qInfo().noquote() << "[idle] 无人值守自动退出已启用，空闲阈值" << auto_exit_minutes << "分钟";
+    else
+        qInfo().noquote() << "[idle] 无人值守自动退出已关闭（unattended_auto_exit_minutes <= 0）";
 
     load_design_fonts();
 

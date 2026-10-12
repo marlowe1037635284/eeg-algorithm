@@ -164,7 +164,7 @@ dist/EEG-KSC/
 ├── venv/                   # numpy / scipy
 ├── app/                    # eeg_algorithm 算法包
 ├── bridge/                 # eeg_bridge.py 适配层
-└── eeg-ksc.db              # SQLite 表结构模板（含预置 admin）
+└── eeg-ksc.db              # SQLite 表结构模板（账号表不含内置 admin）
 └── client-config.json      # 运行期配置（无人值守自动退出分钟数等）
 ```
 
@@ -173,7 +173,9 @@ dist/EEG-KSC/
 `python\`/`venv\`/`app\`/`bridge\`，自然落到编译期默认值，与打包目录互不干扰。
 
 > 打包脚本会校验 `KSCEEGClient/eeg-ksc.db` 是否存在。该文件被 `.gitignore` 忽略；
-> 客户端首次运行会在源码目录自动建表并预置 `admin`，把它作为模板使用即可。
+> 客户端首次运行会在源码目录自动建表，把它作为模板使用即可。
+> 内置超级管理员 `admin` 写死在代码里（见 `appdatabase.cpp` 的 `kBuiltinAdminUser`），
+> **不落在 users 表中**，因此也不会出现在用户列表里 —— 首次登录用它，其余账号在「用户管理」页开通。
 
 ## 运行期数据位置
 

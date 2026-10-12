@@ -46,8 +46,9 @@ public:
 
     // ==================== 账号 ====================
 
-    // 用「手机号 + 密码」登录，并把这一对凭据存进 users 表：
-    //   库里已有该手机号 → 校验密码；没有 → 直接登记一条新用户。
+    // 用「账号 + 密码」登录：
+    //   内置超级管理员 admin → 凭据写死在代码里，不查库、不落库，也不进用户列表；
+    //   其余账号 → 库里已有则校验密码，库里没有一律拒绝（账号开通走用户管理页）。
     // 返回 { success, displayName, role, isNew }
     Q_INVOKABLE QVariantMap authenticateOrRegister(const QString &phone, const QString &password);
 

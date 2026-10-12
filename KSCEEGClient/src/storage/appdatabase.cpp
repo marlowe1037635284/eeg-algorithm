@@ -50,6 +50,15 @@ const char *kSettingRemember = "remember_login";
 const char *kSettingPhone = "remembered_username";
 const char *kSettingPassword = "remembered_password";
 
+// 内置超级管理员：写死在代码里，**不进数据库、也不出现在用户列表中**。
+// 它是进入系统的那把钥匙 —— 首次登录用它，之后在「用户管理」里开通其它账号。
+// 库里所有账号都由它派生，因此这三个值一旦改动就等于换锁，务必与登录页的
+// 默认回填值（LoginPage.qml）保持一致
+const QString kBuiltinAdminUser = QStringLiteral("admin");
+const QString kBuiltinAdminPassword = QStringLiteral("admin123456");
+const QString kBuiltinAdminDisplay = QStringLiteral("管理员");
+const QString kBuiltinAdminRole = QStringLiteral("管理员");
+
 // 病历号前缀与位数。改成 P-0001 以外的格式时只看这一处
 const char *kPatientNoPrefix = "P-";
 constexpr int kPatientNoDigits = 4;
@@ -119,17 +128,12 @@ AppDatabase::AppDatabase(QObject *parent)
     if (!createTables())
         return;
 
-    // 预置一个管理员账号，方便第一次就能登进来
-    QSqlQuery query(m_database);
-    query.prepare(QStringLiteral(
-        "INSERT OR IGNORE INTO users(username, password, display_name, role, created_at) "
-        "VALUES(?, ?, ?, ?, datetime('now'))"));
-    query.addBindValue(QStringLiteral("admin"));
-    query.addBindValue(QStringLiteral("admin123456"));
-    query.addBindValue(QStringLiteral("管理员"));
-    query.addBindValue(QStringLiteral("管理员"));
-    if (!query.exec())
-        qWarning() << "[db] 预置管理员账号失败:" << query.lastError().text();
+    // 内置超级管理员不落库（登录逻辑见 authenticateOrRegister）。
+    // 这里顺手清掉老版本或模板库里可能残留的 admin 行，保证它既不在数据库里，
+    // 也不会出现在用户列表中
+    QSqlQuery cleanup(m_database);
+    if (!cleanup.exec(QStringLiteral("DELETE FROM users WHERE username = 'admin'")))
+        qWarning() << "[db] 清理内置管理员残留行失败:" << cleanup.lastError().text();
 }
 
 AppDatabase::~AppDatabase()
@@ -306,6 +310,22 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
     if (phone.isEmpty() || !ensureOpen())
         return result;
 
+    // 内置超级管理员：凭据写死在代码里，不查库。命中后无论成败都不落库、
+    // 也不进用户列表（列表查询另有过滤，双保险）。
+    // 「登录成功」的审计由 setCurrentUser 的状态迁移统一记录，这里不重复记
+    if (phone == kBuiltinAdminUser)
+    {
+        if (password != kBuiltinAdminPassword)
+        {
+            audit_log::record_as(phone, QStringLiteral("登录失败：密码不正确"));
+            return result;   // message 默认即「密码不正确，请重新输入」
+        }
+        result[QStringLiteral("success")] = true;
+        result[QStringLiteral("displayName")] = kBuiltinAdminDisplay;
+        result[QStringLiteral("role")] = kBuiltinAdminRole;
+        return result;
+    }
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "SELECT password, display_name, role, status FROM users WHERE username = ? LIMIT 1"));
@@ -361,43 +381,11 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
         return result;
     }
 
-    // 库里没有这个账号。
-    //
-    // **只有在 users 表一个人都没有时才自动登记**（首次初始化，正常情况下
-    // 走不到 —— 构造函数里已经预置了管理员）。其余情况一律拒绝。
-    //
-    // 原来这里是「登录页填什么就存什么」，于是用户管理页的「停用」形同虚设：
-    // 被停用的人把账号名改一个字符就能立刻拿到一个新账号登进来。账号的开通
-    // 统一归到用户管理页，登录页只负责登录
-    QSqlQuery count(m_database);
-    if (!count.exec(QStringLiteral("SELECT COUNT(*) FROM users")) || !count.next()
-        || count.value(0).toInt() > 0)
-    {
-        result[QStringLiteral("message")] = QStringLiteral("账号不存在，请联系管理员开通");
-        audit_log::record_as(phone, QStringLiteral("登录失败：账号不存在"));
-        return result;
-    }
-
-    QSqlQuery insert(m_database);
-    insert.prepare(QStringLiteral(
-        "INSERT INTO users(username, password, display_name, role, created_at) "
-        "VALUES(?, ?, ?, ?, datetime('now'))"));
-    insert.addBindValue(phone);
-    insert.addBindValue(password);
-    insert.addBindValue(phone);
-    insert.addBindValue(QStringLiteral("管理员"));
-    if (!insert.exec())
-    {
-        qWarning() << "[db] 登记初始账号失败:" << insert.lastError().text();
-        return result;
-    }
-
-    result[QStringLiteral("success")] = true;
-    result[QStringLiteral("displayName")] = phone;
-    result[QStringLiteral("role")] = QStringLiteral("管理员");
-    result[QStringLiteral("isNew")] = true;
-    // 首次初始化时自动登记的管理员也是一次「创建账号」，同样要留痕
-    audit_log::record_as(phone, QStringLiteral("创建账号（首次初始化管理员）"));
+    // 库里没有这个账号：一律拒绝。账号的开通统一归到用户管理页，登录页只负责登录
+    // —— 否则被停用的人把账号名改一个字符就能立刻拿到一个新账号登进来。
+    // 首次进入系统用内置超级管理员（见上方 kBuiltinAdminUser），它不落库
+    result[QStringLiteral("message")] = QStringLiteral("账号不存在，请联系管理员开通");
+    audit_log::record_as(phone, QStringLiteral("登录失败：账号不存在"));
     return result;
 }
 
@@ -1389,9 +1377,10 @@ QVariantList AppDatabase::users()
         return rows;
 
     QSqlQuery query(m_database);
+    // 内置超级管理员（见 kBuiltinAdminUser）不落库，这里再过滤一道做双保险
     if (!query.exec(QStringLiteral(
             "SELECT id, username, display_name, role, department, status, created_at, last_login"
-            "  FROM users ORDER BY id")))
+            "  FROM users WHERE username <> 'admin' ORDER BY id")))
     {
         qWarning() << "[db] 查询用户失败:" << query.lastError().text();
         return rows;
@@ -1433,6 +1422,12 @@ bool valid_account(const QString &account, QString *message)
     if (trimmed.isEmpty())
     {
         *message = QStringLiteral("请填写用户名");
+        return false;
+    }
+    // admin 是代码内置的超级管理员，账号名保留，不允许再建同名业务账号
+    if (trimmed == kBuiltinAdminUser)
+    {
+        *message = QStringLiteral("用户名为系统保留（admin），请换一个");
         return false;
     }
     return true;

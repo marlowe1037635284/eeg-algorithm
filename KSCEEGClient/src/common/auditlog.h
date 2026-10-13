@@ -13,7 +13,7 @@
 // 字段之间用 " | "（竖线）分隔。事件永远排在最后，因此事件文本里出现竖线
 // 也不会影响前三个字段的解析。
 //
-// 落盘位置沿用既有约定：%LOCALAPPDATA%\EEG-KSC\logs\audit.log
+// 落盘位置：可执行文件同级的 logs\audit.log
 //（与 pythonengine 的 log_dir() 是同一个目录，只是文件名不同）。
 //
 // 「用户ID」取登录账号（users.username），也就是登录页上填的手机号。不用用户

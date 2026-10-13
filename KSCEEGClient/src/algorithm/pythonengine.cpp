@@ -10,7 +10,6 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QStringList>
-#include <QStandardPaths>
 
 // 只为了自检里那次 SetConsoleOutputCP：控制台默认是 cp936，
 // 中文输出会乱码。WIN32_LEAN_AND_MEAN 用来躲开 windows.h 与 Qt 的符号冲突
@@ -99,15 +98,11 @@ QString resolve_bridge_dir()
 }
 
 // Python 侧日志目录。算法包约定「目录由 C++ 传入，Python 不硬编码用户目录」，
-// 所以这里统一给出产品自己的位置。
+// 所以这里统一给出产品自己的位置：可执行文件同级的 logs 目录
 QString log_dir()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    if (base.isEmpty())
-    {
-        base = QDir::tempPath() + QStringLiteral("/EEG-KSC");
-    }
-    return QDir::fromNativeSeparators(base) + QStringLiteral("/logs");
+    return QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())
+           + QStringLiteral("/logs");
 }
 
 // 把嵌入式解释器配置成「就以这个 venv 的身份运行」。必须在 py::scoped_interpreter 之前调用。

@@ -66,7 +66,8 @@ int main(int argc, char *argv[])
     QGuiApplication app(argc, argv);
 
     // 产品名要显式设置：QStandardPaths 的 AppLocalDataLocation 会以它为一级目录，
-    // 日志与采集记录的落盘位置都由它决定，不设的话会退化成可执行文件名。
+    // 采集记录的落盘位置由它决定，不设的话会退化成可执行文件名。
+    //（日志已改为可执行文件同级的 logs 目录，不再走这里）
     //
     // **组织名刻意不设**：Qt 这个位置是「组织/应用」两级，两个都设成 EEG-KSC 的话
     // 会得到 %LOCALAPPDATA%\EEG-KSC\EEG-KSC\... 这种重复一层的路径

@@ -1,12 +1,12 @@
 #include "common/auditlog.h"
 
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QMutex>
 #include <QMutexLocker>
-#include <QStandardPaths>
 #include <QTextStream>
 
 namespace
@@ -19,14 +19,12 @@ QMutex g_mutex;
 
 const char *k_log_file_name = "audit.log";
 
-// 日志目录：%LOCALAPPDATA%\<应用名>\logs。与 pythonengine.cpp 的 log_dir()
-// 指向同一处。取不到标准位置时退到临时目录，保证任何机器上都有个能写的地方
+// 日志目录：可执行文件同级的 logs 目录，跟着程序走，便于现场直接从安装目录取日志。
+// 与 pythonengine.cpp 的 log_dir() 指向同一处
 QString log_directory()
 {
-    QString base = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    if (base.isEmpty())
-        base = QDir::tempPath() + QStringLiteral("/EEG-KSC");
-    return QDir::fromNativeSeparators(base) + QStringLiteral("/logs");
+    return QDir::fromNativeSeparators(QCoreApplication::applicationDirPath())
+           + QStringLiteral("/logs");
 }
 
 // 事件文本里混进换行会把一条日志拆成两行，破坏「一行一条」。统一换成空格

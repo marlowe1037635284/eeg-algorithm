@@ -306,49 +306,50 @@ Item {
 
             // ---------- 质检与修复 ----------
             SectionTitle { x: 25; y: 961; text: qsTr("质检与修复") }
+            PanelDivider { x: 21; y: 986; width: 373 }
 
-            RowLabel { x: 25; y: 993; text: qsTr("检测") }
+            RowLabel { x: 25; y: 999; text: qsTr("检测") }
 
             // 三项检测各自一个独立的圆形开关（左），阈值输入在其右侧。
             // 关掉某一项，报告页与底栏就不再统计它
             RoundToggle {
-                x: 25; y: 1027
+                x: 24; y: 1030
                 on_: Analysis.qcSignalEnabled
                 onToggled: Analysis.qcSignalEnabled = !Analysis.qcSignalEnabled
             }
-            RowLabel { x: 51; y: 1028; text: qsTr("弱信号和空值") }
+            RowLabel { x: 56; y: 1032; text: qsTr("弱信号和空值") }
 
             RoundToggle {
-                x: 25; y: 1063
+                x: 24; y: 1065
                 on_: Analysis.qcRangeEnabled
                 onToggled: Analysis.qcRangeEnabled = !Analysis.qcRangeEnabled
             }
-            RowLabel { x: 51; y: 1064; text: qsTr("异常 EEG 范围外值") }
-            RowLabel { x: 160; y: 1064; text: qsTr("幅度占比") }
-            ValueField {
-                x: 231; y: 1056
+            RowLabel { x: 56; y: 1067; text: qsTr("异常 EEG 范围外值") }
+            RowLabel { x: 250; y: 1067; text: qsTr("幅度占比") }
+            SpinField {
+                x: 331; y: 1063
                 opacity: Analysis.qcRangeEnabled ? 1.0 : 0.45
                 value: Analysis.qcAmplitudeRatio
                 onEdited: (value) => Analysis.qcAmplitudeRatio = value
             }
 
             RoundToggle {
-                x: 25; y: 1099
+                x: 24; y: 1100
                 on_: Analysis.qcCorrelationEnabled
                 onToggled: Analysis.qcCorrelationEnabled = !Analysis.qcCorrelationEnabled
             }
-            RowLabel { x: 51; y: 1100; text: qsTr("低相关性导联") }
-            RowLabel { x: 160; y: 1100; text: qsTr("相关性") }
-            ValueField {
-                x: 231; y: 1092
+            RowLabel { x: 56; y: 1102; text: qsTr("低相关性导联") }
+            RowLabel { x: 250; y: 1102; text: qsTr("相关性阈值") }
+            SpinField {
+                x: 331; y: 1098
                 opacity: Analysis.qcCorrelationEnabled ? 1.0 : 0.45
                 value: Analysis.qcCorrelation
                 onEdited: (value) => Analysis.qcCorrelation = value
             }
 
-            RowLabel { x: 25; y: 1144; text: qsTr("修复") }
+            RowLabel { x: 25; y: 1145; text: qsTr("修复") }
             ChoiceField {
-                x: 231; y: 1133; width: 152; height: 30
+                x: 249; y: 1141; width: 141; height: 28
                 pixelSize: 14
                 fieldRadius: 8
                 choices: Analysis.qcRepairChoices
@@ -547,6 +548,139 @@ Item {
         }
     }
 
+    // 「质检与修复」里的阈值输入：左边一个数值，右边一列上下步进三角。
+    // 阈值都是 0~1 的比例，点一下走一格（默认 0.1），到边界就停住
+    component SpinField: Rectangle {
+        id: spinField
+
+        property real value: 0
+        property real from: 0
+        property real to: 1
+        property real step: 0.1
+
+        signal edited(real value)
+
+        width: 59
+        height: 28
+        radius: 8
+        color: Design.primarySoft
+        border.width: 1
+        border.color: Design.panelBorder
+        opacity: enabled ? 1.0 : 0.45
+
+        readonly property int stepperWidth: 21
+
+        function format(number) {
+            return Number(number).toFixed(1)
+        }
+
+        // 吸附到步长并夹在 (from, to) 之间，避免浮点误差留下 0.30000000000000004
+        function clampValue(number) {
+            const snapped = Math.round((number - spinField.from) / spinField.step) * spinField.step + spinField.from
+            return Math.max(spinField.from, Math.min(spinField.to, snapped))
+        }
+
+        function nudge(direction) {
+            const next = clampValue(spinField.value + direction * spinField.step)
+            spinField.value = next
+            spinField.edited(next)
+        }
+
+        Text {
+            anchors.left: parent.left
+            anchors.right: stepper.left
+            anchors.verticalCenter: parent.verticalCenter
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            text: spinField.format(spinField.value)
+            color: Design.textPrimary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 14
+        }
+
+        Item {
+            id: stepper
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: spinField.stepperWidth
+
+            // 值区与步进列之间的细分隔线
+            Rectangle {
+                x: 0
+                width: 1
+                height: parent.height
+                color: Design.panelBorder
+            }
+
+            // 上一格
+            Canvas {
+                width: 8
+                height: 5
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.verticalCenter: upArea.verticalCenter
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.clearRect(0, 0, width, height)
+                    ctx.beginPath()
+                    ctx.moveTo(0, height)
+                    ctx.lineTo(width / 2, 0)
+                    ctx.lineTo(width, height)
+                    ctx.closePath()
+                    ctx.fillStyle = Design.primary
+                    ctx.fill()
+                }
+            }
+            MouseArea {
+                id: upArea
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: parent.height / 2 - 1
+                cursorShape: Qt.PointingHandCursor
+                onClicked: spinField.nudge(1)
+            }
+
+            // 上下两格之间的横线
+            Rectangle {
+                x: 0
+                y: parent.height / 2
+                width: parent.width
+                height: 1
+                color: Design.panelBorder
+            }
+
+            // 下一格
+            Canvas {
+                width: 8
+                height: 5
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.verticalCenter: downArea.verticalCenter
+                onPaint: {
+                    const ctx = getContext("2d")
+                    ctx.clearRect(0, 0, width, height)
+                    ctx.beginPath()
+                    ctx.moveTo(0, 0)
+                    ctx.lineTo(width / 2, height)
+                    ctx.lineTo(width, 0)
+                    ctx.closePath()
+                    ctx.fillStyle = Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.40)
+                    ctx.fill()
+                }
+            }
+            MouseArea {
+                id: downArea
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.bottom: parent.bottom
+                height: parent.height / 2 - 1
+                cursorShape: Qt.PointingHandCursor
+                onClicked: spinField.nudge(-1)
+            }
+        }
+    }
+
     // 开关。与采集页「滤波」弹窗里的开关同一套语汇（圆环 + 内点，左右滑）——
     // 全应用只有这一种开关样式
     component SwitchPill: Rectangle {
@@ -589,31 +723,55 @@ Item {
         }
     }
 
-    // 「质检与修复 → 检测」三项左侧的圆形开关：开着是蓝色实心点，关掉是灰色空圈。
-    // 与右侧那排长条开关（SwitchPill）区分开 —— 这里问的是「要不要查这一项」，
-    // 圆点更像勾选；三项各自独立，互不影响
+    // 「质检与修复 → 检测」三项左侧的圆形开关：开着是蓝色实心点 + 一圈外晕，
+    // 关掉是灰色空圈。与右侧那排长条开关（SwitchPill）区分开 —— 这里问的是
+    //「要不要查这一项」，圆点更像勾选；三项各自独立，互不影响
     component RoundToggle: Item {
         id: roundToggle
 
         property bool on_: false
         signal toggled()
 
-        width: 16
-        height: 16
+        width: 24
+        height: 24
 
+        // 外圈柔光：选中时铺一层很淡的蓝，让圆点像被点亮
         Rectangle {
-            anchors.fill: parent
-            radius: width / 2
-            color: "transparent"
-            border.width: 1
+            anchors.centerIn: parent
+            width: 24
+            height: 24
+            radius: 12
+            color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, roundToggle.on_ ? 0.12 : 0.0)
+        }
+
+        // 蓝色圆环，内部是浅蓝底（关掉时退成灰环空圈）
+        Rectangle {
+            anchors.centerIn: parent
+            width: 19
+            height: 19
+            radius: 9.5
+            color: roundToggle.on_ ? "#b9c6ce" : "transparent"
+            border.width: 1.5
             border.color: roundToggle.on_ ? Design.primary : "#919191"
 
+            // 白细圈，把内里与圆点隔开
             Rectangle {
                 anchors.centerIn: parent
-                width: 8
-                height: 8
-                radius: 4
-                color: roundToggle.on_ ? Design.primary : "transparent"
+                width: 12
+                height: 12
+                radius: 6
+                color: "#ffffff"
+                visible: roundToggle.on_
+            }
+
+            // 蓝色实心点
+            Rectangle {
+                anchors.centerIn: parent
+                width: 9
+                height: 9
+                radius: 4.5
+                color: Design.primary
+                visible: roundToggle.on_
             }
         }
 

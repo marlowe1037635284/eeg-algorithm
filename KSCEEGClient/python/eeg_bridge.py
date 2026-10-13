@@ -624,9 +624,11 @@ def _parse_preprocess_config(config: Mapping[str, Any]) -> PreprocessConfig:
             amplitude_outlier_enabled=bool(config["qc_amplitude_outlier_enabled"]),
             low_correlation_enabled=bool(config["qc_low_correlation_enabled"]),
             repair_enabled=bool(config["qc_repair_enabled"]),
-            amplitude_ratio=float(config["qc_amplitude_ratio"]),
+            # 字段名对齐 types/offline.py 的 QualityControlConfig：
+            # 幅度占比 → abnormal_ratio_threshold，弱信号幅值 → weak_std_threshold
+            abnormal_ratio_threshold=float(config["qc_amplitude_ratio"]),
             correlation_threshold=float(config["qc_correlation_threshold"]),
-            weak_signal_threshold_uv=float(config["qc_weak_signal_threshold_uv"]),
+            weak_std_threshold=float(config["qc_weak_signal_threshold_uv"]),
         ),
         return_processed_signal=bool(config["return_processed_signal"]),
     )

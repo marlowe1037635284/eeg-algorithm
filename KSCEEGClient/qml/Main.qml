@@ -251,6 +251,7 @@ ApplicationWindow {
         case "newPatient":    return newPatientComponent
         case "editPatient":   return editPatientComponent
         case "recordPreview": return recordPreviewComponent
+        case "recordReport":  return recordReportComponent
         case "newTag":        return newTagComponent
         case "confirmDelete": return confirmDeleteComponent
         case "userEdit":      return userEditComponent
@@ -368,6 +369,11 @@ ApplicationWindow {
     function openRecordPreview(recordNo) {
         pendingRecordNo = recordNo
         activeDialog = "recordPreview"
+    }
+
+    function openRecordReport(recordNo) {
+        pendingRecordNo = recordNo
+        activeDialog = "recordReport"
     }
 
     // 选择/登记患者之后，把工作台的卡片也切成这一位
@@ -520,6 +526,7 @@ ApplicationWindow {
             onChangePasswordRequested: window.openChangePassword()
             onDeviceInfoRequested: window.activeDialog = "deviceInfo"
             onRecordPreviewRequested: (recordNo) => window.openRecordPreview(recordNo)
+            onRecordReportRequested: (recordNo) => window.openRecordReport(recordNo)
             // 删除是不可撤销的，先弹确认框
             onRecordDeleteRequested: (recordNo) => {
                 window.pendingRecordNoToDelete = recordNo
@@ -776,6 +783,21 @@ ApplicationWindow {
             onDismissed: {
                 // 关掉预览就把文件释放掉：一条 10 分钟的记录映射着约 38 MB，
                 // 一直开着不划算
+                Recording.close()
+                window.closeDialog()
+            }
+            onExportRequested: (recordNo) => window.exportRecordPdf(recordNo)
+        }
+    }
+
+    Component {
+        id: recordReportComponent
+
+        ReportDialog {
+            database: appDatabase
+            recordNo: window.pendingRecordNo
+            onDismissed: {
+                // 关掉报告同样要把波形文件释放掉
                 Recording.close()
                 window.closeDialog()
             }

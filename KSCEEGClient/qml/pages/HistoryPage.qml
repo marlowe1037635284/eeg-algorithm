@@ -19,6 +19,8 @@ Item {
     signal changePasswordRequested()
     signal deviceInfoRequested()
     signal recordPreviewRequested(string recordNo)
+    // 「报告」：打开这条记录的报告（弹框内容与行为待定，先只把记录号交回外层）
+    signal recordReportRequested(string recordNo)
     // 删记录：交给外层弹确认框，确认后才真删
     signal recordDeleteRequested(string recordNo)
     // 导出一条记录：落盘了原始数据就复制它，否则导出记录摘要
@@ -268,19 +270,25 @@ Item {
                 TableRowButton {
                     x: 1429
                     y: rowY + 11
+                    text: qsTr("报告")
+                    onClicked: root.recordReportRequested(modelData.no)
+                }
+                TableRowButton {
+                    x: 1500
+                    y: rowY + 11
                     text: qsTr("分析")
                     // 「数据分析与后处理」是另一整屏，由 Main 换页（见 AnalysisPage）
                     onClicked: root.analysisRequested(modelData.no)
                 }
                 TableRowButton {
-                    x: 1500
+                    x: 1571
                     y: rowY + 11
                     text: qsTr("导出")
                     onClicked: root.recordExportRequested(modelData.no)
                 }
                 // 历史记录页的「删除」在设计稿里不是红色（患者管理页那个才是），照设计稿
                 TableRowButton {
-                    x: 1571
+                    x: 1642
                     y: rowY + 11
                     text: qsTr("删除")
                     onClicked: root.recordDeleteRequested(modelData.no)

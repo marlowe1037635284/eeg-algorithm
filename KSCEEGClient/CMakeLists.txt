@@ -164,6 +164,7 @@ qt_add_qml_module(appKSCEEGClient
         qml/dialogs/NewTagDialog.qml
         qml/dialogs/PrecheckDialog.qml
         qml/dialogs/RecordPreviewDialog.qml
+        qml/dialogs/ReportDialog.qml
         qml/dialogs/ResetPasswordDialog.qml
         qml/dialogs/SelectPatientDialog.qml
         qml/dialogs/UserDialog.qml

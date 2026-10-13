@@ -107,14 +107,14 @@ UnattendedGuard::UnattendedGuard(int timeout_minutes, QObject *parent)
     if (m_timeout_ms <= 0)
         return;
 
-    // 单次触发：到点就走人。每次用户输入都 start() 重新计时，等价于「距上次
-    // 操作过了多久」的倒计时
+    // 单次触发：到点就通知界面锁定。每次用户输入都 start() 重新计时，等价于
+    // 「距上次操作过了多久」的倒计时
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
     m_timer->setInterval(m_timeout_ms);
-    connect(m_timer, &QTimer::timeout, this, []() {
-        qInfo().noquote() << "[idle] 无人值守超时，自动退出程序";
-        QCoreApplication::quit();
+    connect(m_timer, &QTimer::timeout, this, [this]() {
+        qInfo().noquote() << "[idle] 无人值守超时，锁定设备";
+        emit idleTimedOut();
     });
 
     if (QCoreApplication::instance() != nullptr)

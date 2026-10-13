@@ -615,7 +615,7 @@ Item {
         font.pixelSize: 16
     }
 
-    // 分隔线与「滤波与后处理」跟随走纸速度文字的实际宽度向右排。
+    // 分隔线与「滤波」跟随走纸速度文字的实际宽度向右排。
     // 设计稿把两者写死在 1204 / 1224，那是按「15mm/s」这种短文本量的；
     // 走纸速度改用物理真值后文本变成「141.8mm/s」，写死的竖杠就压住最后一个字
     Rectangle {
@@ -627,22 +627,24 @@ Item {
         color: Design.primary
     }
 
-    // 滤波与后处理。设计稿里它只是个色块，这里接上弹窗
+    // 滤波。设计稿里它只是个色块，这里接上弹窗。文案由「滤波与后处理」缩为「滤波」，
+    // 胶囊宽度随文字收窄（左 16 / 右 16 的等距留白），不再留一段空白
     Rectangle {
         x: paperSpeedSeparator.x + 20
         y: 79
-        width: 137
+        width: filterLabel.width + 32
         height: 43
         radius: 12
         color: filterMouse.containsMouse ? Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.18)
                                          : Design.primarySoft
 
         Text {
+            id: filterLabel
             x: 16
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: qsTr("滤波与后处理")
+            text: qsTr("滤波")
             color: Design.textPrimary
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular

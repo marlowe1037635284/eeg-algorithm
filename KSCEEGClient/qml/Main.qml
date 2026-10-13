@@ -26,6 +26,8 @@ ApplicationWindow {
 
     // ---------- 登录态 ----------
     property bool loggedIn: false
+    // 无人值守超时后置位：登录页切换成「设备已锁定」样式（锁图标 + 只留输入框）
+    property bool locked: false
     property string currentUserName: ""
     property string currentUserRole: ""
 
@@ -100,6 +102,14 @@ ApplicationWindow {
         }
     }
 
+    // 无人值守超时 → 锁定界面。IdleGuard 由 main.cpp 注入（见 unattendedguard.h）
+    Connections {
+        target: IdleGuard
+        function onIdleTimedOut() {
+            window.handleIdleLockout()
+        }
+    }
+
     DesignCanvas {
         anchors.fill: parent
 
@@ -108,6 +118,8 @@ ApplicationWindow {
             anchors.fill: parent
             visible: !window.loggedIn
             enabled: visible
+            // 无人值守超时锁定时，登录页换成「设备已锁定」样式
+            locked: window.locked
             errorMessage: ""
 
             onLoginRequested: function(account, password, rememberPassword) {
@@ -130,6 +142,8 @@ ApplicationWindow {
                 appDatabase.setCurrentUser(account, result.role)
                 // 登录后按当前账号重取一次脱敏开关（设置存在库里，可能被别的账号改过）
                 window.syncPrivacy()
+                // 解锁：登录成功后清掉锁定态，表头恢复成「Welcome.」
+                window.locked = false
                 window.loggedIn = true
                 window.enterWorkbench()
                 // 登录成功后自动连接设备：串口从此独立于采集，一次连上后常开，
@@ -372,7 +386,9 @@ ApplicationWindow {
         activeDialog = "confirmLogout"
     }
 
-    function handleLogout() {
+    // 退出登录 / 锁屏共用的会话清理：放掉当前会话、断开设备、清掉数据层身份。
+    // 只做「会话」这一层，不动 loggedIn / locked —— 那两个由调用方决定
+    function endSession() {
         currentPatientNo = ""
         historyPatientFilter = ""
         analysisRecordNo = ""
@@ -387,12 +403,30 @@ ApplicationWindow {
         // 这是除「关闭程序」外唯一的断开时机（界面上不设手动断开入口）
         Acq.close_port()
         activeDialog = ""
-        loggedIn = false
         // 清掉会话身份：不这样做的话，下一个登录的人在数据层眼里仍是上一个人，
         // 非管理员会继承到别人的可见范围
         appDatabase.setCurrentUser("", "")
+    }
+
+    function handleLogout() {
+        endSession()
+        locked = false
+        loggedIn = false
         if (!loginPage.rememberChecked)
             loginPage.clearPassword()
+    }
+
+    // 无人值守超时：清会话并切到「设备已锁定」登录页。
+    // 未登录时无事可做 —— 人已经在登录页上了，再锁一次没有意义
+    function handleIdleLockout() {
+        if (!loggedIn)
+            return
+        endSession()
+        locked = true
+        loggedIn = false
+        // 锁定页是给「下一个人」用的，账号密码都不该留着
+        loginPage.accountText = ""
+        loginPage.clearPassword()
     }
 
     // ---------- 页面组件 ----------

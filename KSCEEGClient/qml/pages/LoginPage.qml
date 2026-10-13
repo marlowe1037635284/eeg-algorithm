@@ -10,6 +10,8 @@ Item {
 
     signal loginRequested(string account, string password, bool rememberPassword)
     property string errorMessage: ""
+    // 无人值守超时后的「设备已锁定」态：表头换成锁图标 + 提示，字段文案改成手机号
+    property bool locked: false
     property alias accountText: accountInput.text
     property alias passwordText: passwordInput.text
     property alias rememberChecked: rememberPassword.checked
@@ -23,7 +25,7 @@ Item {
     function submitLogin() {
         errorMessage = ""
         if (accountInput.text.trim().length === 0) {
-            errorMessage = qsTr("请输入用户名")
+            errorMessage = loginPage.locked ? qsTr("请输入手机号") : qsTr("请输入用户名")
             accountInput.forceActiveFocus()
             return
         }
@@ -105,6 +107,7 @@ Item {
             font.styleName: Design.styleHeavy
             font.pixelSize: 60
             renderType: Text.NativeRendering
+            visible: !loginPage.locked
         }
 
         Text {
@@ -116,12 +119,51 @@ Item {
             font.styleName: Design.styleMedium
             font.pixelSize: 20
             renderType: Text.NativeRendering
+            visible: !loginPage.locked
+        }
+
+        // ---------- 锁定态表头 ----------
+        // 无人值守超时后在此显示：锁图标 + 「设备已锁定」+ 「请重新登录后使用」。
+        // 与原表头二选一，位置按设计稿居中于表单宽度（336）
+        Image {
+            x: (parent.width - width) / 2
+            y: -98
+            width: 100
+            height: 100
+            source: Design.assetRoot + "icons/icon-lock.svg"
+            fillMode: Image.PreserveAspectFit
+            smooth: true
+            visible: loginPage.locked
+        }
+
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 16
+            text: qsTr("设备已锁定")
+            color: "#262729"
+            font.family: Design.fontFamily
+            font.styleName: Design.styleHeavy
+            font.pixelSize: 30
+            renderType: Text.NativeRendering
+            visible: loginPage.locked
+        }
+
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 60
+            text: qsTr("请重新登录后使用")
+            color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 18
+            renderType: Text.NativeRendering
+            visible: loginPage.locked
         }
 
         Text {
             x: 3
             y: 117
-            text: qsTr("用户名：")
+            text: loginPage.locked ? qsTr("手机号：") : qsTr("用户名：")
             color: "#262729"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -172,7 +214,7 @@ Item {
 
                 Text {
                     anchors.fill: parent
-                    text: qsTr("用户名")
+                    text: loginPage.locked ? qsTr("账号") : qsTr("用户名")
                     color: "#3d3d3d"
                     font: accountInput.font
                     verticalAlignment: Text.AlignVCenter
@@ -254,8 +296,9 @@ Item {
             y: 329
             width: 91
             height: 19
-            // 「记住密码」只在 Debug 构建里保留：打包发布（Release）不显示该功能
-            visible: AppDebugBuild
+            // 「记住密码」只在 Debug 构建里保留：打包发布（Release）不显示该功能；
+            // 锁定态也不显示 —— 这行是给「本人」记住密码用的，锁定页面向的是下一个人
+            visible: AppDebugBuild && !loginPage.locked
 
             CheckBox {
                 id: rememberPassword
@@ -311,7 +354,8 @@ Item {
             id: loginButton
             objectName: "loginButton"
             x: 3
-            y: 373
+            // 锁定态表头比「Welcome.」矮一截，按钮跟着上移（画板 y 649，表单内 341）
+            y: loginPage.locked ? 341 : 373
             width: 346
             height: 55
             radius: 12

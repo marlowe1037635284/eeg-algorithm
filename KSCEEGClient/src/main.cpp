@@ -119,16 +119,16 @@ int main(int argc, char *argv[])
         return failures == 0 ? 0 : 1;
     }
 
-    // 无人值守自动退出：连续一段时间没有任何鼠标 / 键盘操作就退出程序。
+    // 无人值守锁屏：连续一段时间没有任何鼠标 / 键盘操作就锁定设备、回到登录页。
     // 阈值从 client-config.json 读，缺省 60 分钟。声明在 main 作用域里，
     // 生命周期与事件循环一致，退出时由事件循环正常收尾。
     const int auto_exit_minutes =
         unattended_auto_exit_minutes(kDefaultUnattendedAutoExitMinutes);
     UnattendedGuard unattended_guard(auto_exit_minutes, &app);
     if (unattended_guard.is_active())
-        qInfo().noquote() << "[idle] 无人值守自动退出已启用，空闲阈值" << auto_exit_minutes << "分钟";
+        qInfo().noquote() << "[idle] 无人值守锁屏已启用，空闲阈值" << auto_exit_minutes << "分钟";
     else
-        qInfo().noquote() << "[idle] 无人值守自动退出已关闭（unattended_auto_exit_minutes <= 0）";
+        qInfo().noquote() << "[idle] 无人值守锁屏已关闭（unattended_auto_exit_minutes <= 0）";
 
     load_design_fonts();
 
@@ -207,6 +207,9 @@ int main(int argc, char *argv[])
         engine.rootContext()->setContextProperty(QStringLiteral("Analysis"), &analysis);
         // 授权状态给 QML 读：License.checked / License.valid / License.message
         engine.rootContext()->setContextProperty(QStringLiteral("License"), &license);
+        // 无人值守锁屏信号给 QML 读：IdleGuard.idleTimedOut() 一发，界面切「设备已锁定」页。
+        // unattended_guard 声明在 main 作用域，生命周期长于引擎，安全
+        engine.rootContext()->setContextProperty(QStringLiteral("IdleGuard"), &unattended_guard);
         // 构建配置给 QML 读：登录页的「记住密码」只在 Debug 构建里显示，打包发布
         // （Release）不显示。宏由 CMakeLists.txt 按配置注入（KSCEEG_DEBUG_BUILD）
 #ifdef KSCEEG_DEBUG_BUILD

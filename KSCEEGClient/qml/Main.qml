@@ -963,8 +963,12 @@ ApplicationWindow {
         const last = appDatabase.lastLogin()
         if (!last.hasRecord)
             return
-        loginPage.rememberChecked = last.remember
+        // 账号总是回填；「记住密码」只在 Debug 构建里回填密码 —— 发布版没有该功能，
+        // 不能把之前 Debug 跑出来的记录回填进输入框
         loginPage.accountText = last.phone
-        loginPage.passwordText = last.remember ? last.password : ""
+        if (AppDebugBuild) {
+            loginPage.rememberChecked = last.remember
+            loginPage.passwordText = last.remember ? last.password : ""
+        }
     }
 }

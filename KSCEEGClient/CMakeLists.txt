@@ -258,6 +258,9 @@ target_compile_definitions(appKSCEEGClient
     PRIVATE PYTHON_VENV_DIR="${PYTHON_VENV_DIR}"
     PRIVATE EEG_ALGO_SRC_DIR="${EEG_ALGO_SRC_DIR}"
     PRIVATE EEG_BRIDGE_DIR="${EEG_BRIDGE_DIR}"
+    # 构建配置给 QML 用：登录页的「记住密码」只在 Debug 构建里显示，打包发布（Release）
+    # 不显示。生成器表达式按配置判定，单配置生成器（NMake Makefiles）依据 CMAKE_BUILD_TYPE
+    PRIVATE $<$<CONFIG:Debug>:KSCEEG_DEBUG_BUILD=1>
 )
 
 target_link_libraries(appKSCEEGClient

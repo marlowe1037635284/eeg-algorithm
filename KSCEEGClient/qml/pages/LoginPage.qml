@@ -32,7 +32,8 @@ Item {
             passwordInput.forceActiveFocus()
             return
         }
-        loginRequested(accountInput.text.trim(), passwordInput.text, rememberPassword.checked)
+        loginRequested(accountInput.text.trim(), passwordInput.text,
+                       rememberPassword.checked && AppDebugBuild)
     }
 
     DesignCanvas {
@@ -253,6 +254,8 @@ Item {
             y: 329
             width: 91
             height: 19
+            // 「记住密码」只在 Debug 构建里保留：打包发布（Release）不显示该功能
+            visible: AppDebugBuild
 
             CheckBox {
                 id: rememberPassword
@@ -261,7 +264,7 @@ Item {
                 y: 0
                 width: 19
                 height: 19
-                checked: true
+                checked: AppDebugBuild
                 activeFocusOnTab: true
 
                 indicator: Rectangle {

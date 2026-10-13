@@ -207,6 +207,13 @@ int main(int argc, char *argv[])
         engine.rootContext()->setContextProperty(QStringLiteral("Analysis"), &analysis);
         // 授权状态给 QML 读：License.checked / License.valid / License.message
         engine.rootContext()->setContextProperty(QStringLiteral("License"), &license);
+        // 构建配置给 QML 读：登录页的「记住密码」只在 Debug 构建里显示，打包发布
+        // （Release）不显示。宏由 CMakeLists.txt 按配置注入（KSCEEG_DEBUG_BUILD）
+#ifdef KSCEEG_DEBUG_BUILD
+        engine.rootContext()->setContextProperty(QStringLiteral("AppDebugBuild"), true);
+#else
+        engine.rootContext()->setContextProperty(QStringLiteral("AppDebugBuild"), false);
+#endif
 
         QObject::connect(
             &engine,

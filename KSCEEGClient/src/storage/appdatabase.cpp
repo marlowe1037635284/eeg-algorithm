@@ -3,6 +3,7 @@
 #include "common/auditlog.h"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDebug>
 #include <QDir>
@@ -14,6 +15,12 @@
 #include <QTextStream>
 #include <QTimeZone>
 #include <QUrl>
+
+// 密码哈希与「记住密码」的对称加密都走 OpenSSL（与 licensemanager.cpp 同一套依赖，
+// 编译期已链接 OpenSSL::Crypto，见 CMakeLists.txt）
+#include <openssl/crypto.h>
+#include <openssl/evp.h>
+#include <openssl/rand.h>
 
 #include <algorithm>
 
@@ -62,6 +69,188 @@ const QString kBuiltinAdminRole = QStringLiteral("管理员");
 // 病历号前缀与位数。改成 P-0001 以外的格式时只看这一处
 const char *kPatientNoPrefix = "P-";
 constexpr int kPatientNoDigits = 4;
+
+// ==================== 密码存储 ====================
+//
+// 库里不放明文密码。账号密码只用于「比对」，所以用单向哈希；「记住密码」要回填
+// 到登录页，必须可解密，所以用对称加密。两者分开处理，不要混用。
+
+// 密码哈希：PBKDF2-HMAC-SHA256 + 每账号随机盐。迭代次数是防爆破的代价因子，
+// 存储格式 `pbkdf2_sha256$<迭代>$<盐hex>$<摘要hex>`；前缀同时用来识别
+// 「这一行是不是已经哈希过的」，以便兼容老库里的明文
+constexpr int kPasswordHashIterations = 120000;
+constexpr int kPasswordSaltBytes = 16;
+constexpr int kPasswordDigestBytes = 32; // SHA-256 摘要长度
+
+QString hex_encode(const unsigned char *data, int length)
+{
+    return QString::fromLatin1(QByteArray(reinterpret_cast<const char *>(data), length).toHex());
+}
+
+QByteArray hex_decode(const QString &hex)
+{
+    return QByteArray::fromHex(hex.toLatin1());
+}
+
+bool secure_random(unsigned char *out, int length)
+{
+    return RAND_bytes(out, length) == 1;
+}
+
+// 返回空串代表生成失败（随机源或 KDF 出错），调用方必须据此放弃写入，
+// 不能把空串当哈希存进库 —— 那样等于把密码清空
+QString hash_password(const QString &password)
+{
+    unsigned char salt[kPasswordSaltBytes];
+    if (!secure_random(salt, kPasswordSaltBytes))
+        return QString();
+
+    const QByteArray raw = password.toUtf8();
+    unsigned char digest[kPasswordDigestBytes];
+    if (PKCS5_PBKDF2_HMAC(raw.constData(), raw.size(),
+                          salt, kPasswordSaltBytes,
+                          kPasswordHashIterations, EVP_sha256(),
+                          kPasswordDigestBytes, digest) != 1)
+        return QString();
+
+    return QStringLiteral("pbkdf2_sha256$%1$%2$%3")
+        .arg(kPasswordHashIterations)
+        .arg(hex_encode(salt, kPasswordSaltBytes), hex_encode(digest, kPasswordDigestBytes));
+}
+
+bool is_password_hash(const QString &stored)
+{
+    return stored.startsWith(QStringLiteral("pbkdf2_sha256$"));
+}
+
+// 校验密码。命中老库里的明文密码时，通过 out_needs_upgrade 告诉调用方
+// 「这次是明文比对，请把这一行升级成哈希」；哈希比对用常量时间比较避免计时侧信道
+bool verify_password(const QString &password, const QString &stored, bool *out_needs_upgrade)
+{
+    if (out_needs_upgrade)
+        *out_needs_upgrade = false;
+
+    if (!is_password_hash(stored))
+    {
+        const bool match = (stored == password);
+        if (match && out_needs_upgrade)
+            *out_needs_upgrade = true;
+        return match;
+    }
+
+    const QStringList parts = stored.split(QLatin1Char('$'));
+    if (parts.size() != 4)
+        return false;
+
+    bool ok = false;
+    const int iterations = parts.at(1).toInt(&ok);
+    const QByteArray salt = hex_decode(parts.at(2));
+    const QByteArray expected = hex_decode(parts.at(3));
+    if (!ok || iterations <= 0 || salt.isEmpty() || expected.isEmpty())
+        return false;
+
+    const QByteArray raw = password.toUtf8();
+    QByteArray actual(expected.size(), '\0');
+    if (PKCS5_PBKDF2_HMAC(raw.constData(), raw.size(),
+                          reinterpret_cast<const unsigned char *>(salt.constData()), salt.size(),
+                          iterations, EVP_sha256(),
+                          actual.size(), reinterpret_cast<unsigned char *>(actual.data())) != 1)
+        return false;
+
+    return CRYPTO_memcmp(expected.constData(), actual.constData(),
+                         static_cast<size_t>(expected.size())) == 0;
+}
+
+// 「记住密码」的密钥由固定口令派生。桌面端没有独立的密钥保管设施，这一层挡住的是
+// 「直接打开数据库文件就能看到明文密码」，而不是有程序在旁主动攻击的场景 —— 后者
+// 需要真正的密钥保管方案（如系统凭据库），超出当前范围
+QByteArray remembered_password_key()
+{
+    static const QByteArray key =
+        QCryptographicHash::hash(QByteArrayLiteral("ksceegclient.remembered-password.v1"),
+                                 QCryptographicHash::Sha256);
+    return key; // 32 字节，直接作为 AES-256 密钥
+}
+
+// 返回空串代表加密失败，调用方不要把空串写进库
+QString encrypt_secret(const QString &plain)
+{
+    if (plain.isEmpty())
+        return plain;
+
+    const QByteArray key = remembered_password_key();
+    unsigned char iv[16];
+    if (!secure_random(iv, static_cast<int>(sizeof(iv))))
+        return QString();
+
+    const QByteArray in = plain.toUtf8();
+    QByteArray out(in.size() + 16, '\0');
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        return QString();
+
+    int len = 0;
+    int total = 0;
+    bool ok = EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr,
+                                 reinterpret_cast<const unsigned char *>(key.constData()), iv) == 1
+              && EVP_EncryptUpdate(ctx, reinterpret_cast<unsigned char *>(out.data()), &len,
+                                   reinterpret_cast<const unsigned char *>(in.constData()),
+                                   in.size()) == 1;
+    total = len;
+    if (ok)
+        ok = EVP_EncryptFinal_ex(ctx, reinterpret_cast<unsigned char *>(out.data()) + total, &len) == 1;
+    total += len;
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok)
+        return QString();
+
+    out.resize(total);
+    return QStringLiteral("aes256cbc$%1$%2")
+        .arg(hex_encode(iv, static_cast<int>(sizeof(iv))), QString::fromLatin1(out.toHex()));
+}
+
+// 老库明文：原样返回，等下次保存时升级为密文
+QString decrypt_secret(const QString &stored)
+{
+    if (stored.isEmpty() || !stored.startsWith(QStringLiteral("aes256cbc$")))
+        return stored;
+
+    const QStringList parts = stored.split(QLatin1Char('$'));
+    if (parts.size() != 3)
+        return QString();
+
+    const QByteArray iv = hex_decode(parts.at(1));
+    const QByteArray in = hex_decode(parts.at(2));
+    if (iv.size() != 16 || in.isEmpty())
+        return QString();
+
+    const QByteArray key = remembered_password_key();
+    QByteArray out(in.size() + 16, '\0');
+
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx)
+        return QString();
+
+    int len = 0;
+    int total = 0;
+    bool ok = EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), nullptr,
+                                 reinterpret_cast<const unsigned char *>(key.constData()),
+                                 reinterpret_cast<const unsigned char *>(iv.constData())) == 1
+              && EVP_DecryptUpdate(ctx, reinterpret_cast<unsigned char *>(out.data()), &len,
+                                   reinterpret_cast<const unsigned char *>(in.constData()),
+                                   in.size()) == 1;
+    total = len;
+    if (ok)
+        ok = EVP_DecryptFinal_ex(ctx, reinterpret_cast<unsigned char *>(out.data()) + total, &len) == 1;
+    total += len;
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok)
+        return QString();
+
+    out.resize(total);
+    return QString::fromUtf8(out);
+}
 
 // 界面上的记录号（R-0011）→ 主键 id。不是这个格式就返回 -1。
 // 只认这一个编号格式：把转换收在一处，改编号规则时不必满文件找
@@ -339,11 +528,26 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
 
     if (query.next())
     {
-        // 已有账号：校验密码
-        if (query.value(0).toString() != password)
+        // 已有账号：校验密码（哈希比对；老库的明文命中后当场升级为哈希）
+        const QString stored_password = query.value(0).toString();
+        bool needs_upgrade = false;
+        if (!verify_password(password, stored_password, &needs_upgrade))
         {
             audit_log::record_as(phone, QStringLiteral("登录失败：密码不正确"));
             return result;
+        }
+        if (needs_upgrade)
+        {
+            const QString upgraded = hash_password(password);
+            if (!upgraded.isEmpty())
+            {
+                QSqlQuery upgrade(m_database);
+                upgrade.prepare(QStringLiteral("UPDATE users SET password = ? WHERE username = ?"));
+                upgrade.addBindValue(upgraded);
+                upgrade.addBindValue(phone);
+                if (!upgrade.exec())
+                    qWarning() << "[db] 明文密码升级为哈希失败:" << upgrade.lastError().text();
+            }
         }
 
         // 停用/待审核的账号不许登录。原来只看密码，用户管理页把一个人停用了，
@@ -414,7 +618,8 @@ QVariantMap AppDatabase::lastLogin()
     const QString remember = settingValue(QString::fromLatin1(kSettingRemember));
     QVariantMap result;
     result[QStringLiteral("phone")] = settingValue(QString::fromLatin1(kSettingPhone));
-    result[QStringLiteral("password")] = settingValue(QString::fromLatin1(kSettingPassword));
+    // 「记住密码」在库里是密文，回填前先解密（老库明文则原样返回）
+    result[QStringLiteral("password")] = decrypt_secret(settingValue(QString::fromLatin1(kSettingPassword)));
     result[QStringLiteral("remember")] = remember == QStringLiteral("1");
     // 区分「从来没登录过」和「登录过但没勾记住密码」：前者按设计稿显示空表单 + 勾上记住密码
     result[QStringLiteral("hasRecord")] = !remember.isEmpty();
@@ -441,12 +646,16 @@ void AppDatabase::saveLoginRecord(const QString &phone, const QString &password,
     store(QString::fromLatin1(kSettingPhone), phone);
 
     // 不勾「记住密码」时把密码删掉，不要写空串占位
-    if (remember && !password.isEmpty())
+    const QString encrypted_password =
+        (remember && !password.isEmpty()) ? encrypt_secret(password) : QString();
+    if (!encrypted_password.isEmpty())
     {
-        store(QString::fromLatin1(kSettingPassword), password);
+        store(QString::fromLatin1(kSettingPassword), encrypted_password);
     }
     else
     {
+        // 没勾选、密码为空、或加密失败：一律不留密码。加密失败时宁可删掉，
+        // 也不能退回明文写库
         QSqlQuery remove(m_database);
         remove.prepare(QStringLiteral("DELETE FROM app_settings WHERE setting_key = ?"));
         remove.addBindValue(QString::fromLatin1(kSettingPassword));
@@ -1540,13 +1749,20 @@ QVariantMap AppDatabase::addUser(const QString &account, const QString &password
 
     // 新账号一律「启用」：需要审核时由管理员在列表里改成「待审核」，
     // 而不是登记完发现自己登不进去
+    const QString hashed_password = hash_password(password);
+    if (hashed_password.isEmpty())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("密码处理失败，请重试");
+        return result;
+    }
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "INSERT INTO users(username, password, display_name, role, department, status,"
         "                  created_at, last_login)"
         " VALUES(?, ?, ?, ?, ?, '启用', datetime('now'), '')"));
     query.addBindValue(account.trimmed());
-    query.addBindValue(password);
+    query.addBindValue(hashed_password);
     query.addBindValue(name.trimmed());
     const QString final_role =
         role.trimmed().isEmpty() ? QStringLiteral("医生") : role.trimmed();
@@ -1647,9 +1863,16 @@ QVariantMap AppDatabase::resetPassword(const QString &account, const QString &ne
         return result;
     }
 
+    const QString hashed_password = hash_password(new_password);
+    if (hashed_password.isEmpty())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("密码处理失败，请重试");
+        return result;
+    }
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("UPDATE users SET password = ? WHERE username = ?"));
-    query.addBindValue(new_password);
+    query.addBindValue(hashed_password);
     query.addBindValue(account.trimmed());
     if (!query.exec() || query.numRowsAffected() == 0)
     {
@@ -1705,16 +1928,23 @@ QVariantMap AppDatabase::changePassword(const QString &old_password, const QStri
         result[QStringLiteral("message")] = QStringLiteral("账号不存在，无法修改密码");
         return result;
     }
-    if (check.value(0).toString() != old_password)
+    if (!verify_password(old_password, check.value(0).toString(), nullptr))
     {
         audit_log::record(QStringLiteral("修改密码失败：原密码不正确"));
         result[QStringLiteral("message")] = QStringLiteral("原密码不正确");
         return result;
     }
 
+    const QString hashed_password = hash_password(new_password);
+    if (hashed_password.isEmpty())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("密码处理失败，请重试");
+        return result;
+    }
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("UPDATE users SET password = ? WHERE username = ?"));
-    query.addBindValue(new_password);
+    query.addBindValue(hashed_password);
     query.addBindValue(account);
     if (!query.exec() || query.numRowsAffected() == 0)
     {

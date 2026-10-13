@@ -77,7 +77,7 @@ Item {
                 continue
             if (keyword.length > 0) {
                 // 与设计稿的提示一致：记录ID / 患者姓名
-                var haystack = (row.no + " " + row.patient).toLowerCase()
+                var haystack = (row.no + " " + Privacy.masked(row.patient)).toLowerCase()
                 if (haystack.indexOf(keyword) < 0)
                     continue
             }
@@ -112,7 +112,7 @@ Item {
         var rows = database ? database.patients() : []
         var result = [{ no: "", label: qsTr("全部患者") }]
         for (var i = 0; i < rows.length; ++i)
-            result.push({ no: rows[i].no, label: rows[i].name })
+            result.push({ no: rows[i].no, label: Privacy.masked(rows[i].name) })
         return result
     }
 
@@ -174,7 +174,8 @@ Item {
                 items.push(qsTr("筛选后：") + root.filteredRecords.length + qsTr(" 条"))
             if (root.patientFilter.length > 0)
                 items.push(qsTr("患者：") + (root.patientFilterName.length > 0
-                                             ? root.patientFilterName : root.patientFilter))
+                                             ? Privacy.masked(root.patientFilterName)
+                                             : Privacy.masked(root.patientFilter)))
             return items
         }
         userName: root.userName
@@ -242,7 +243,7 @@ Item {
 
                 // 文本基线统一比行顶低 16（设计稿 218-202=16）
                 Text { x: 68;   y: rowY + 16; text: modelData.no;       color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
-                Text { x: 237;  y: rowY + 16; text: modelData.patient;  color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 237;  y: rowY + 16; text: Privacy.masked(modelData.patient);  color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
                 Text { x: 345;  y: rowY + 16; text: modelData.time;     color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
                 Text { x: 553;  y: rowY + 16; text: modelData.duration; color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
                 Text { x: 727;  y: rowY + 16; text: modelData.channels; color: Design.textSecondary; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }

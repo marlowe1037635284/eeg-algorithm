@@ -41,14 +41,14 @@ Item {
     property var events: []
 
     readonly property string patientName:
-        detail.patient !== undefined ? detail.patient : ""
+        Privacy.masked(detail.patient !== undefined ? detail.patient : "")
     readonly property string patientMeta: {
         if (detail.gender === undefined)
             return ""
         return detail.gender + "  " + detail.age + qsTr("岁")
     }
     readonly property string patientRecordNo:
-        detail.patientNo !== undefined ? (detail.patientNo + "·" + detail.dept) : ""
+        detail.patientNo !== undefined ? (Privacy.masked(detail.patientNo) + "·" + detail.dept) : ""
 
     // ---------- 概览信息卡 ----------
     readonly property var infoCards: [

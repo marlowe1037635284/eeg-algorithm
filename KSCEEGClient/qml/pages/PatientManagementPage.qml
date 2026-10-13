@@ -76,7 +76,7 @@ Item {
                 continue
             if (keyword.length > 0) {
                 // 与设计稿的提示一致：病历号 / 姓名 / 诊断
-                var haystack = (row.no + " " + row.name + " " + row.diag).toLowerCase()
+                var haystack = (row.no + " " + Privacy.masked(row.name) + " " + row.diag).toLowerCase()
                 if (haystack.indexOf(keyword) < 0)
                     continue
             }
@@ -218,8 +218,8 @@ Item {
                     onClicked: root.patientActivated(modelData.no)
                 }
 
-                Text { x: 68;  y: rowY + 16; text: modelData.no;   color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
-                Text { x: 241; y: rowY + 16; text: modelData.name; color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 68;  y: rowY + 16; text: Privacy.masked(modelData.no);   color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
+                Text { x: 241; y: rowY + 16; text: Privacy.masked(modelData.name); color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
                 Text { x: 404; y: rowY + 16; text: modelData.gender; color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
                 Text { x: 557; y: rowY + 16; text: modelData.age;  color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }
                 Text { x: 690; y: rowY + 16; text: modelData.dept; color: "#3b3b3b"; font.family: Design.fontFamily; font.styleName: Design.styleRegular; font.pixelSize: 16 }

@@ -403,6 +403,12 @@ QString AppDatabase::settingValue(const QString &key) const
     return value;
 }
 
+bool AppDatabase::maskingEnabled() const
+{
+    // 默认关闭：脱敏是「选择性开启」，不该开箱就替用户藏起数据
+    return settingValue(QStringLiteral("data_mask")) == QStringLiteral("true");
+}
+
 QVariantMap AppDatabase::lastLogin()
 {
     const QString remember = settingValue(QString::fromLatin1(kSettingRemember));
@@ -1132,10 +1138,23 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
         return result;
     }
 
+    // 脱敏开关打开时，导出的文件名与摘要里的患者姓名 / 病历号一并打码。
+    // 导出物离开程序后就不再受界面开关约束，必须在写出的这一刻就换掉；
+    // 只打码「展示用」的这两项，记录号（R-0011）与采集参数照旧 —— 那不是患者身份信息
+    const bool masked = maskingEnabled();
+    QString export_patient_no = row.value(QStringLiteral("patientNo")).toString();
+    QString export_patient = row.value(QStringLiteral("patient")).toString();
+    if (masked)
+    {
+        if (!export_patient_no.isEmpty())
+            export_patient_no = QStringLiteral("***");
+        if (!export_patient.isEmpty())
+            export_patient = QStringLiteral("***");
+    }
+
     // 文件名带上患者与记录号，导出一堆记录时不至于分不清谁是谁
     const QString stem = QStringLiteral("%1_%2")
-                             .arg(row.value(QStringLiteral("no")).toString(),
-                                  row.value(QStringLiteral("patientNo")).toString());
+                             .arg(row.value(QStringLiteral("no")).toString(), export_patient_no);
 
     const QString recorded = row.value(QStringLiteral("filePath")).toString();
     if (!recorded.isEmpty() && QFile::exists(recorded))
@@ -1182,8 +1201,8 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
     out << QChar(0xFEFF);
     out << QStringLiteral("项目,内容\n");
     out << QStringLiteral("记录ID,") << row.value(QStringLiteral("no")).toString() << "\n";
-    out << QStringLiteral("患者,") << row.value(QStringLiteral("patient")).toString() << "\n";
-    out << QStringLiteral("病历号,") << row.value(QStringLiteral("patientNo")).toString() << "\n";
+    out << QStringLiteral("患者,") << export_patient << "\n";
+    out << QStringLiteral("病历号,") << export_patient_no << "\n";
     out << QStringLiteral("采集时间,") << row.value(QStringLiteral("time")).toString() << "\n";
     out << QStringLiteral("时长,") << row.value(QStringLiteral("duration")).toString() << "\n";
     out << QStringLiteral("通道数,") << row.value(QStringLiteral("channels")).toInt() << "\n";

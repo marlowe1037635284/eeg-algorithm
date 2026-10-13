@@ -189,6 +189,9 @@ private:
     // 所以加字段必须显式 ALTER —— 否则老库上那些列永远不存在
     void ensure_column(const QString &table, const QString &column, const QString &definition);
     QString settingValue(const QString &key) const;
+    // 脱敏开关（app_settings.data_mask）是否打开。界面用 Privacy 单例表达同一状态，
+    // 这里是导出路径上的那份 —— 导出发生在 C++ 里，拿不到 QML 的 Privacy
+    bool maskingEnabled() const;
     // 下一个可用的病历号（P-0001 起）。生成规则只留这一处，别在别处再拼一次
     QString nextPatientNo() const;
     // 当前会话是不是管理员。角色为空（未登录）一律按非管理员处理，

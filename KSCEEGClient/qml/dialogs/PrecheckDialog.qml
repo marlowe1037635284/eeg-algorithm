@@ -61,7 +61,7 @@ Item {
             id: patientNameText
             x: 704
             y: 415
-            text: root.hasPatient ? root.patientName : qsTr("未选择患者")
+            text: root.hasPatient ? Privacy.masked(root.patientName) : qsTr("未选择患者")
             // 空态用次要色：它不是一个名字，只是一个「还没有」的状态
             color: root.hasPatient ? "#000000" : Design.textSecondary
             font.family: Design.fontFamily

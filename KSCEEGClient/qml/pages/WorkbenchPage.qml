@@ -53,8 +53,9 @@ Item {
         patientName = row.name
         patientGenderAge = row.gender + "  " + row.age + qsTr("岁")
         // 「记录1次」：N 与「次」之间设计稿没有空格，所以用原始数值拼。
-        // 数据层那个 count 是给表格列的 "1 次"，格式不一样，贴在这里会多一个空格
-        patientMeta = row.no + "·" + row.dept + qsTr("·记录") + row.recordCount + qsTr("次")
+        // 数据层那个 count 是给表格列的 "1 次"，格式不一样，贴在这里会多一个空格。
+        // 病历号按脱敏开关打码；patientNo 本身保持原值 —— 采集时要拿它落盘
+        patientMeta = Privacy.masked(row.no) + "·" + row.dept + qsTr("·记录") + row.recordCount + qsTr("次")
         hasPatient = true
     }
 
@@ -393,7 +394,7 @@ Item {
             width: Math.min(implicitWidth, 200)
             elide: Text.ElideRight
             visible: root.hasPatient
-            text: root.patientName
+            text: Privacy.masked(root.patientName)
             color: "#000000"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -1000,7 +1001,7 @@ Item {
                 Acq.yRangeUV > 0 ? qsTr("幅值：") + Acq.yRangeUV + "μV/div" : qsTr("幅值：自动"),
                 Acq.statsText,
                 // 未选患者时不能还挂着一个人名 —— 与左上角那张卡片保持一致
-                qsTr("患者：") + (root.hasPatient ? root.patientName : qsTr("未选择"))
+                qsTr("患者：") + (root.hasPatient ? Privacy.masked(root.patientName) : qsTr("未选择"))
             ]
 
             delegate: Text {

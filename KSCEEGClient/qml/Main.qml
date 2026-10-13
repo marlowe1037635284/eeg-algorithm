@@ -128,6 +128,8 @@ ApplicationWindow {
                 // 把这个身份告诉数据层：管理员看全部患者，其余角色只看自己录入的。
                 // 必须在读患者之前设置 —— 登录后进入的工作台/患者管理页都会按它取数据
                 appDatabase.setCurrentUser(account, result.role)
+                // 登录后按当前账号重取一次脱敏开关（设置存在库里，可能被别的账号改过）
+                window.syncPrivacy()
                 window.loggedIn = true
                 window.enterWorkbench()
                 // 登录成功后自动连接设备：串口从此独立于采集，一次连上后常开，
@@ -278,6 +280,13 @@ ApplicationWindow {
         return null
     }
 
+    // 把库里的脱敏开关同步到全局 Privacy 单例。启动与登录各同步一次：
+    // 启动是为了让登录页之后的页面一出来就是正确状态，登录是为了换账号后重取
+    //（设置存在库里，别的账号可能刚改过）
+    function syncPrivacy() {
+        Privacy.enabled = appDatabase.setting("data_mask", "false") === "true"
+    }
+
     // 导出一条采集记录。导出目录跟「系统设置 → 记录保存目录」用同一个 —— 记录本来就
     // 落在那里，导出再落到同一个地方，用户不必跑到两个目录里找东西。
     // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录，这里直接信它
@@ -301,7 +310,18 @@ ApplicationWindow {
             return
         }
 
-        var result = recordReport.exportPdf(appDatabase.session(recordNo),
+        // 脱敏开关打开时，交给报告排版的这份数据先把患者姓名 / 病历号换掉：
+        // RecordReport 只负责排版、不碰数据库，脱敏必须在数据交给它之前完成。
+        // session() 返回的是 JS 对象副本，改它不会写回本页其它地方的取数
+        var detail = appDatabase.session(recordNo)
+        if (Privacy.enabled) {
+            if (detail.patient && detail.patient.length > 0)
+                detail.patient = "***"
+            if (detail.patientNo && detail.patientNo.length > 0)
+                detail.patientNo = "***"
+        }
+
+        var result = recordReport.exportPdf(detail,
                                             appDatabase.sessionEvents(recordNo), folder)
         showToast(result.message, result.success ? "success" : "error")
     }
@@ -733,7 +753,7 @@ ApplicationWindow {
             danger: true
             message: window.pendingPatientRow
                      ? qsTr("确定要删除「%1」吗？该患者的档案与全部采集记录都会被删除，且无法恢复。")
-                           .arg(window.pendingPatientRow.name)
+                           .arg(Privacy.masked(window.pendingPatientRow.name))
                      : ""
             onDismissed: window.closeDialog()
             onAccepted: {
@@ -927,6 +947,10 @@ ApplicationWindow {
     // ---------- 启动 ----------
 
     Component.onCompleted: {
+        // 脱敏开关先同步一次：它存在库里，与登录与否无关，
+        // 早于任何页面出现，避免首帧闪一下未脱敏的数据
+        window.syncPrivacy()
+
         // 账号库在 AppDatabase 构造时就建好了表，这里只负责回填输入框。
         //
         // **没有登录记录时什么都不做**，让登录页保持自己那份默认值

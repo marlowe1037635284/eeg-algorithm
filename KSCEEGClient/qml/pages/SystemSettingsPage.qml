@@ -24,6 +24,10 @@ Item {
     // 应用数据库，由外层注入
     property var database
 
+    // 医院名称 / 科室名称只有管理员能改，其它角色只读展示。
+    // 角色口径与用户管理、预置管理员一致（未登录时 userRole 取默认的「管理员」）
+    readonly property bool canEditClinicInfo: userRole === qsTr("管理员")
+
     signal navRequested(string label)
     signal logoutRequested()
     signal changePasswordRequested()
@@ -54,6 +58,12 @@ Item {
     property int channelCountIndex: 2
     property int impedanceThresholdIndex: 1
 
+    // 医院 / 科室名称：非管理员只读展示，输入框禁用
+    property string hospitalName: ""
+    property string departmentName: ""
+    // 脱敏开关：打开后患者姓名 / 病历号在界面与导出里都变成 ***
+    property bool maskEnabled: false
+
     readonly property var saveIntervalChoices: [qsTr("5分钟"), qsTr("10分钟"), qsTr("30分钟")]
     readonly property var saveIntervalValues: ["5", "10", "30"]
     readonly property var fileFormatChoices: [qsTr("BDF（.bdf）"), qsTr("EDF（.edf）"), qsTr("EEG（.eeg）")]
@@ -82,6 +92,10 @@ Item {
         impedanceThresholdIndex = Math.max(0, impedanceValues.indexOf(
                                               database.setting("low_impedance_kohm", "10")))
 
+        hospitalName = database.setting("hospital_name", "")
+        departmentName = database.setting("department_name", "")
+        maskEnabled = database.setting("data_mask", "false") === "true"
+
         // 采样率是「保存时」才生效的落盘参数，但进页面就得同步给 Acq ——
         // 否则设过 2000 之后重启程序，这一项会悄悄退回默认（等于没生效）
         Acq.recordSampleRate = Number(sampleRateValues[sampleRateIndex])
@@ -97,6 +111,17 @@ Item {
         database.setSetting("default_sample_rate", sampleRateValues[sampleRateIndex])
         database.setSetting("default_channels", String(channelCountValues[channelCountIndex]))
         database.setSetting("low_impedance_kohm", impedanceValues[impedanceThresholdIndex])
+
+        // 医院 / 科室名称只有管理员能改；非管理员的输入框是禁用的，值不会变，
+        // 但仍显式挡一层 —— 免得以后把输入框放开时忘了这里的角色校验
+        if (canEditClinicInfo) {
+            database.setSetting("hospital_name", hospitalName.trim())
+            database.setSetting("department_name", departmentName.trim())
+        }
+
+        // 脱敏开关立即生效，不必等重启；导出路径读的是库里的同一份值
+        database.setSetting("data_mask", maskEnabled ? "true" : "false")
+        Privacy.enabled = maskEnabled
 
         // 「默认通道数」顺带应用到工作台的档位，否则这个设置要等到下次开程序
         // 才看得出效果，等于没生效。采集进行中不动它 —— 泳道数量在中途变样
@@ -140,12 +165,44 @@ Item {
         onLogoutRequested: root.logoutRequested()
         onChangePasswordRequested: root.changePasswordRequested()
 
-        // ================= 左栏 · 数据存储（设计稿 @216,164 828×223）=================
+        // ================= 左栏 · 医院 / 科室（设计稿 @216,164 828×116）=================
+        // 没有标题栏，两行输入直接排；非管理员只读展示（输入框禁用）
         Rectangle {
             x: 15
             y: 14
             width: 828
-            height: 223
+            height: 116
+            radius: 7
+            color: Design.panelFillSoft
+
+            FieldRow {
+                x: 0
+                y: 14
+                label: qsTr("医院名称")
+                placeholder: qsTr("请输入医院名称")
+                value: root.hospitalName
+                readOnly: !root.canEditClinicInfo
+                onEdited: (text) => root.hospitalName = text
+            }
+
+            FieldRow {
+                x: 0
+                y: 72
+                label: qsTr("科室名称")
+                placeholder: qsTr("请输入科室名称")
+                value: root.departmentName
+                readOnly: !root.canEditClinicInfo
+                onEdited: (text) => root.departmentName = text
+                dividerBelow: false   // 末行的分隔线正好压在面板下边缘，设计稿没画
+            }
+        }
+
+        // ================= 左栏 · 数据存储（设计稿 @216,294 828×281）=================
+        Rectangle {
+            x: 15
+            y: 144
+            width: 828
+            height: 281
             radius: 7
             color: Design.panelFillSoft
 
@@ -165,10 +222,19 @@ Item {
                 font.pixelSize: 18
             }
 
+            // 是否脱敏：开关打开后患者姓名 / 病历号在界面与导出里统一变成 ***
+            ToggleRow {
+                x: 0
+                y: 64
+                label: qsTr("是否脱敏")
+                checked: root.maskEnabled
+                onToggled: (checked) => root.maskEnabled = checked
+            }
+
             // 首行是「目录 + 浏览按钮」，和下面的下拉选择行结构不同，单独写
             Text {
                 x: 10
-                y: 64
+                y: 122
                 text: qsTr("记录保存目录")
                 color: Design.textPrimary
                 font.family: Design.fontFamily
@@ -179,7 +245,7 @@ Item {
             // 路径右对齐贴在「浏览」按钮左侧（设计稿文本框 154 宽，右对齐）
             Text {
                 x: 582
-                y: 64
+                y: 122
                 width: 154
                 horizontalAlignment: Text.AlignRight
                 elide: Text.ElideLeft
@@ -196,7 +262,7 @@ Item {
 
             Rectangle {
                 x: 751
-                y: 59
+                y: 117
                 width: 59
                 height: 32
                 radius: 10
@@ -226,7 +292,7 @@ Item {
             MouseArea {
                 id: pathMouse
                 x: 582
-                y: 59
+                y: 117
                 width: 154
                 height: 32
                 hoverEnabled: true
@@ -236,7 +302,7 @@ Item {
 
             Rectangle {
                 x: 10
-                y: 104
+                y: 162
                 width: 818
                 height: 1
                 color: Qt.rgba(0, 0, 0, 0.10)
@@ -244,7 +310,7 @@ Item {
 
             SettingRow {
                 x: 0
-                y: 122
+                y: 180
                 label: qsTr("自动保存间隔")
                 choices: root.saveIntervalChoices
                 currentIndex: root.saveIntervalIndex
@@ -253,7 +319,7 @@ Item {
 
             SettingRow {
                 x: 0
-                y: 181
+                y: 238
                 label: qsTr("记录文件格式")
                 choices: root.fileFormatChoices
                 currentIndex: root.fileFormatIndex
@@ -262,10 +328,10 @@ Item {
             }
         }
 
-        // ================= 左栏 · 采集默认值（设计稿 @216,401 828×220）=================
+        // ================= 左栏 · 采集默认值（设计稿 @216,589 828×220）=================
         Rectangle {
             x: 15
-            y: 251
+            y: 439
             width: 828
             height: 220
             radius: 7
@@ -319,12 +385,12 @@ Item {
             }
         }
 
-        // ================= 左栏 · 系统信息（设计稿 @216,636 828×384）=================
+        // ================= 左栏 · 系统信息（设计稿 @216,823 828×197）=================
         Rectangle {
             x: 15
-            y: 486
+            y: 673
             width: 828
-            height: 384
+            height: 197
             radius: 7
             color: Design.panelFillSoft
 
@@ -347,7 +413,7 @@ Item {
             // 三行信息在面板里是水平居中的（设计稿给的 x 已按下居中排好，照抄）
             Text {
                 x: 338
-                y: 121
+                y: 58
                 text: "EEG-KSC"
                 color: Design.brand
                 font.family: Design.fontFamily
@@ -357,7 +423,7 @@ Item {
 
             Text {
                 x: 341
-                y: 191
+                y: 114
                 text: qsTr("型号:EEG-KSC-NN")
                 color: Design.textPrimary
                 font.family: Design.fontFamily
@@ -367,7 +433,7 @@ Item {
 
             Text {
                 x: 367
-                y: 234
+                y: 154
                 text: qsTr("版本:1.0.0.0")
                 color: Design.textPrimary
                 font.family: Design.fontFamily
@@ -783,6 +849,170 @@ Item {
             font.family: Design.fontFamily
             font.styleName: Design.styleBold
             font.pixelSize: 13
+        }
+    }
+
+    // 医院 / 科室这种「左标签 + 右输入框」的行。结构对齐 SettingRow（行高 58、
+    // 分隔线在标签下 40），只是把右侧的下拉框换成文本输入。
+    // readOnly 为真时输入框禁用、文字转灰 —— 非管理员只能看不能改
+    component FieldRow: Item {
+        id: fieldRow
+
+        property string label: ""
+        property string placeholder: ""
+        property string value: ""
+        property bool readOnly: false
+        property bool dividerBelow: true
+        signal edited(string text)
+
+        width: 828
+        height: 58
+
+        Text {
+            x: 10
+            y: 0
+            text: fieldRow.label
+            color: Design.textPrimary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
+        }
+
+        // 输入框右边缘与下拉框 / 浏览按钮对齐（都收到 x=810），宽度比下拉框宽，
+        // 医院名、科室名这类文本放得下
+        Rectangle {
+            x: 588
+            y: -4
+            width: 222
+            height: 29
+            radius: 10
+            color: Design.primarySoft
+            border.width: 1
+            border.color: fieldInput.activeFocus ? Design.primary : Design.panelBorder
+
+            TextInput {
+                id: fieldInput
+                anchors.fill: parent
+                leftPadding: 13
+                rightPadding: 13
+                verticalAlignment: TextInput.AlignVCenter
+                // text 绑到 value：加载时能回填；用户一输入就由 TextInput 自己接管，
+                // 不会再被 value 覆盖，光标不跳
+                text: fieldRow.value
+                readOnly: fieldRow.readOnly
+                enabled: !fieldRow.readOnly
+                color: fieldRow.readOnly ? Design.textSecondary : "#3b3b3b"
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+                selectByMouse: true
+                clip: true
+                selectionColor: Design.primary
+                selectedTextColor: "#ffffff"
+                maximumLength: 64
+                onTextEdited: fieldRow.edited(text)
+            }
+
+            Text {
+                x: 13
+                anchors.verticalCenter: parent.verticalCenter
+                visible: fieldInput.text.length === 0
+                text: fieldRow.placeholder
+                color: Qt.rgba(0x3b / 255, 0x3b / 255, 0x3b / 255, 0.30)
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+            }
+        }
+
+        Rectangle {
+            x: 10
+            y: 40
+            width: 818
+            height: 1
+            color: Qt.rgba(0, 0, 0, 0.10)
+            visible: fieldRow.dividerBelow
+        }
+    }
+
+    // 开关行：左标签 + 右开关，结构和 SettingRow 同构
+    component ToggleRow: Item {
+        id: toggleRow
+
+        property string label: ""
+        property bool checked: false
+        property bool dividerBelow: true
+        signal toggled(bool checked)
+
+        width: 828
+        height: 58
+
+        Text {
+            x: 10
+            y: 0
+            text: toggleRow.label
+            color: Design.textPrimary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
+        }
+
+        // 右边缘与下拉框对齐（x=766 + 44 = 810）
+        ToggleSwitch {
+            x: 766
+            y: -3
+            checked: toggleRow.checked
+            onToggled: (checked) => toggleRow.toggled(checked)
+        }
+
+        Rectangle {
+            x: 10
+            y: 40
+            width: 818
+            height: 1
+            color: Qt.rgba(0, 0, 0, 0.10)
+            visible: toggleRow.dividerBelow
+        }
+    }
+
+    // 自绘开关：项目里没有现成的 Toggle 组件，44×24 圆角胶囊 + 白色滑块。
+    // 点击只向外发信号、不改自己的 checked —— 让父级的绑定把新状态传回来，
+    // 这样 checked 的绑定不会被内部赋值打断
+    component ToggleSwitch: Item {
+        id: toggleSwitch
+
+        property bool checked: false
+        signal toggled(bool checked)
+
+        width: 44
+        height: 24
+
+        Rectangle {
+            anchors.fill: parent
+            radius: height / 2
+            color: toggleSwitch.checked ? Design.primary : Qt.rgba(0x8f / 255, 0x8f / 255, 0x8f / 255, 0.35)
+            border.width: 1
+            border.color: toggleSwitch.checked ? Design.primary : Design.panelBorder
+        }
+
+        Rectangle {
+            y: 3
+            width: 18
+            height: 18
+            radius: 9
+            color: "#ffffff"
+            x: toggleSwitch.checked ? toggleSwitch.width - width - 3 : 3
+
+            Behavior on x {
+                NumberAnimation { duration: 120 }
+            }
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: toggleSwitch.toggled(!toggleSwitch.checked)
         }
     }
 }

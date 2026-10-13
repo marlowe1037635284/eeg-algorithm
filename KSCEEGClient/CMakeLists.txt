@@ -132,11 +132,15 @@ qt_add_executable(appKSCEEGClient
 # Design.qml 是设计变量单例（画板尺寸、色板、字体名），需要在 QML 引擎里注册成 singleton，
 # 否则同模块的页面 import 不到它。
 set_source_files_properties(qml/Design.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+# Privacy.qml 是脱敏开关单例：患者姓名 / 病历号要在多个页面、多个弹窗里统一打码，
+# 同 Design.qml 一样注册成 singleton
+set_source_files_properties(qml/Privacy.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_qml_module(appKSCEEGClient
     URI KSCEEGClient
     QML_FILES
         qml/Design.qml
+        qml/Privacy.qml
         qml/DesignCanvas.qml
         qml/Main.qml
         qml/components/AppNavRail.qml

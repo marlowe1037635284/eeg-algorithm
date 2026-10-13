@@ -94,7 +94,7 @@ Item {
             y: 386
             text: {
                 if (root.selectedIndex >= 0 && root.selectedIndex < root.archiveRows.length)
-                    return root.archiveRows[root.selectedIndex].name
+                    return Privacy.masked(root.archiveRows[root.selectedIndex].name)
                 return root.archiveRows.length > 0 ? qsTr("请选择患者") : qsTr("暂无患者档案")
             }
             // 空态用次要色：它不是某个人的名字
@@ -141,7 +141,7 @@ Item {
                 const row = root.archiveRows[root.selectedIndex]
                 // 「采集记录1次」：设计稿里 N 与「次」之间没有空格，
                 // 所以用原始数值拼，不能直接贴数据层那个 "1 次"
-                return row ? row.no + "·" + row.dept + "·" + row.diag
+                return row ? Privacy.masked(row.no) + "·" + row.dept + "·" + row.diag
                              + qsTr("·采集记录") + row.recordCount + qsTr("次") : ""
             }
             color: Design.textSecondary
@@ -282,7 +282,7 @@ Item {
                 Text {
                     x: 18
                     y: root.rowY(index)
-                    text: modelData.no
+                    text: Privacy.masked(modelData.no)
                     color: Design.textSecondary
                     font.family: Design.fontFamily
                     font.styleName: Design.styleRegular
@@ -292,7 +292,7 @@ Item {
                 Text {
                     x: 97
                     y: root.rowY(index)
-                    text: modelData.name
+                    text: Privacy.masked(modelData.name)
                     color: Design.textPrimary
                     font.family: Design.fontFamily
                     font.styleName: Design.styleRegular

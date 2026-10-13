@@ -154,6 +154,12 @@ ApplicationWindow {
             sourceComponent: window.dialogComponent()
         }
 
+        // 授权校验失败的拦截框：盖在登录页与所有业务页之上，点「确定」退出程序。
+        // 放在 Toast 之前，让「轻提示」仍然压在最上层（与下面的说明一致）
+        LicenseAlertDialog {
+            visible: License.checked && !License.valid
+        }
+
         // 轻提示。放在弹窗层**之后**，所以即使弹着框也能看见
         //「已保存」这类反馈；它自己在顶栏中间那段空白里，不遮设计元素
         Toast {

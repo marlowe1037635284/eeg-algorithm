@@ -22,7 +22,8 @@ set(QT_QML_GENERATE_QMLLS_INI ON)
 # SerialPort 用于采集页：串口收发全在 C++ 侧（SerialCollector）
 # Concurrent 用于后处理页：一轮分析要算几百毫秒（滤波 + Welch + 相关性），
 # 放在 GUI 线程上就是「拖一下滑块界面卡住」，改成 QtConcurrent 丢到线程池
-find_package(Qt6 REQUIRED COMPONENTS Quick Sql SerialPort Concurrent)
+# Network 用于授权校验：QNetworkInterface 取本机网卡 MAC，与授权文件里的绑定值比对
+find_package(Qt6 REQUIRED COMPONENTS Quick Sql SerialPort Concurrent Network)
 
 qt_standard_project_setup(REQUIRES 6.5)
 
@@ -47,6 +48,17 @@ set(EEG_BRIDGE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python" CACHE PATH "宿主侧适
 set(PYBIND11_SOURCE_DIR "D:/work/learn/pybind11/pybind11-3.1.0" CACHE PATH "pybind11 源码目录")
 set(PYBIND11_FINDPYTHON ON)   # 让 pybind11 自己去 find_package(Python ... Development.Embed)
 add_subdirectory("${PYBIND11_SOURCE_DIR}" pybind11 EXCLUDE_FROM_ALL)
+
+# ==================== 授权校验的外部依赖 ====================
+# OpenSSL 用于 license.lic 的 RSA 验签（见 src/common/licensemanager.cpp），
+# nlohmann/json 用于还原待验签串 —— 必须与签发侧同款序列化，否则签名对不上。
+# 两者都在统一的外部依赖目录下，同样走 CACHE 变量覆盖：
+#   OpenSSL 是「编译期链接 + 运行期要 dll」的形态，libcrypto-3-x64.dll 由文末的
+#   POST_BUILD 拷到 exe 旁边；nlohmann 是纯头文件，只需加包含目录、无需部署。
+set(KSCEEG_DEPENDLIB_DIR "D:/QML/dependlib" CACHE PATH "外部依赖根目录（OpenSSL / nlohmann-json）")
+set(OPENSSL_ROOT_DIR "${KSCEEG_DEPENDLIB_DIR}/openssl" CACHE PATH "OpenSSL 安装目录")
+find_package(OpenSSL REQUIRED)
+set(NLOHMANN_JSON_INCLUDE_DIR "${KSCEEG_DEPENDLIB_DIR}/json-3.12.0/include" CACHE PATH "nlohmann/json 头文件目录")
 
 # 默认构建为窗口程序；打开此项则构建为控制台程序，便于直接看到 Python 侧的输出，
 # 也是 --selfcheck 能看见结果的前提（窗口程序没有控制台，qInfo 会丢）
@@ -79,6 +91,9 @@ qt_add_executable(appKSCEEGClient
     # 审计日志：登录/退出、账号增改、采集与后处理导出等事件的落盘记录
     src/common/auditlog.h
     src/common/auditlog.cpp
+    # 授权校验：每次启动读取 exe 同级的 license.lic（OpenSSL 验证签名 + MAC 绑定 + 有效期）
+    src/common/licensemanager.h
+    src/common/licensemanager.cpp
     # storage/：账号 / 偏好 / 患者都用 Qt Sql 直接读写一个真正的 SQLite 文件
     # （不用 QML 的 LocalStorage，它把文件藏在 AppData 哈希目录里）
     # 目录名用 storage 而不是 data —— 仓库根的 .gitignore 里有一条 data/，
@@ -140,6 +155,7 @@ qt_add_qml_module(appKSCEEGClient
         qml/dialogs/DeviceInfoDialog.qml
         qml/dialogs/EditPatientDialog.qml
         qml/dialogs/FilterDialog.qml
+        qml/dialogs/LicenseAlertDialog.qml
         qml/dialogs/NewPatientDialog.qml
         qml/dialogs/NewTagDialog.qml
         qml/dialogs/PrecheckDialog.qml
@@ -225,6 +241,9 @@ target_include_directories(appKSCEEGClient
         ${CMAKE_CURRENT_SOURCE_DIR}/src/algorithm
         ${CMAKE_CURRENT_SOURCE_DIR}/src/bridge
         ${CMAKE_CURRENT_SOURCE_DIR}/src/analysis
+        # 授权校验用的 nlohmann/json（纯头文件）。OpenSSL 的头文件由
+        # OpenSSL::Crypto 这个 imported target 自己带出来，不必在这里再列
+        ${NLOHMANN_JSON_INCLUDE_DIR}
 )
 
 # 把源码目录告诉程序：账号库文件放在代码目录里，清理 build 目录不会丢
@@ -242,6 +261,8 @@ target_link_libraries(appKSCEEGClient
     PRIVATE Qt6::Sql
     PRIVATE Qt6::SerialPort
     PRIVATE Qt6::Concurrent
+    PRIVATE Qt6::Network
+    PRIVATE OpenSSL::Crypto
     PRIVATE pybind11::embed
 )
 
@@ -252,6 +273,15 @@ add_custom_command(TARGET appKSCEEGClient POST_BUILD
             "${Python_ROOT_DIR}/python311.dll"
             "$<TARGET_FILE_DIR:appKSCEEGClient>"
     COMMENT "复制 python311.dll 到输出目录"
+)
+
+# 授权验签链接的是 OpenSSL 的 libcrypto，运行期需要同版本的 dll 在 exe 旁边，
+# 否则启动即 0xC0000135（找不到 libcrypto-3-x64.dll）
+add_custom_command(TARGET appKSCEEGClient POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${OPENSSL_ROOT_DIR}/bin/libcrypto-3-x64.dll"
+            "$<TARGET_FILE_DIR:appKSCEEGClient>"
+    COMMENT "复制 libcrypto-3-x64.dll 到输出目录"
 )
 
 install(TARGETS appKSCEEGClient

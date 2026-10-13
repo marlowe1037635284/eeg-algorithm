@@ -25,6 +25,8 @@ Item {
     // 新建标签那张卡片矮，标题和关闭叉要跟着上移一点
     property real titleY: 23
     property real closeY: 32
+    // 标题颜色。默认正文色；授权失败这类警告弹窗要把它改成红色
+    property color titleColor: Design.textPrimary
 
     // 正文用「画板绝对坐标」还是「卡片内相对坐标」。
     // 六个弹窗里两种写法都有，这里给个开关，省得为了统一去改几十个坐标。
@@ -77,7 +79,7 @@ Item {
             x: 26
             y: frame.titleY
             text: frame.title
-            color: Design.textPrimary
+            color: frame.titleColor
             font.family: Design.fontFamily
             font.styleName: Design.styleBold
             font.pixelSize: 24

@@ -14,6 +14,7 @@
 #include "algorithm/pythonworker.h"
 #include "analysis/recordingpreview.h"
 #include "acquisition/serialcollector.h"
+#include "common/licensemanager.h"
 #include "common/unattendedguard.h"
 
 namespace
@@ -131,6 +132,17 @@ int main(int argc, char *argv[])
 
     load_design_fonts();
 
+    // 授权校验：每次启动都跑一次，读可执行文件同级的 license.lic 与 public_key.pem。
+    //
+    // 声明在 main 作用域里，生命周期长于内层作用域的 QML 引擎 —— 弹窗要读它的属性，
+    // 引擎析构时不能再指向已释放的对象。
+    //
+    // 校验不通过**不在这里直接退出**：界面照常起来，由 QML 层的全屏弹窗盖住登录页，
+    // 点「确定」才退出。这样用户能看到失败原因，而不是程序闪一下就没了。
+    // 放在 Python 解释器之前：授权不通过就没必要再花时间起算法环境
+    LicenseManager license;
+    license.verify();
+
     // 解释器要在界面之前起来：QML 一起来就会读算法状态，
     // 而那时 Python 若还没准备好，界面会先闪一下「未连接」
     PythonEngine python_engine;
@@ -193,6 +205,8 @@ int main(int argc, char *argv[])
         engine.rootContext()->setContextProperty(QStringLiteral("Acq"), &bridge);
         engine.rootContext()->setContextProperty(QStringLiteral("Recording"), &preview);
         engine.rootContext()->setContextProperty(QStringLiteral("Analysis"), &analysis);
+        // 授权状态给 QML 读：License.checked / License.valid / License.message
+        engine.rootContext()->setContextProperty(QStringLiteral("License"), &license);
 
         QObject::connect(
             &engine,

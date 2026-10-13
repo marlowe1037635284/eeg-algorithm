@@ -1579,6 +1579,12 @@ QVariantMap AppDatabase::resetPassword(const QString &account, const QString &ne
         result[QStringLiteral("message")] = QStringLiteral("数据库不可用");
         return result;
     }
+    // 超级管理员写死在代码里，密码不可被重置
+    if (account.trimmed() == kBuiltinAdminUser)
+    {
+        result[QStringLiteral("message")] = QStringLiteral("内置超级管理员不支持重置密码");
+        return result;
+    }
     if (new_password.length() < 6)
     {
         result[QStringLiteral("message")] = QStringLiteral("新密码至少 6 位");
@@ -1598,6 +1604,70 @@ QVariantMap AppDatabase::resetPassword(const QString &account, const QString &ne
 
     // 只记「重置了谁的密码」，密码本身绝不入日志
     audit_log::record(QStringLiteral("重置密码：%1").arg(account.trimmed()));
+
+    result[QStringLiteral("success")] = true;
+    return result;
+}
+
+bool AppDatabase::canChangeOwnPassword() const
+{
+    // 未登录（空）或内置超级管理员都不能自行修改密码
+    const QString account = m_current_user.trimmed();
+    return !account.isEmpty() && account != kBuiltinAdminUser;
+}
+
+QVariantMap AppDatabase::changePassword(const QString &old_password, const QString &new_password)
+{
+    QVariantMap result;
+    result[QStringLiteral("success")] = false;
+
+    if (!ensureOpen())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("数据库不可用");
+        return result;
+    }
+
+    // 账号取当前登录身份，不接收调用方传入 —— 免得改到别人的密码上去
+    const QString account = m_current_user.trimmed();
+    if (account.isEmpty() || account == kBuiltinAdminUser)
+    {
+        result[QStringLiteral("message")] = QStringLiteral("当前账号不支持修改密码");
+        return result;
+    }
+    if (new_password.length() < 6)
+    {
+        result[QStringLiteral("message")] = QStringLiteral("新密码至少 6 位");
+        return result;
+    }
+
+    QSqlQuery check(m_database);
+    check.prepare(QStringLiteral("SELECT password FROM users WHERE username = ?"));
+    check.addBindValue(account);
+    if (!check.exec() || !check.next())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("账号不存在，无法修改密码");
+        return result;
+    }
+    if (check.value(0).toString() != old_password)
+    {
+        audit_log::record(QStringLiteral("修改密码失败：原密码不正确"));
+        result[QStringLiteral("message")] = QStringLiteral("原密码不正确");
+        return result;
+    }
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral("UPDATE users SET password = ? WHERE username = ?"));
+    query.addBindValue(new_password);
+    query.addBindValue(account);
+    if (!query.exec() || query.numRowsAffected() == 0)
+    {
+        qWarning() << "[db] 修改密码失败:" << account << query.lastError().text();
+        result[QStringLiteral("message")] = QStringLiteral("修改密码失败");
+        return result;
+    }
+
+    // 只记「谁改了自己的密码」，密码本身绝不入日志
+    audit_log::record(QStringLiteral("修改密码：%1").arg(account));
 
     result[QStringLiteral("success")] = true;
     return result;

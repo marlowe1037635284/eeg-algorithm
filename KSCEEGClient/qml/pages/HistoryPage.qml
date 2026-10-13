@@ -16,6 +16,7 @@ Item {
 
     signal navRequested(string label)
     signal logoutRequested()
+    signal changePasswordRequested()
     signal recordPreviewRequested(string recordNo)
     // 删记录：交给外层弹确认框，确认后才真删
     signal recordDeleteRequested(string recordNo)
@@ -180,6 +181,7 @@ Item {
         userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
+        onChangePasswordRequested: root.changePasswordRequested()
 
         // ---------- 表头 ----------
         // 设计稿坐标 x=272/438/589/771/922/1073/1239/1390/1559，均已减卡片原点 201

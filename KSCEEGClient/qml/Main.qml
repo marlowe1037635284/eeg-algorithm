@@ -233,6 +233,7 @@ ApplicationWindow {
         case "confirmDelete": return confirmDeleteComponent
         case "userEdit":      return userEditComponent
         case "resetPassword": return resetPasswordComponent
+        case "changePassword": return changePasswordComponent
         case "confirmDeleteRecord": return confirmDeleteRecordComponent
         case "confirmDeleteTag":    return confirmDeleteTagComponent
         case "confirmLogout":       return confirmLogoutComponent
@@ -314,6 +315,16 @@ ApplicationWindow {
         activeDialog = ""
     }
 
+    // 点顶栏账号菜单里的「修改密码」。内置超级管理员不能改（canChangeOwnPassword
+    // 为假），这里直接提示而不是弹一个必然失败的框
+    function openChangePassword() {
+        if (!appDatabase.canChangeOwnPassword()) {
+            showToast(qsTr("超级管理员账号不支持修改密码"), "info")
+            return
+        }
+        activeDialog = "changePassword"
+    }
+
     function openRecordPreview(recordNo) {
         pendingRecordNo = recordNo
         activeDialog = "recordPreview"
@@ -374,6 +385,7 @@ ApplicationWindow {
             recordDir: appDatabase.recordDirectory()
 
             onLogoutRequested: window.requestLogout()
+            onChangePasswordRequested: window.openChangePassword()
             onNavRequested: (label) => window.navigateTo(label)
             onNotifyRequested: (message, kind) => window.showToast(message, kind)
             // 点「开始采集」先弹确认框，确认后才真正开始
@@ -399,6 +411,7 @@ ApplicationWindow {
 
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
+            onChangePasswordRequested: window.openChangePassword()
             onNewPatientRequested: {
                 window.newPatientOrigin = "patients"
                 window.activeDialog = "newPatient"
@@ -443,6 +456,7 @@ ApplicationWindow {
                 window.navigateTo(label)
             }
             onLogoutRequested: window.requestLogout()
+            onChangePasswordRequested: window.openChangePassword()
             onRecordPreviewRequested: (recordNo) => window.openRecordPreview(recordNo)
             // 删除是不可撤销的，先弹确认框
             onRecordDeleteRequested: (recordNo) => {
@@ -465,6 +479,7 @@ ApplicationWindow {
 
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
+            onChangePasswordRequested: window.openChangePassword()
             onBackRequested: window.closeAnalysis()
             onNotifyRequested: (message, kind) => window.showToast(message, kind)
         }
@@ -484,6 +499,7 @@ ApplicationWindow {
 
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
+            onChangePasswordRequested: window.openChangePassword()
 
             onAddUserRequested: {
                 window.pendingUserRow = null
@@ -529,6 +545,7 @@ ApplicationWindow {
 
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
+            onChangePasswordRequested: window.openChangePassword()
             // 新增与编辑共用同一个弹窗，靠 pendingTagRow 是否为空区分
             onNewTagRequested: {
                 window.pendingTagRow = null
@@ -827,6 +844,22 @@ ApplicationWindow {
                 window.closeDialog()
                 window.pendingUserRow = null
                 window.showToast(qsTr("已重置「%1」的密码").arg(who), "success")
+            }
+        }
+    }
+
+    // 用户自己改密码（顶栏账号菜单进入）。改的是当前登录账号，账号由数据层取，
+    // 弹窗这边不传 —— 也就无从改到别人头上
+    Component {
+        id: changePasswordComponent
+
+        ChangePasswordDialog {
+            database: appDatabase
+            Component.onCompleted: open()
+            onDismissed: window.closeDialog()
+            onAccepted: {
+                window.closeDialog()
+                window.showToast(qsTr("密码已修改"), "success")
             }
         }
     }

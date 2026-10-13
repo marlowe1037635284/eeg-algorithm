@@ -27,6 +27,7 @@ Item {
 
     signal navRequested(string label)
     signal logoutRequested()
+    signal changePasswordRequested()
 
     // ---------- 背景 ----------
     Image {
@@ -184,11 +185,20 @@ Item {
         height: 44
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: shell.logoutRequested()
+        onClicked: userMenu.opened ? userMenu.close() : userMenu.open()
 
         ToolTip.visible: containsMouse
-        ToolTip.text: qsTr("点击退出登录")
+        ToolTip.text: qsTr("账号菜单")
         ToolTip.delay: 400
+    }
+
+    // 点用户区弹出的账号菜单。退出登录挪进来之后，手滑点一下不会再直接把人踢出去了
+    UserMenu {
+        id: userMenu
+        x: 1750
+        y: 50
+        onChangePasswordRequested: shell.changePasswordRequested()
+        onLogoutRequested: shell.logoutRequested()
     }
 
     // ---------- 内容区标题条 ----------

@@ -26,6 +26,7 @@ Item {
 
     signal navRequested(string label)
     signal logoutRequested()
+    signal changePasswordRequested()
     signal newTagRequested()
     signal editTagRequested(var tag)
     // 删除标签是不可撤销的（设计稿的提示条也这么写），交给外层弹确认框
@@ -137,6 +138,7 @@ Item {
         userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
+        onChangePasswordRequested: root.changePasswordRequested()
 
         // ================= 左栏 · 数据存储（设计稿 @216,164 828×223）=================
         Rectangle {

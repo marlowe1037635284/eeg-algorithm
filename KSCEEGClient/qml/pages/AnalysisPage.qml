@@ -27,6 +27,7 @@ Item {
 
     signal navRequested(string label)
     signal logoutRequested()
+    signal changePasswordRequested()
     // 点「返回历史记录」
     signal backRequested()
     signal notifyRequested(string message, string kind)
@@ -168,6 +169,7 @@ Item {
         }
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
+        onChangePasswordRequested: root.changePasswordRequested()
 
         // ---------- 左侧参数面板 ----------
         AnalysisControls {

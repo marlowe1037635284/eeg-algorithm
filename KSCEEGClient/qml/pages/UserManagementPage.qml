@@ -20,6 +20,7 @@ Item {
 
     signal navRequested(string label)
     signal logoutRequested()
+    signal changePasswordRequested()
     signal addUserRequested()
     signal editUserRequested(string account)
     signal resetPasswordRequested(string account)
@@ -142,6 +143,7 @@ Item {
         userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
+        onChangePasswordRequested: root.changePasswordRequested()
 
         // ---------- 表头 ----------
         Rectangle {

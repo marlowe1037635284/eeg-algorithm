@@ -16,6 +16,7 @@ Item {
 
     signal navRequested(string label)
     signal logoutRequested()
+    signal changePasswordRequested()
     signal newPatientRequested()
     signal editPatientRequested(string recordNo)
     // 「设为当前」与点整行：把这位患者设为工作台的当前患者
@@ -144,6 +145,7 @@ Item {
         userRole: root.userRole
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
+        onChangePasswordRequested: root.changePasswordRequested()
 
         // ---------- 表头 ----------
         Rectangle {

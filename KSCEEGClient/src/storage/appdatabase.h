@@ -20,8 +20,9 @@
 // 位置就贴在可执行文件旁边，要查数据用任何 SQLite 工具打开即可。
 //
 // ==================== 版本库里的这一份是**表结构模板** ====================
-// 仓库里跟踪的 eeg-ksc.db 只承载表结构（外加一个预置的 admin，方便第一次登录），
-// 里面**不留运行期数据**。部署时把它拷到运行目录，程序在那一份上读写。
+// 仓库里跟踪的 eeg-ksc.db 只承载表结构，里面**不留运行期数据**（内置超级管理员
+// admin 写死在代码里，不落库，见 appdatabase.cpp 的 kBuiltinAdmin*）。
+// 部署时把它拷到运行目录，程序在那一份上读写。
 //
 // 由此推出两条约定：
 //   1. 表结构变了（加表、加列）要**同步改这一份模板**。只靠 createTables() 里的
@@ -29,7 +30,7 @@
 //      新部署的机器要等第一次启动才建表，中间那段空窗期不好排查
 //   2. 别拿它当测试库用。**开发期默认连的正是这一份**（见 appdatabase.cpp 的
 //      defaultDatabasePath），调试产生的患者与采集记录会直接写进模板。
-//      提交前记得清一下：只留 admin，其余表清空、自增计数归零
+//      提交前记得清一下：各表清空、自增计数归零（admin 不落库，无需保留）
 class AppDatabase : public QObject
 {
     Q_OBJECT
@@ -146,7 +147,14 @@ public:
     Q_INVOKABLE QVariantMap updateUser(const QString &account, const QString &name,
                                        const QString &role, const QString &department,
                                        const QString &status);
+    // 重置密码：管理员在用户管理页重置别人（或自己）的密码。内置超级管理员
+    //  不在列表、也不落库，这里再挡一道 —— 「超级管理员除外」
     Q_INVOKABLE QVariantMap resetPassword(const QString &account, const QString &new_password);
+    // 用户自行修改密码：校验原密码，账号取当前登录身份（改不了别人的）。
+    // 内置超级管理员不走这里（见 canChangeOwnPassword），返回 { success, message }
+    Q_INVOKABLE QVariantMap changePassword(const QString &old_password, const QString &new_password);
+    // 当前登录账号能否自行修改密码：内置超级管理员 admin 返回 false
+    Q_INVOKABLE bool canChangeOwnPassword() const;
     Q_INVOKABLE QVariantMap setUserStatus(const QString &account, const QString &status);
 
     // 新增患者，返回 { success, message, no }。

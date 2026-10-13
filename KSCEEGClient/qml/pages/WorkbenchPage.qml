@@ -11,6 +11,7 @@ Item {
     id: root
 
     signal logoutRequested()
+    signal changePasswordRequested()
     signal snapshotRequested()
     signal clearRequested()
     // 点「开始采集」时发出去，由外层弹「开始采集前确认」；确认后再调 startCollection()
@@ -339,11 +340,20 @@ Item {
         height: 44
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        onClicked: root.logoutRequested()
+        onClicked: userMenu.opened ? userMenu.close() : userMenu.open()
 
         ToolTip.visible: containsMouse
-        ToolTip.text: qsTr("点击退出登录")
+        ToolTip.text: qsTr("账号菜单")
         ToolTip.delay: 400
+    }
+
+    // 点用户区弹出的账号菜单（与 AppShell 里那一份同款，见 UserMenu.qml）
+    UserMenu {
+        id: userMenu
+        x: 1750
+        y: 50
+        onChangePasswordRequested: root.changePasswordRequested()
+        onLogoutRequested: root.logoutRequested()
     }
 
     // ---------- 患者信息卡片 ----------

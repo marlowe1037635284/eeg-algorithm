@@ -134,6 +134,8 @@ qt_add_qml_module(appKSCEEGClient
         qml/components/SoftBlob.qml
         qml/components/TableRowButton.qml
         qml/components/Toast.qml
+        qml/components/UserMenu.qml
+        qml/dialogs/ChangePasswordDialog.qml
         qml/dialogs/ConfirmDialog.qml
         qml/dialogs/DeviceInfoDialog.qml
         qml/dialogs/EditPatientDialog.qml

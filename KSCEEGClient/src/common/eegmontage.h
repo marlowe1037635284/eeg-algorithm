@@ -101,6 +101,26 @@ inline QStringList channel_colors()
     };
 }
 
+// 灰度配色。与彩色那套同样是**下标即通道序号**，供「标准10-20色环 / 灰度」切换用。
+//
+// 不能直接拿彩色表按亮度压成灰：那套色里好几路的亮度几乎一样（比如相邻的
+// C4 #22b8d8 与 T4 #16a085，压灰后都是 ~116），灰度下它们会糊成同一根线。
+// 所以这里显式排布：相邻两路深浅交替（深—浅—深…），明暗都收在 #2b2b2b ~ #ababab
+// 这一段 —— 再浅就贴不住浅色面板，再深则整屏发黑、看不出泳道内的细节。
+inline QStringList channel_gray_colors()
+{
+    return {
+        QStringLiteral("#2f2f2f"), QStringLiteral("#8f8f8f"),   // Fp1  Fp2
+        QStringLiteral("#4a4a4a"), QStringLiteral("#a3a3a3"),   // F7   F3
+        QStringLiteral("#333333"), QStringLiteral("#7a7a7a"),   // F4   F8
+        QStringLiteral("#555555"), QStringLiteral("#999999"),   // T3   C3
+        QStringLiteral("#404040"), QStringLiteral("#8a8a8a"),   // C4   T4
+        QStringLiteral("#5f5f5f"), QStringLiteral("#ababab"),   // T5   P3
+        QStringLiteral("#6b6b6b"), QStringLiteral("#858585"),   // P4   T6
+        QStringLiteral("#2b2b2b"), QStringLiteral("#757575"),   // O1   O2
+    };
+}
+
 // 通道档位（4/8/16）→ 显示哪几路。
 //
 // 设备永远是 16 路，档位只决定界面画几条泳道。**不能简单取前 N 路**：

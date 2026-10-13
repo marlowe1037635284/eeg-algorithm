@@ -93,6 +93,7 @@ Item {
 
     // ---------- 采集时长胶囊（设计稿右上角的 ● 02:16）----------
     Rectangle {
+        id: elapsedCapsule
         x: 105
         y: 11
         // 常态就是设计稿的 79（文本 x=30，右侧留 8px）；分钟涨到三位数时按文本撑开，
@@ -125,6 +126,21 @@ Item {
             font.styleName: Design.styleRegular
             font.pixelSize: 16
         }
+    }
+
+    // ---------- 波形配色选择（胶囊右侧）----------
+    // 默认「标准10-20色环」；切「灰度」时波形线与左侧通道名同步转灰。
+    // 配色本由 C++ 画进波形图，这里只发个开关给 Acq，重绘由 C++ 侧完成
+    ChoiceField {
+        x: elapsedCapsule.x + elapsedCapsule.width + 12
+        y: 11
+        width: 150
+        height: 29
+        pixelSize: 14
+        fieldRadius: 10
+        choices: [qsTr("标准10-20色环"), qsTr("灰度")]
+        currentIndex: Acq.grayscaleWave ? 1 : 0
+        onActivated: (index) => Acq.grayscaleWave = (index === 1)
     }
 
     // ---------- 波形绘制区 ----------

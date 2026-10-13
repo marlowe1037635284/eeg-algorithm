@@ -74,7 +74,10 @@ class AcquisitionBridge : public QObject, public ChunkSink
     Q_PROPERTY(int channelCount READ channel_count WRITE set_channel_count
                    NOTIFY channelCountChanged)
     Q_PROPERTY(QStringList channelNames READ channel_names NOTIFY channelCountChanged)
-    Q_PROPERTY(QStringList channelColors READ channel_colors CONSTANT)
+    Q_PROPERTY(QStringList channelColors READ channel_colors NOTIFY waveColorModeChanged)
+    // 波形配色：false = 标准 10-20 色环（默认），true = 灰度。切换后波形线与通道名同步改色
+    Q_PROPERTY(bool grayscaleWave READ grayscale_wave WRITE set_grayscale_wave
+                   NOTIFY waveColorModeChanged)
     Q_PROPERTY(QVariantList channelVisibleMask READ channel_visible_mask
                    NOTIFY channelVisibilityChanged)
     // 每画好一帧就自增，QML 靠它变化触发 Canvas 重绘
@@ -271,6 +274,7 @@ public:
     double time_window() const { return m_time_window; }
     int y_range_uv() const { return m_y_range_uv; }
     bool dc_removal() const { return m_dc_removal; }
+    bool grayscale_wave() const { return m_grayscale_wave; }
 
     bool high_pass_enabled() const { return m_processing.high_pass_enabled; }
     double high_pass_low_hz() const { return m_processing.high_pass_low_hz; }
@@ -317,6 +321,7 @@ public slots:
     void set_time_window(double seconds);
     void set_y_range_uv(int range_uv);
     void set_dc_removal(bool enabled);
+    void set_grayscale_wave(bool on);
     void set_high_pass_enabled(bool enabled);
     void set_high_pass_low_hz(double hz);
     void set_low_pass_enabled(bool enabled);
@@ -344,6 +349,7 @@ signals:
     void timeWindowChanged();
     void yRangeChanged();
     void dcRemovalChanged();
+    void waveColorModeChanged();
     void processingChanged();
     void sessionStateChanged();
     void topoRevisionChanged();
@@ -454,6 +460,9 @@ private:
     // 它是示波器上的 AC 耦合：每帧按本窗口均值现算，**没有跨帧状态**，
     // 所以不会像算法侧那个因果高通一样在启动时产生几秒的瞬变
     bool m_dc_removal = true;
+
+    // 波形配色是否用灰度（见 channel_colors()）。默认彩色，不持久化
+    bool m_grayscale_wave = false;
 
     // 波形图。与实际显示区一一对应（QML 报物理像素，贴回去正好 1:1）。
     // image provider 的调用线程由 Qt 决定，所以加锁并交出深拷贝

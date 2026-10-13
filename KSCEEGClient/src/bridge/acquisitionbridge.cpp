@@ -1376,6 +1376,21 @@ void AcquisitionBridge::set_dc_removal(bool enabled)
     emit dcRemovalChanged();
 }
 
+void AcquisitionBridge::set_grayscale_wave(bool on)
+{
+    if (on == m_grayscale_wave)
+    {
+        return;
+    }
+    m_grayscale_wave = on;
+    // 与 set_dc_removal 不同：这里换的是**颜色**而不是某帧数据，空闲（不采集）时
+    // 没有新帧可等，所以必须强制立刻重画一帧。m_rendered_generation 置 -1 让
+    // render_wave() 的「代次没变就跳过」判据失效（同 set_wave_view_size 的做法）
+    m_rendered_generation = -1;
+    render_wave();
+    emit waveColorModeChanged();
+}
+
 QString AcquisitionBridge::default_record_dir() const
 {
     // 面向界面显示：转成 Windows 风格的反斜杠。内部落盘用正斜杠（QDir 两者都认），
@@ -1409,8 +1424,10 @@ QStringList AcquisitionBridge::channel_colors() const
 {
     // 配色表收在 eeg_montage 里（实时波形、回放预览、后处理三处同源），
     // 下标即通道序号，所以这里按**该路在蒙太奇里的序号**取色，而不是按屏幕上的
-    // 第几条泳道 —— 否则切到 8 通道档时 F3 会被涂成 F7 的颜色
-    const QStringList palette = eeg_montage::channel_colors();
+    // 第几条泳道 —— 否则切到 8 通道档时 F3 会被涂成 F7 的颜色。
+    // 灰度档也遵循同样的「下标即通道序号」规则
+    const QStringList palette =
+        m_grayscale_wave ? eeg_montage::channel_gray_colors() : eeg_montage::channel_colors();
     QStringList colors;
     const QVector<int> indices = eeg_montage::display_channel_indices(m_channel_count);
     for (const int index : indices)

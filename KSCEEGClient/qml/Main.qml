@@ -438,6 +438,7 @@ ApplicationWindow {
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
             onChangePasswordRequested: window.openChangePassword()
+            onDeviceInfoRequested: window.activeDialog = "deviceInfo"
             onNewPatientRequested: {
                 window.newPatientOrigin = "patients"
                 window.activeDialog = "newPatient"
@@ -483,6 +484,7 @@ ApplicationWindow {
             }
             onLogoutRequested: window.requestLogout()
             onChangePasswordRequested: window.openChangePassword()
+            onDeviceInfoRequested: window.activeDialog = "deviceInfo"
             onRecordPreviewRequested: (recordNo) => window.openRecordPreview(recordNo)
             // 删除是不可撤销的，先弹确认框
             onRecordDeleteRequested: (recordNo) => {
@@ -506,6 +508,7 @@ ApplicationWindow {
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
             onChangePasswordRequested: window.openChangePassword()
+            onDeviceInfoRequested: window.activeDialog = "deviceInfo"
             onBackRequested: window.closeAnalysis()
             onNotifyRequested: (message, kind) => window.showToast(message, kind)
         }
@@ -526,6 +529,7 @@ ApplicationWindow {
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
             onChangePasswordRequested: window.openChangePassword()
+            onDeviceInfoRequested: window.activeDialog = "deviceInfo"
 
             onAddUserRequested: {
                 window.pendingUserRow = null
@@ -572,6 +576,7 @@ ApplicationWindow {
             onNavRequested: (label) => window.navigateTo(label)
             onLogoutRequested: window.requestLogout()
             onChangePasswordRequested: window.openChangePassword()
+            onDeviceInfoRequested: window.activeDialog = "deviceInfo"
             // 新增与编辑共用同一个弹窗，靠 pendingTagRow 是否为空区分
             onNewTagRequested: {
                 window.pendingTagRow = null

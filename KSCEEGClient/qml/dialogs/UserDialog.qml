@@ -23,7 +23,7 @@ Item {
 
     property string errorText: ""
 
-    readonly property var roleChoices: [qsTr("管理员"), qsTr("医生"), qsTr("技师"), qsTr("观察员")]
+    readonly property var roleChoices: [qsTr("管理员"), qsTr("医生"), qsTr("技师")]
     readonly property var statusChoices: [qsTr("启用"), qsTr("停用"), qsTr("待审核")]
 
     property alias accountText: accountField.text

@@ -21,6 +21,8 @@ Item {
     signal navRequested(string label)
     signal logoutRequested()
     signal changePasswordRequested()
+    // 点顶栏设备状态胶囊 → 弹「设备连接」浮层（由 Main 统一路由）
+    signal deviceInfoRequested()
     signal addUserRequested()
     signal editUserRequested(string account)
     signal resetPasswordRequested(string account)
@@ -51,7 +53,7 @@ Item {
     property int currentPage: 1
 
     readonly property var roleChoices: [qsTr("全部角色"), qsTr("管理员"), qsTr("医生"),
-                                        qsTr("技师"), qsTr("观察员")]
+                                        qsTr("技师")]
     readonly property string roleKeyword:
         (roleFilter > 0 && roleFilter < roleChoices.length) ? roleChoices[roleFilter] : ""
 
@@ -107,8 +109,8 @@ Item {
         return Design.offline
     }
 
-    // 角色 → 强调色。管理员蓝、医生紫取自设计稿；技师借用波形通道色里的青色，
-    // 观察员用中性灰 —— 都不再凭空引入新颜色。
+    // 角色 → 强调色。管理员蓝、医生紫取自设计稿；技师借用波形通道色里的青色。
+    // 其余（旧库里的历史角色、空角色）一律用中性灰兜底 —— 不凭空引入新颜色
     function roleAccent(role)
     {
         if (role === "管理员")
@@ -147,6 +149,7 @@ Item {
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
         onChangePasswordRequested: root.changePasswordRequested()
+        onDeviceInfoRequested: root.deviceInfoRequested()
 
         // ---------- 表头 ----------
         Rectangle {

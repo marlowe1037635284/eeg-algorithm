@@ -17,9 +17,10 @@ Item {
 
     readonly property int cardWidth: 372
     readonly property int cardHeight: 184
-    // 两列的落点：左列贴左边距，右列从卡片宽约 46% 处起
+    // 两列的落点：左列贴左边距，右列从卡片宽约 52% 处起
+    // （左列型号「NeuroLink-6016」20px 加粗较宽，右列起点需让开，否则两列首行会粘连）
     readonly property int leftX: 22
-    readonly property int rightX: 172
+    readonly property int rightX: 190
 
     DialogFrame {
         title: qsTr("设备连接")

@@ -31,6 +31,8 @@ Item {
     signal navRequested(string label)
     signal logoutRequested()
     signal changePasswordRequested()
+    // 点顶栏设备状态胶囊 → 弹「设备连接」浮层（由 Main 统一路由）
+    signal deviceInfoRequested()
     signal newTagRequested()
     signal editTagRequested(var tag)
     // 删除标签是不可撤销的（设计稿的提示条也这么写），交给外层弹确认框
@@ -164,6 +166,7 @@ Item {
         onNavRequested: (label) => root.navRequested(label)
         onLogoutRequested: root.logoutRequested()
         onChangePasswordRequested: root.changePasswordRequested()
+        onDeviceInfoRequested: root.deviceInfoRequested()
 
         // ================= 左栏 · 医院 / 科室（设计稿 @216,164 828×116）=================
         // 没有标题栏，两行输入直接排；非管理员只读展示（输入框禁用）

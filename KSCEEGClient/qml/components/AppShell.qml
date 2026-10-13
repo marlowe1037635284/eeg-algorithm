@@ -28,6 +28,9 @@ Item {
     signal navRequested(string label)
     signal logoutRequested()
     signal changePasswordRequested()
+    // 点顶栏的设备状态胶囊 → 弹「设备连接」铭牌浮层（与采集工作台那一处同款）。
+    // 外壳只把点击转出去，浮层由 Main 统一路由，这样它始终盖在页面最上层
+    signal deviceInfoRequested()
 
     // ---------- 背景 ----------
     Image {
@@ -104,6 +107,14 @@ Item {
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 14
+        }
+
+        // 点胶囊看设备铭牌信息（采集工作台那一枚同样能点）。盖住整枚胶囊（含圆点与文字）
+        MouseArea {
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onClicked: shell.deviceInfoRequested()
         }
     }
 

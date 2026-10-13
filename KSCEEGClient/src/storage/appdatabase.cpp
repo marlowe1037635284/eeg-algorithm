@@ -693,6 +693,19 @@ bool AppDatabase::currentUserIsAdmin() const
     return m_current_role == QStringLiteral("管理员");
 }
 
+QString AppDatabase::currentAccount() const
+{
+    return m_current_user;
+}
+
+bool AppDatabase::disablingSelf(const QString &account, const QString &status) const
+{
+    // 只有「要把状态改成停用」且目标正是当前登录账号时才拦。启用自己、改别人的
+    // 状态都不受影响。未登录（账号为空）时不拦，免得空串意外撞上某个目标
+    return status == QStringLiteral("停用") && !m_current_user.isEmpty()
+           && account.trimmed() == m_current_user;
+}
+
 bool AppDatabase::patientBelongsToCurrentUser(const QString &patient_no) const
 {
     // 管理员看全部，直接放行，省一次查询
@@ -1812,6 +1825,14 @@ QVariantMap AppDatabase::updateUser(const QString &account, const QString &name,
         return result;
     }
 
+    // 编辑弹窗里的「账号状态」也能改成停用，是绕过 setUserStatus 的另一条路，
+    // 同一条规则在这里再拦一道
+    if (disablingSelf(account, status))
+    {
+        result[QStringLiteral("message")] = QStringLiteral("不能停用当前登录的账号");
+        return result;
+    }
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "UPDATE users SET display_name = ?, role = ?, department = ?, status = ?"
@@ -1968,6 +1989,12 @@ QVariantMap AppDatabase::setUserStatus(const QString &account, const QString &st
     if (!ensureOpen() || !known_statuses().contains(status))
     {
         result[QStringLiteral("message")] = QStringLiteral("账号状态不合法");
+        return result;
+    }
+
+    if (disablingSelf(account, status))
+    {
+        result[QStringLiteral("message")] = QStringLiteral("不能停用当前登录的账号");
         return result;
     }
 

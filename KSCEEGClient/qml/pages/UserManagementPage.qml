@@ -30,6 +30,9 @@ Item {
     // 应用数据库，由外层注入
     property var database
 
+    // 当前登录账号。用来认出列表里「自己」那一行 —— 管理员不可以停用自己
+    readonly property string currentAccount: database ? database.currentAccount() : ""
+
     property int revision: 0
     function reload() {
         revision++
@@ -240,6 +243,10 @@ Item {
                     y: rowTop + 11
                     width: 59
                     text: root.toggleLabel(modelData.status)
+                    // 管理员不能停用自己：自己那行且当前还有「停用」可选时，把按钮收起来
+                    // （数据层也会拦，这里只是别让人白点一下再吃一个错误提示）
+                    visible: !(modelData.account === root.currentAccount
+                               && modelData.status !== "停用")
                     onClicked: root.toggleStatusRequested(modelData.account,
                                                           root.nextStatus(modelData.status))
                 }

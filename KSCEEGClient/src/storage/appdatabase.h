@@ -156,6 +156,9 @@ public:
     // 当前登录账号能否自行修改密码：内置超级管理员 admin 返回 false
     Q_INVOKABLE bool canChangeOwnPassword() const;
     Q_INVOKABLE QVariantMap setUserStatus(const QString &account, const QString &status);
+    // 当前登录账号。用户管理页用它认出「自己」那一行、把「停用」按钮收起来 ——
+    // 数据层另有一道同样的拦截（见 setUserStatus / updateUser），这里只是别让人白点
+    Q_INVOKABLE QString currentAccount() const;
 
     // 新增患者，返回 { success, message, no }。
     // patient_no 留空时按 P-0001 的规则自动生成
@@ -197,6 +200,9 @@ private:
     // 当前会话是不是管理员。角色为空（未登录）一律按非管理员处理，
     // 宁可少看也不要让未登录状态看到全部患者
     bool currentUserIsAdmin() const;
+    // 是否在「停用自己」。setUserStatus 与 updateUser（编辑弹窗里也带状态）都要拦
+    // 这一条，规则只留这里一处，免得两个入口各写一遍后走样
+    bool disablingSelf(const QString &account, const QString &status) const;
 
     // 归属校验：管理员放行；其余角色要求目标由当前账号录入
     //（patients.created_by = 当前账号）。patients()/sessions() 里的可见性过滤

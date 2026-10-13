@@ -1433,6 +1433,42 @@ bool valid_account(const QString &account, QString *message)
     return true;
 }
 
+// 密码策略的唯一权威实现：设置密码的入口（新增用户 / 重置 / 修改）都调它，
+// 别在几个函数里各写一份长度判断
+bool valid_password(const QString &password, QString *message)
+{
+    if (password.isEmpty())
+    {
+        *message = QStringLiteral("请填写密码");
+        return false;
+    }
+    if (password.length() < 8 || password.length() > 16)
+    {
+        *message = QStringLiteral("密码长度需为 8-16 位");
+        return false;
+    }
+    // 「至少包含数字、英文字母中的两种」= 数字和字母都得出现
+    bool has_digit = false;
+    bool has_letter = false;
+    for (const QChar &c : password)
+    {
+        if (c.isDigit())
+        {
+            has_digit = true;
+        }
+        else if (c.isLetter())
+        {
+            has_letter = true;
+        }
+    }
+    if (!has_digit || !has_letter)
+    {
+        *message = QStringLiteral("密码至少包含数字、英文字母中的两种");
+        return false;
+    }
+    return true;
+}
+
 const QStringList &known_statuses()
 {
     static const QStringList statuses = {
@@ -1467,10 +1503,10 @@ QVariantMap AppDatabase::addUser(const QString &account, const QString &password
         result[QStringLiteral("message")] = QStringLiteral("请填写姓名");
         return result;
     }
-    // 前端原型定的口径：初始密码至少 6 位。太短的密码等于没有密码
-    if (password.length() < 6)
+    // 初始密码走统一策略：必填、8-16 位、数字与字母两类
+    if (!valid_password(password, &message))
     {
-        result[QStringLiteral("message")] = QStringLiteral("初始密码至少 6 位");
+        result[QStringLiteral("message")] = message;
         return result;
     }
 
@@ -1585,9 +1621,10 @@ QVariantMap AppDatabase::resetPassword(const QString &account, const QString &ne
         result[QStringLiteral("message")] = QStringLiteral("内置超级管理员不支持重置密码");
         return result;
     }
-    if (new_password.length() < 6)
+    QString message;
+    if (!valid_password(new_password, &message))
     {
-        result[QStringLiteral("message")] = QStringLiteral("新密码至少 6 位");
+        result[QStringLiteral("message")] = message;
         return result;
     }
 
@@ -1634,9 +1671,10 @@ QVariantMap AppDatabase::changePassword(const QString &old_password, const QStri
         result[QStringLiteral("message")] = QStringLiteral("当前账号不支持修改密码");
         return result;
     }
-    if (new_password.length() < 6)
+    QString message;
+    if (!valid_password(new_password, &message))
     {
-        result[QStringLiteral("message")] = QStringLiteral("新密码至少 6 位");
+        result[QStringLiteral("message")] = message;
         return result;
     }
 

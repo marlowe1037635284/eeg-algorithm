@@ -37,10 +37,12 @@ Item {
             errorText = qsTr("数据库不可用，无法重置密码")
             return
         }
-        if (passwordText.length < 6) {
-            errorText = qsTr("新密码至少 6 位")
+        if (passwordText.length === 0) {
+            errorText = qsTr("请输入新密码")
             return
         }
+        // 长度与复杂度（8-16 位、含数字与字母）由数据层统一校验，
+        // 失败时把 resetPassword 返回的 message 显示出来
         if (passwordText !== confirmText) {
             errorText = qsTr("两次输入的密码不一致")
             return
@@ -87,7 +89,8 @@ Item {
             x: 128
             y: 107
             width: root.cardWidth - 154
-            placeholder: qsTr("至少 6 位")
+            placeholder: qsTr("8-16 位，含数字与字母")
+            maxLength: 16
         }
 
         FormLabel { x: 26; y: 166; text: qsTr("确认密码") }
@@ -98,6 +101,7 @@ Item {
             y: 157
             width: root.cardWidth - 154
             placeholder: qsTr("再输入一次")
+            maxLength: 16
             onAccepted: root.save()
         }
 
@@ -146,6 +150,7 @@ Item {
 
         property alias text: fieldInput.text
         property string placeholder: ""
+        property int maxLength: 64
 
         signal accepted()
 
@@ -170,7 +175,7 @@ Item {
             clip: true
             echoMode: TextInput.Password
             passwordCharacter: "●"
-            maximumLength: 64
+            maximumLength: passwordFieldItem.maxLength
             onAccepted: passwordFieldItem.accepted()
         }
 

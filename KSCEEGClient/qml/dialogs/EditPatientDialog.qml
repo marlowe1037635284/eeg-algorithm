@@ -104,6 +104,7 @@ Item {
             y: 79
             width: 204
             placeholder: qsTr("留空自动生成")
+            maxLength: 32
         }
 
         // 下拉：点开列表来选
@@ -131,6 +132,7 @@ Item {
             y: 274
             width: 487
             placeholder: qsTr("选填")
+            maxLength: 200
         }
 
         Field {
@@ -139,6 +141,7 @@ Item {
             y: 79
             width: 204
             placeholder: qsTr("患者姓名")
+            maxLength: 32
         }
 
         Field {
@@ -148,6 +151,7 @@ Item {
             width: 204
             placeholder: qsTr("如：45")
             numeric: true
+            maxLength: 3
         }
 
         Field {
@@ -156,6 +160,7 @@ Item {
             y: 209
             width: 204
             placeholder: qsTr("如：癫痫")
+            maxLength: 64
         }
 
         // ---------- 底部按钮 ----------
@@ -212,6 +217,8 @@ Item {
         property string placeholder: ""
         // 只收整数（年龄这种）。校验器挂在 TextInput 上，非法字符根本敲不进去
         property bool numeric: false
+        // 字符上限。不设的话长文本可以无限敲进去
+        property int maxLength: 64
 
         height: 43
         radius: 12
@@ -233,6 +240,7 @@ Item {
             selectByMouse: true
             clip: true
             validator: field.numeric ? ageValidator : null
+            maximumLength: field.maxLength
 
             IntValidator { id: ageValidator; bottom: 0; top: 150 }
         }

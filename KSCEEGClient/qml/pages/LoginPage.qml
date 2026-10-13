@@ -21,11 +21,14 @@ Item {
     readonly property real contentScale: Math.min(width / designWidth, height / designHeight)
 
     function submitLogin() {
+        errorMessage = ""
         if (accountInput.text.trim().length === 0) {
+            errorMessage = qsTr("请输入用户名")
             accountInput.forceActiveFocus()
             return
         }
         if (passwordInput.text.length === 0) {
+            errorMessage = qsTr("请输入密码")
             passwordInput.forceActiveFocus()
             return
         }
@@ -117,7 +120,7 @@ Item {
         Text {
             x: 3
             y: 117
-            text: qsTr("手机号：")
+            text: qsTr("用户名：")
             color: "#262729"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
@@ -163,11 +166,12 @@ Item {
                 activeFocusOnTab: true
                 focus: true
                 clip: true
+                maximumLength: 32
                 onAccepted: passwordInput.forceActiveFocus()
 
                 Text {
                     anchors.fill: parent
-                    text: qsTr("账号")
+                    text: qsTr("用户名")
                     color: "#3d3d3d"
                     font: accountInput.font
                     verticalAlignment: Text.AlignVCenter
@@ -225,6 +229,7 @@ Item {
                 echoMode: TextInput.Password
                 passwordCharacter: "●"
                 clip: true
+                maximumLength: 16
                 onAccepted: loginPage.submitLogin()
 
                 Text {

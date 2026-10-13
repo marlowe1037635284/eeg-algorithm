@@ -142,6 +142,7 @@ Item {
             x: 113
             y: 130
             placeholder: qsTr("真实姓名")
+            maxLength: 32
         }
 
         // ---------- 角色 ----------
@@ -165,6 +166,7 @@ Item {
             x: 113
             y: 230
             placeholder: qsTr("如：神经内科")
+            maxLength: 32
         }
 
         // ---------- 最后一行：新增填初始密码，编辑改账号状态 ----------
@@ -190,8 +192,9 @@ Item {
             x: 113
             y: 280
             visible: !root.editMode
-            placeholder: qsTr("至少 6 位")
+            placeholder: qsTr("8-16 位，含数字与字母")
             echoMode: TextInput.Password
+            maxLength: 16
         }
 
         // 保存失败的原因。设计稿没有错误栏，放在分隔线上方的空处
@@ -228,13 +231,34 @@ Item {
         }
     }
 
-    component FormLabel: Text {
-        height: 28
-        verticalAlignment: Text.AlignVCenter
-        color: Design.textPrimary
-        font.family: Design.fontFamily
-        font.styleName: Design.styleRegular
-        font.pixelSize: 18
+    // 标签：必填项的「*」单独一个红色 Text，不能只染末尾字符，所以拆成两个 Text
+    component FormLabel: Row {
+        id: formLabel
+
+        property string text: ""
+
+        spacing: 0
+
+        Text {
+            height: 28
+            verticalAlignment: Text.AlignVCenter
+            text: formLabel.text.replace("*", "")
+            color: Design.textPrimary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 18
+        }
+
+        Text {
+            height: 28
+            verticalAlignment: Text.AlignVCenter
+            text: "*"
+            visible: formLabel.text.indexOf("*") !== -1
+            color: Design.bad
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 18
+        }
     }
 
     // 输入框：主色 10% 底 + 内嵌输入 + 占位提示。与「编辑患者」里的 Field 同构，
@@ -245,6 +269,7 @@ Item {
         property alias text: fieldInput.text
         property string placeholder: ""
         property int echoMode: TextInput.Normal
+        property int maxLength: 64
 
         width: 463
         height: 43
@@ -267,7 +292,7 @@ Item {
             activeFocusOnTab: true
             clip: true
             echoMode: editField.echoMode
-            maximumLength: 64
+            maximumLength: editField.maxLength
         }
 
         Text {

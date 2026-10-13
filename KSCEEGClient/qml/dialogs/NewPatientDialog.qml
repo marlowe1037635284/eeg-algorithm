@@ -30,16 +30,16 @@ Item {
     //   0 病历号 1 姓名 2 性别 3 年龄 4 科室 5 诊断 6 备注
     // 带 choices 的是下拉（点击循环取值），其余是可输入的文本框
     readonly property var formFields: [
-        { label: qsTr("病历号"), labelX: 683, fieldX: 746,  fieldY: 418, fieldW: 204, placeholder: qsTr("留空自动生成") },
-        { label: qsTr("姓名*"),  labelX: 978, fieldX: 1029, fieldY: 418, fieldW: 204, placeholder: qsTr("患者姓名") },
+        { label: qsTr("病历号"), labelX: 683, fieldX: 746,  fieldY: 418, fieldW: 204, placeholder: qsTr("留空自动生成"), maxLength: 32 },
+        { label: qsTr("姓名*"),  labelX: 978, fieldX: 1029, fieldY: 418, fieldW: 204, placeholder: qsTr("患者姓名"), maxLength: 32 },
         { label: qsTr("性别"),   labelX: 683, fieldX: 746,  fieldY: 483, fieldW: 204, choices: [qsTr("男"), qsTr("女")] },
         // 施工图这一格写的提示是「如：李四」—— 那是姓名不是年龄，明显是导出时抄错了。
         // 按语义改成年龄的例子
-        { label: qsTr("年龄"),   labelX: 978, fieldX: 1029, fieldY: 483, fieldW: 204, placeholder: qsTr("如：45"), numeric: true },
+        { label: qsTr("年龄"),   labelX: 978, fieldX: 1029, fieldY: 483, fieldW: 204, placeholder: qsTr("如：45"), numeric: true, maxLength: 3 },
         { label: qsTr("科室"),   labelX: 683, fieldX: 746,  fieldY: 548, fieldW: 204,
           choices: [qsTr("神经内科"), qsTr("神经外科"), qsTr("康复科"), qsTr("其他")] },
-        { label: qsTr("诊断"),   labelX: 978, fieldX: 1029, fieldY: 548, fieldW: 204, placeholder: qsTr("如：癫痫") },
-        { label: qsTr("备注"),   labelX: 683, fieldX: 746,  fieldY: 613, fieldW: 487, placeholder: qsTr("选填") }
+        { label: qsTr("诊断"),   labelX: 978, fieldX: 1029, fieldY: 548, fieldW: 204, placeholder: qsTr("如：癫痫"), maxLength: 64 },
+        { label: qsTr("备注"),   labelX: 683, fieldX: 746,  fieldY: 613, fieldW: 487, placeholder: qsTr("选填"), maxLength: 200 }
     ]
 
     // 按字段下标取控件当前值
@@ -180,6 +180,8 @@ Item {
                     selectByMouse: true
                     // 年龄只收整数。上限给 150 —— 不设上限的话 99999 也能存进库
                     validator: modelData.numeric === true ? ageValidator : null
+                    // 字符上限逐字段来自 formFields，避免备注这类长文本被无限敲进去
+                    maximumLength: modelData.maxLength !== undefined ? modelData.maxLength : 64
 
                     IntValidator {
                         id: ageValidator

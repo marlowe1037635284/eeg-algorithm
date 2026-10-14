@@ -118,7 +118,7 @@ Item {
             selectByMouse: true
             readOnly: root.editMode
             clip: true
-            maximumLength: 32
+            maximumLength: 30
         }
 
         Text {
@@ -142,7 +142,7 @@ Item {
             x: 113
             y: 130
             placeholder: qsTr("真实姓名")
-            maxLength: 32
+            maxLength: 20
         }
 
         // ---------- 角色 ----------

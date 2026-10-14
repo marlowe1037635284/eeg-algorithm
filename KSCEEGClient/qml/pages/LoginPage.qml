@@ -22,6 +22,27 @@ Item {
     readonly property real designHeight: Design.canvasHeight
     readonly property real contentScale: Math.min(width / designWidth, height / designHeight)
 
+    // 密码策略与后端 appdatabase.cpp 的 valid_password 保持一致：
+    // 必填、8-16 位、至少包含数字和英文字母两类。
+    function passwordPolicyError(value) {
+        if (value.length === 0)
+            return qsTr("请输入密码")
+        if (value.length < 8 || value.length > 16)
+            return qsTr("密码长度需为 8-16 位")
+        var hasDigit = false
+        var hasLetter = false
+        for (var i = 0; i < value.length; ++i) {
+            var c = value.charAt(i)
+            if (c >= "0" && c <= "9")
+                hasDigit = true
+            else if ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z"))
+                hasLetter = true
+        }
+        if (!hasDigit || !hasLetter)
+            return qsTr("密码至少包含数字、英文字母中的两种")
+        return ""
+    }
+
     function submitLogin() {
         errorMessage = ""
         if (accountInput.text.trim().length === 0) {
@@ -29,8 +50,9 @@ Item {
             accountInput.forceActiveFocus()
             return
         }
-        if (passwordInput.text.length === 0) {
-            errorMessage = qsTr("请输入密码")
+        var passwordError = passwordPolicyError(passwordInput.text)
+        if (passwordError.length > 0) {
+            errorMessage = passwordError
             passwordInput.forceActiveFocus()
             return
         }
@@ -209,7 +231,7 @@ Item {
                 activeFocusOnTab: true
                 focus: true
                 clip: true
-                maximumLength: 32
+                maximumLength: 30
                 onAccepted: passwordInput.forceActiveFocus()
 
                 Text {

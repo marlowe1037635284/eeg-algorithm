@@ -499,6 +499,13 @@ QVariantMap AppDatabase::authenticateOrRegister(const QString &phone, const QStr
     if (phone.isEmpty() || !ensureOpen())
         return result;
 
+    // 用户名最多 30 个字符（前端输入框也有同样的长度限制）
+    if (phone.length() > 30)
+    {
+        result[QStringLiteral("message")] = QStringLiteral("用户名不能超过 30 个字符");
+        return result;
+    }
+
     // 内置超级管理员：凭据写死在代码里，不查库。命中后无论成败都不落库、
     // 也不进用户列表（列表查询另有过滤，双保险）。
     // 「登录成功」的审计由 setCurrentUser 的状态迁移统一记录，这里不重复记
@@ -1663,6 +1670,12 @@ bool valid_account(const QString &account, QString *message)
     if (trimmed.isEmpty())
     {
         *message = QStringLiteral("请填写用户名");
+        return false;
+    }
+    // 用户名最多 30 个字符（前端输入框也有同样的长度限制）
+    if (trimmed.length() > 30)
+    {
+        *message = QStringLiteral("用户名不能超过 30 个字符");
         return false;
     }
     // admin 是代码内置的超级管理员，账号名保留，不允许再建同名业务账号

@@ -912,7 +912,7 @@ Item {
                 clip: true
                 selectionColor: Design.primary
                 selectedTextColor: "#ffffff"
-                maximumLength: 64
+                maximumLength: 30
                 onTextEdited: fieldRow.edited(text)
             }
 

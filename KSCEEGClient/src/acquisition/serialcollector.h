@@ -119,6 +119,10 @@ signals:
                        qint64 frame_number_skips);
     void status_message(const QString &message);
     void failed(const QString &message);
+    // 「设备失去连接」：拔线 / 掉电 / 驱动把设备移除（串口报 ResourceError）时才发。
+    // 必须与 failed() 分开 —— failed 还会用于落盘失败、命令发送失败这些
+    // 「采集仍在继续」的情形，界面不该为它们弹断连警示框
+    void device_lost(const QString &message);
     // 「正在采集」。它**只**由 Start / Stop 命令决定，与落盘成败无关。
     //
     // 必须与 recording_changed 分开：落盘失败（目录只读、网络盘掉线）时采集是

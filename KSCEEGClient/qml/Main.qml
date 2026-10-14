@@ -34,6 +34,10 @@ ApplicationWindow {
     // ---------- 路由 ----------
     property string currentPage: "workbench"
     property string activeDialog: ""
+    // 「设备断开连接」警示框。它不走 activeDialog 单值路由 —— 断连可能发生在
+    // 已经弹着别的框的时候，单值路由会被覆盖或覆盖掉别的框，盖不住，
+    // 所以用一个独立的开关盖在最上层（与 LicenseAlertDialog 同一范式）
+    property bool deviceDisconnectVisible: false
     // 弹「采集记录预览」时要点开的那条记录号
     property string pendingRecordNo: ""
 
@@ -110,6 +114,16 @@ ApplicationWindow {
         }
     }
 
+    // 采集中设备失去连接（拔线 / 掉电）→ 在页面最上层弹警示框。
+    // 信号只在「当时正在采集」时从 AcquisitionBridge 发出，单纯开着串口没采集
+    // 时拔线不会打扰用户（顶栏的连接胶囊照样会自己变成「未连接」）
+    Connections {
+        target: Acq
+        function onDeviceDisconnected() {
+            window.deviceDisconnectVisible = true
+        }
+    }
+
     DesignCanvas {
         anchors.fill: parent
 
@@ -174,6 +188,15 @@ ApplicationWindow {
         // 放在 Toast 之前，让「轻提示」仍然压在最上层（与下面的说明一致）
         LicenseAlertDialog {
             visible: License.checked && !License.valid
+        }
+
+        // 采集中设备断开连接的警示框：盖在业务页与所有业务弹窗之上，
+        // 但不挡 Toast（它只占顶栏中间一小条）。两个按钮都只关掉这个框 ——
+        // 不额外跳页，用户自己决定接下来怎么做
+        DeviceDisconnectDialog {
+            visible: window.deviceDisconnectVisible
+            onDismissed: window.deviceDisconnectVisible = false
+            onConfirmed: window.deviceDisconnectVisible = false
         }
 
         // 轻提示。放在弹窗层**之后**，所以即使弹着框也能看见

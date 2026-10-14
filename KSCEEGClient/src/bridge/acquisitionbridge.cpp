@@ -434,6 +434,8 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
                      &AcquisitionBridge::on_port_open_failed, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::port_closed, this,
                      &AcquisitionBridge::on_port_closed, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::device_lost, this,
+                     &AcquisitionBridge::on_device_lost, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::stats_changed, this,
                      &AcquisitionBridge::on_stats_changed, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::status_message, this,
@@ -1878,6 +1880,18 @@ void AcquisitionBridge::on_port_closed(const QString &message)
     reset_port_flags();
     set_status(message);
     emit logMessage(message);
+}
+
+void AcquisitionBridge::on_device_lost(const QString &message)
+{
+    // 只在采集进行中才提示。device_lost 排在 collecting_changed(false) 之前入队，
+    // 所以此刻 m_collecting 仍是断开前的真实状态 —— 只有「采集中被拔线 / 掉电」
+    // 会走到这里；单纯开着串口没采集时拔线不打扰用户（顶栏胶囊照样会变「未连接」）
+    Q_UNUSED(message);
+    if (m_collecting)
+    {
+        emit deviceDisconnected();
+    }
 }
 
 void AcquisitionBridge::on_stats_changed(qint64 received, qint64 saved, qint64 dropped,

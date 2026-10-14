@@ -852,7 +852,12 @@ void SerialCollector::run()
         }
         else if (port.error() == QSerialPort::ResourceError)
         {
-            emit failed(tr("串口异常断开：%1").arg(port.errorString()));
+            const QString reason = tr("串口异常断开：%1").arg(port.errorString());
+            emit failed(reason);
+            // 单独再发一条「设备失去连接」。界面据此在最上层弹断连警示框 ——
+            // 必须在 collecting_changed(false) 之前发：它排在那个信号前面入队，
+            // 接收方处理它时「当时是否正在采集」还是断开前的真实状态
+            emit device_lost(reason);
             break;
         }
 

@@ -337,6 +337,9 @@ public slots:
 signals:
     void availablePortsChanged();
     void portStateChanged();
+    // 采集进行中设备失去连接（拔线 / 掉电）。界面据此在最上层弹警示框。
+    // 只在「当时正在采集」时发出 —— 单纯开着串口没采集时拔线不打扰用户
+    void deviceDisconnected();
     void collectingChanged();
     void recordingPathChanged();
     void statusTextChanged();
@@ -366,6 +369,7 @@ private:
     void on_port_opened(const QString &message);
     void on_port_open_failed(const QString &message);
     void on_port_closed(const QString &message);
+    void on_device_lost(const QString &message);
     void on_stats_changed(qint64 received, qint64 saved, qint64 dropped, qint64 frame_skips);
     void on_status_message(const QString &message);
     void on_failed(const QString &message);

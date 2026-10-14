@@ -19,6 +19,20 @@ def band_rms_values(
     filtered = zero_phase_filter(values, sos, "topography_band_filter")
     return np.ascontiguousarray(np.sqrt(np.mean(np.square(filtered, dtype=np.float64), axis=1)), dtype=np.float32)
 
+def summarize_electrode_values(
+    electrode_values: NDArray[np.float32],
+    channel_names: tuple[str, ...],
+) -> tuple[str, float, float]:
+    peak_index = int(np.argmax(electrode_values))
+
+    return (
+        channel_names[peak_index],             # 峰值电极名称
+        float(electrode_values[peak_index]),   # 最大RMS
+        float(np.mean(electrode_values)),     # 电极平均RMS
+    )
+
+
+
 
 def interpolate_topography(
     electrode_values: NDArray[np.float32],

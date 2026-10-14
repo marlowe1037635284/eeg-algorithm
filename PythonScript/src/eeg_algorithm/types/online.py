@@ -138,7 +138,9 @@ class TopographyResult:
     head_mask: NDArray[np.bool_]
     electrode_values: NDArray[np.float32]
     electrode_names: tuple[str, ...]
-
+    peak_electrode: str
+    peak_rms: float
+    mean_rms: float
 
 @dataclass(frozen=True)
 class SpectrumResult:
@@ -149,7 +151,7 @@ class SpectrumResult:
     actual_time_range: AbsoluteTimeRange
     frequencies_hz: NDArray[np.float32]
     psd: NDArray[np.float32]
-
+    peak_frequencies_hz: dict[str, float | None]
 
 @dataclass(frozen=True)
 class SessionStatus:

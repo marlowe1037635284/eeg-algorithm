@@ -269,45 +269,63 @@ Item {
                     font.pixelSize: 16
                 }
 
-                // 下载图标：一个向下的箭头 + 底下的托盘，用两个矩形拼出来，
-                // 不值得为此单拉一个 SVG 资源
+                // 导出图标：一个开口方框 + 指向右上的箭头（原型图 355.png 的样式），
+                // 用几个矩形拼出来，不值得为此单拉一个 SVG 资源。
+                // 之前画的是「向下箭头 + 托盘」的下载图标，与原型不一致
                 Item {
                     x: 16
                     anchors.verticalCenter: parent.verticalCenter
                     width: 16
                     height: 16
 
+                    // 方框：左竖、底横、右竖三段，右上角留口给箭头出去
                     Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 1
+                        x: 1
+                        y: 4
                         width: 2
-                        height: 9
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 6
-                        width: 7
-                        height: 2
-                        rotation: 45
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 6
-                        width: 7
-                        height: 2
-                        rotation: -45
+                        height: 10
                         color: "#ffffff"
                     }
 
                     Rectangle {
                         x: 1
-                        y: 13
-                        width: 14
+                        y: 12
+                        width: 12
                         height: 2
+                        color: "#ffffff"
+                    }
+
+                    Rectangle {
+                        x: 11
+                        y: 9
+                        width: 2
+                        height: 5
+                        color: "#ffffff"
+                    }
+
+                    // 箭杆：45° 斜杠，从框内指向右上
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: 2
+                        height: 9
+                        rotation: -45
+                        color: "#ffffff"
+                    }
+
+                    // 箭头：右上角的两段短线拼成「⌐」
+                    Rectangle {
+                        x: 8
+                        y: 2
+                        width: 6
+                        height: 2
+                        color: "#ffffff"
+                    }
+
+                    Rectangle {
+                        x: 12
+                        y: 2
+                        width: 2
+                        height: 6
                         color: "#ffffff"
                     }
                 }

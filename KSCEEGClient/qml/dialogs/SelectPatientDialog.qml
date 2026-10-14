@@ -280,6 +280,7 @@ Item {
                 }
 
                 Text {
+                    id: noText
                     x: 18
                     y: root.rowY(index)
                     text: Privacy.masked(modelData.no)
@@ -289,8 +290,12 @@ Item {
                     font.pixelSize: 14
                 }
 
+                // 姓名起点跟在上面的病历号之后：病历号长的（如 A0261012026）
+                // 会顶到固定的 97 上，和姓名叠成一团。这里取「设计稿位置」与
+                // 「病历号实际右边缘+空隙」里较大的那个，与上方选中卡片同一套做法
                 Text {
-                    x: 97
+                    id: nameText
+                    x: Math.max(97, noText.x + noText.width + 8)
                     y: root.rowY(index)
                     text: Privacy.masked(modelData.name)
                     color: Design.textPrimary
@@ -300,7 +305,7 @@ Item {
                 }
 
                 Text {
-                    x: 158
+                    x: Math.max(158, nameText.x + nameText.width + 8)
                     y: root.rowY(index)
                     text: root.rowDesc(modelData)
                     color: Design.textSecondary

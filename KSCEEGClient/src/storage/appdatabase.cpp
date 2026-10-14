@@ -1499,8 +1499,13 @@ QVariantList AppDatabase::tags()
     if (!ensureOpen())
         return rows;
 
+    // used：这个标签名有没有被任何一段历史事件标注过（session_events.label 按名字关联）。
+    // 「已使用」的标签在界面上不允许删除（删除按钮置灰），改名字时要同步历史事件
     QSqlQuery query(m_database);
-    if (!query.exec(QStringLiteral("SELECT id, name, code, color FROM tags ORDER BY id")))
+    if (!query.exec(QStringLiteral(
+            "SELECT t.id, t.name, t.code, t.color, "
+            "(SELECT COUNT(*) FROM session_events e WHERE e.label = t.name) AS used "
+            "FROM tags t ORDER BY t.id")))
     {
         qWarning() << "[db] 查询标签失败:" << query.lastError().text();
         return rows;
@@ -1513,6 +1518,7 @@ QVariantList AppDatabase::tags()
         row[QStringLiteral("name")] = query.value(1).toString();
         row[QStringLiteral("code")] = query.value(2).toString();
         row[QStringLiteral("color")] = query.value(3).toString();
+        row[QStringLiteral("used")] = query.value(4).toInt() > 0;
         rows.append(row);
     }
     return rows;
@@ -1583,6 +1589,17 @@ QVariantMap AppDatabase::updateTag(int tag_id, const QString &name, const QStrin
         return result;
     }
 
+    // 改名字之前先记下旧名：session_events 是按标签名关联的，改名后要拿旧名
+    // 去把历史事件的 label / color 一并改掉，否则历史标注会指向一个不存在的标签
+    QString oldName;
+    {
+        QSqlQuery nameQuery(m_database);
+        nameQuery.prepare(QStringLiteral("SELECT name FROM tags WHERE id = ?"));
+        nameQuery.addBindValue(tag_id);
+        if (nameQuery.exec() && nameQuery.next())
+            oldName = nameQuery.value(0).toString();
+    }
+
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("UPDATE tags SET name = ?, code = ?, color = ? WHERE id = ?"));
     query.addBindValue(trimmed);
@@ -1596,6 +1613,19 @@ QVariantMap AppDatabase::updateTag(int tag_id, const QString &name, const QStrin
         return result;
     }
 
+    // 同步历史事件：新老名称都要改（名称没变时只更新颜色，也无副作用）
+    if (!oldName.isEmpty())
+    {
+        QSqlQuery sync(m_database);
+        sync.prepare(QStringLiteral(
+            "UPDATE session_events SET label = ?, color = ? WHERE label = ?"));
+        sync.addBindValue(trimmed);
+        sync.addBindValue(color);
+        sync.addBindValue(oldName);
+        if (!sync.exec())
+            qWarning() << "[db] 同步历史标签失败:" << sync.lastError().text();
+    }
+
     result[QStringLiteral("success")] = true;
     return result;
 }
@@ -1604,6 +1634,17 @@ bool AppDatabase::removeTag(int tag_id)
 {
     if (!ensureOpen())
         return false;
+
+    // 已经用它标注过历史事件的标签不允许删除（界面上删除按钮也置灰）：
+    // 删掉会让那些历史事件的标注变成一个无主的名字
+    {
+        QSqlQuery usedQuery(m_database);
+        usedQuery.prepare(QStringLiteral(
+            "SELECT COUNT(*) FROM session_events WHERE label = (SELECT name FROM tags WHERE id = ?)"));
+        usedQuery.addBindValue(tag_id);
+        if (usedQuery.exec() && usedQuery.next() && usedQuery.value(0).toInt() > 0)
+            return false;
+    }
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral("DELETE FROM tags WHERE id = ?"));

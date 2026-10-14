@@ -59,6 +59,8 @@ ApplicationWindow {
     property string pendingTagName: ""
     // 弹「删除记录」确认框时针对的那条记录号
     property string pendingRecordNoToDelete: ""
+    // 弹「删除单条事件标注」确认框时针对的那一条下标（-1 表示无）
+    property int pendingEventIndex: -1
     // 本次采集属于哪位患者（用来在停止时把采集记录补全）。空串表示没有进行中的会话
     property string openSessionPatient: ""
     // 从患者管理页点「记录」进来时带的历史记录页过滤条件
@@ -282,6 +284,8 @@ ApplicationWindow {
         case "changePassword": return changePasswordComponent
         case "confirmDeleteRecord": return confirmDeleteRecordComponent
         case "confirmDeleteTag":    return confirmDeleteTagComponent
+        case "confirmClearEvents":  return confirmClearEventsComponent
+        case "confirmDeleteEvent":  return confirmDeleteEventComponent
         case "confirmLogout":       return confirmLogoutComponent
         case "deviceInfo":          return deviceInfoComponent
         default:              return null
@@ -482,6 +486,12 @@ ApplicationWindow {
             onSelectPatientRequested: window.activeDialog = "selectPatient"
             onFilterRequested: window.activeDialog = "filter"
             onDeviceInfoRequested: window.activeDialog = "deviceInfo"
+            // 事件标注的清空 / 删除：弹二次确认，确认后才真正执行
+            onClearEventsRequested: window.activeDialog = "confirmClearEvents"
+            onDeleteEventRequested: (index) => {
+                window.pendingEventIndex = index
+                window.activeDialog = "confirmDeleteEvent"
+            }
         }
     }
 
@@ -912,6 +922,47 @@ ApplicationWindow {
     }
 
     Component {
+        id: confirmClearEventsComponent
+
+        ConfirmDialog {
+            title: qsTr("清空事件标注")
+            confirmText: qsTr("清空")
+            danger: true
+            message: qsTr("确定要清空全部 %1 条事件标注吗？清空后无法恢复。").arg(Acq.eventCount)
+            onDismissed: window.closeDialog()
+            onAccepted: {
+                window.closeDialog()
+                Acq.clear_events()
+                window.showToast(qsTr("已清空事件标注"), "success")
+            }
+        }
+    }
+
+    Component {
+        id: confirmDeleteEventComponent
+
+        ConfirmDialog {
+            title: qsTr("删除事件标注")
+            confirmText: qsTr("删除")
+            danger: true
+            message: qsTr("确定要删除这条事件标注吗？删除后无法恢复。")
+            onDismissed: {
+                window.closeDialog()
+                window.pendingEventIndex = -1
+            }
+            onAccepted: {
+                var index = window.pendingEventIndex
+                window.closeDialog()
+                window.pendingEventIndex = -1
+                if (index >= 0) {
+                    Acq.remove_event(index)
+                    window.showToast(qsTr("已删除事件标注"), "success")
+                }
+            }
+        }
+    }
+
+    Component {
         id: userEditComponent
 
         UserDialog {
@@ -1034,6 +1085,13 @@ ApplicationWindow {
         // 脱敏开关先同步一次：它存在库里，与登录与否无关，
         // 早于任何页面出现，避免首帧闪一下未脱敏的数据
         window.syncPrivacy()
+
+        // 「默认通道数」在启动时就应用到工作台：这个设置存在库里，
+        // 只在「保存设置」时同步给 Acq 的话，重启后工作台又回到默认的 16 通道，
+        // 等于设置没生效。启动时读一次，让档位与设置保持一致
+        const defaultChannels = Number(appDatabase.setting("default_channels", "16"))
+        if (defaultChannels > 0)
+            Acq.channelCount = defaultChannels
 
         // 账号库在 AppDatabase 构造时就建好了表，这里只负责回填输入框。
         //

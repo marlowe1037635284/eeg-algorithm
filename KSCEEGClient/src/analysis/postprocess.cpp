@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QTextStream>
 #include <QTimer>
+#include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtMath>
 
@@ -78,7 +79,8 @@ const BandDef kBands[5] = {
     {"theta", "θ", "Theta", 4.0, 8.0, "#4a90c2"},
     {"alpha", "α", "Alpha", 8.0, 13.0, "#7ec850"},
     {"beta", "β", "Beta", 13.0, 30.0, "#f2a03d"},
-    {"gamma", "γ", "Gamma", 30.0, 45.0, "#f2d024"},
+    // γ 原来用亮黄 #f2d024，在浅色底上几乎看不清；换成紫色，与其他频带同等的可读性
+    {"gamma", "γ", "Gamma", 30.0, 45.0, "#8e5bd0"},
 };
 
 constexpr int kBandCount = 5;
@@ -936,6 +938,15 @@ QImage render_spectrum_image(const Psd &psd, double f_min, double f_max,
         QColor tint(kBands[i].color);
         tint.setAlpha(38);
         painter.fillRect(QRectF(to_x(low), 0.0, to_x(high) - to_x(low), height), tint);
+    }
+
+    // γ 之上（>45Hz）在原型里仍是连续的背景带；只铺到 45Hz 会留一段白底
+    const double tail_low = std::min(kBands[kBandCount - 1].high_hz, f_max);
+    if (f_max > tail_low)
+    {
+        QColor tint(kBands[kBandCount - 1].color);
+        tint.setAlpha(38);
+        painter.fillRect(QRectF(to_x(tail_low), 0.0, to_x(f_max) - to_x(tail_low), height), tint);
     }
 
     // 曲线。dB 下限以下夹到边界上（画到图外会变成一条穿出画布的斜线）
@@ -2702,15 +2713,26 @@ QVariantMap export_result(bool success, const QString &message, const QString &p
 
 bool prepare_directory(const QString &directory, QString *error)
 {
-    QDir dir(directory);
     if (directory.trimmed().isEmpty())
     {
         *error = QObject::tr("没有可用的导出目录");
         return false;
     }
+    // 目录可能来自 QML 的 FolderDialog，是 "file:///C:/..." 形式的 URL；
+    // 直接交给 QDir 会被当成字面量路径，mkpath 失败。这里统一转成本地路径。
+    QString path = directory;
+    if (path.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
+    {
+        const QString local = QUrl(path).toLocalFile();
+        if (!local.isEmpty())
+            path = local;
+    }
+    path = QDir::fromNativeSeparators(path);
+
+    QDir dir(path);
     if (!dir.exists() && !dir.mkpath(QStringLiteral(".")))
     {
-        *error = QObject::tr("无法创建导出目录：%1").arg(directory);
+        *error = QObject::tr("无法创建导出目录：%1").arg(path);
         return false;
     }
     return true;

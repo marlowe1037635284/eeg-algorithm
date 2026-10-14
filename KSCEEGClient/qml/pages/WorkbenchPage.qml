@@ -26,6 +26,10 @@ Item {
     signal deviceInfoRequested()
     // 需要在界面上说一句话（阻抗扫描完成、导出结果之类），由外层弹轻提示
     signal notifyRequested(string message, string kind)
+    // 事件标注的「清空 / 删除」都是不可撤销操作，需要二次确认。
+    // 面板不自己弹框，把意图交上来，由 Main.qml 统一路由确认框
+    signal clearEventsRequested()
+    signal deleteEventRequested(int index)
 
     property string userName: "管理员"
     property string userRole: "管理员"
@@ -538,7 +542,14 @@ Item {
                     // 波形/阻抗/落盘的通道数对不上
                     enabled: !root.collecting
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: Acq.channelCount = modelData.value
+                    onClicked: {
+                        // 切档位会重建泳道与频谱默认通道，界面变化不小，
+                        // 给一条提示让用户确知「刚才那下生效了」（点当前档位不提示）
+                        if (Acq.channelCount === modelData.value)
+                            return
+                        Acq.channelCount = modelData.value
+                        root.notifyRequested(qsTr("已切换到 %1 通道").arg(modelData.value), "success")
+                    }
                 }
             }
         }
@@ -817,6 +828,8 @@ Item {
         height: 296
         collecting: root.collecting
         tags: root.tags
+        onClearRequested: root.clearEventsRequested()
+        onDeleteRequested: (index) => root.deleteEventRequested(index)
     }
 
     TopographyPanel {

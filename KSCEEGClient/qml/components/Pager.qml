@@ -45,11 +45,13 @@ Item {
     implicitHeight: 34
 
     // 共 N 条记录（当前显示 M 条）
+    // 「当前显示 M 条」量的是**本页**实际列出的行数（visibleCount），
+    // 不是过滤后的总条数 —— 每页只有 15 行，写 filteredCount 会显示成总条数
     Text {
         x: 19
         y: 1
         text: qsTr("共 %1 %2（当前显示 %3 条）")
-              .arg(root.totalCount).arg(root.countUnit).arg(root.filteredCount)
+              .arg(root.totalCount).arg(root.countUnit).arg(root.visibleCount)
         color: Design.textSecondary
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular

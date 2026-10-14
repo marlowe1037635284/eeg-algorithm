@@ -1272,6 +1272,18 @@ void AcquisitionBridge::set_channel_count(int count)
     // 从零状态消掉重参考带进来的直流要四五秒 —— 每次切档位都会换来一段
     // 从十几万 µV 衰减下来的巨大瞬变，波形、地形图、频谱一起受影响
     reset_channels(clamped);
+
+    // 频谱默认通道跟着档位走：切换档位后，原来选中的那一路可能已经不在显示
+    // 集合里了，继续留着旧名字会让频谱画一条界面上看不到的通道。回到新档位的
+    // 第一路（16 档下就是 Fp1）
+    const QStringList names = channel_names();
+    const QString first = names.isEmpty() ? QString() : names.first();
+    if (!first.isEmpty() && first != m_spectrum_channel)
+    {
+        m_spectrum_channel = first;
+        emit spectrumChannelChanged();
+    }
+
     emit logMessage(tr("显示通道数改为 %1").arg(clamped));
 }
 

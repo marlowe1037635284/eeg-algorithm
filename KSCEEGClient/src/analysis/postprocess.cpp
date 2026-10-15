@@ -97,6 +97,9 @@ constexpr int kTopoImageSize = 256;
 // 一次 Welch 最多平均多少段。上限不是精度需要，是耗时需要（见 welch_psd）
 constexpr int kMaxPsdSegments = 64;
 
+// 被选中的事件标注（波形上那根竖线与顶端圆点）的高亮色
+const QColor kSelectedEventColor(218, 168, 42);
+
 // ==================== 双二阶与滤波器设计 ====================
 
 struct Biquad
@@ -769,7 +772,7 @@ double stable_channel_range_uv(const QVector<double> &row, int chunk)
 QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rate,
                          double window_start, double window_seconds, int current_channel,
                          const QVector<double> &channel_range_uv, int width,
-                         const QVariantList &events)
+                         const QVariantList &events, int selected_event)
 {
     const int channels = data.size();
     const int height = channels * PostProcess::lane_height();
@@ -794,10 +797,10 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
     }
 
     // 事件竖线（画在波形之下）。与预览弹窗同一套：划出窗口的事件跟着消失，
-    // 不钉在窗口边上
-    for (const QVariant &item : events)
+    // 不钉在窗口边上。被选中的那根换成高亮色
+    for (int i = 0; i < events.size(); ++i)
     {
-        const QVariantMap event = item.toMap();
+        const QVariantMap event = events.at(i).toMap();
         const double offset = event.value(QStringLiteral("offsetSeconds")).toDouble();
         if (offset < window_start || offset > window_start + window_seconds)
             continue;
@@ -805,6 +808,8 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         QColor color(event.value(QStringLiteral("color")).toString());
         if (!color.isValid())
             color = QColor(QStringLiteral("#7c3aed"));
+        if (i == selected_event)
+            color = kSelectedEventColor;
         color.setAlpha(150);
         QPen pen(color, 1.0, Qt::DashLine);
         painter.setPen(pen);
@@ -891,9 +896,9 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
 
     // 事件顶端的小圆点
     painter.setRenderHint(QPainter::Antialiasing, true);
-    for (const QVariant &item : events)
+    for (int i = 0; i < events.size(); ++i)
     {
-        const QVariantMap event = item.toMap();
+        const QVariantMap event = events.at(i).toMap();
         const double offset = event.value(QStringLiteral("offsetSeconds")).toDouble();
         if (offset < window_start || offset > window_start + window_seconds)
             continue;
@@ -901,6 +906,8 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         QColor color(event.value(QStringLiteral("color")).toString());
         if (!color.isValid())
             color = QColor(QStringLiteral("#7c3aed"));
+        if (i == selected_event)
+            color = kSelectedEventColor;
         painter.setPen(Qt::NoPen);
         painter.setBrush(color);
         painter.drawEllipse(QPointF(x, 5.0), 4.0, 4.0);
@@ -1143,6 +1150,7 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
     m_window_seconds = std::min(5.0, std::max(0.5, m_duration_seconds));
     m_window_start = 0.0;
     m_current_channel = 0;
+    m_selected_event = -1;
 
     // 事件随 info 一起进来（页面从库里取好）。**不在这里查库**：本类不持有
     // AppDatabase，也不该知道记录是怎么存的 —— 它只管把一段数据算成一屏图
@@ -1186,6 +1194,7 @@ void PostProcess::close()
     m_channels = 0;
     m_record_info.clear();
     m_events.clear();
+    m_selected_event = -1;
     m_info.clear();
     {
         // 与 on_recompute_finished 同一个理由：结果里有 QImage / 容器，
@@ -1618,6 +1627,18 @@ void PostProcess::set_window_seconds(double value)
     schedule_recompute();
 }
 
+// 把某个事件标成选中的那条。越界的下标一律当「没选」处理 —— 界面拿的是
+// events 里的下标，事件列表换过之后旧下标可能已经指到界外
+void PostProcess::set_selected_event(int value)
+{
+    const int clamped = (value >= 0 && value < m_events.size()) ? value : -1;
+    if (clamped == m_selected_event)
+        return;
+    m_selected_event = clamped;
+    emit viewChanged();
+    schedule_recompute();
+}
+
 void PostProcess::set_view_size(int width, int height)
 {
     if (width <= 0 || height <= 0)
@@ -1720,6 +1741,7 @@ void PostProcess::run_recompute()
     job.spectrum_width = std::max(64, m_view_size.width());
     job.spectrum_height = std::max(64, m_view_size.height());
     job.events = m_events;
+    job.selected_event = m_selected_event;
     job.record_info = m_record_info;
     // 把最近一份结果一并交给工作线程：窗口类改动命中指纹时，它只重画波形
     job.previous = m_previous;
@@ -2456,7 +2478,8 @@ void PostProcess::compute_wave(Result &result, const QVector<QVector<double>> &d
 
     result.wave_image = render_wave_image(data, sample_rate, job.window_start,
                                           job.window_seconds, job.current_channel,
-                                          channel_range_uv, job.wave_width, job.events);
+                                          channel_range_uv, job.wave_width, job.events,
+                                          job.selected_event);
 }
 
 // 频谱图那一张的出图。原来曲线取自 Python 对**分析片段**（整段）算的 Welch，窗口动

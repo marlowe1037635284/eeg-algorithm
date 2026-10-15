@@ -55,6 +55,17 @@ Item {
         view.contentY = target
     }
 
+    // 点「标注放大器」里的某一行 = 跳到这条标注：先选中它（波形上那根竖线与顶端
+    // 圆点随即换成高亮色、该行也点亮），再把时间窗挪到以它为中心的位置 ——
+    // 窗头窗尾都夹在记录范围内
+    function jumpToEvent(index) {
+        Analysis.selectedEvent = index
+        const offset = Analysis.events[index].offsetSeconds
+        Analysis.windowStartSeconds = Math.max(0, Math.min(
+            Analysis.durationSeconds - Analysis.windowSeconds,
+            offset - Analysis.windowSeconds / 2))
+    }
+
     // 绘图区底板（设计稿 003：1272×682、圆角 12、#D9D9D9 35%）。波形图由 C++
     // 画成透明底，没有这层底板波形就浮在舞台底色上；它同时兜住左侧通道名列与
     // 底部秒数刻度，是整个波形页的范围
@@ -92,6 +103,34 @@ Item {
             source: Analysis.revision > 0
                     ? "image://analysis/wave/" + Analysis.revision
                     : ""
+        }
+
+        // 事件标记的点击热区：C++ 画的那根竖线本身不是控件，这里按同一套
+        // x 公式（(时刻 - 窗口起点) / 窗口长 × 绘制区宽）叠一条窄条上去，
+        // 点中就把这条标注选上 —— 波形侧的高亮由 Analysis.selectedEvent 驱动
+        Repeater {
+            model: Analysis.events
+
+            delegate: Item {
+                required property var modelData
+                required property int index
+
+                readonly property real offset: modelData.offsetSeconds
+
+                x: (offset - Analysis.windowStartSeconds)
+                   / Math.max(0.001, Analysis.windowSeconds) * view.width - width / 2
+                y: 0
+                width: 12
+                height: view.contentHeight
+                visible: offset >= Analysis.windowStartSeconds
+                         && offset <= Analysis.windowStartSeconds + Analysis.windowSeconds
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: Analysis.selectedEvent = index
+                }
+            }
         }
     }
 
@@ -185,11 +224,16 @@ Item {
 
                 delegate: Rectangle {
                     required property var modelData
+                    required property int index
 
                     width: eventList.width
                     height: root.pinRowHeight
                     radius: 6
-                    color: Qt.rgba(0, 0, 0, 0.06)
+                    // 选中的那一行点亮成高亮色（与波形标记同色，透明度淡一档），
+                    // 与波形上的选中状态共享 Analysis.selectedEvent
+                    color: index === Analysis.selectedEvent
+                           ? Qt.rgba(218 / 255, 168 / 255, 42 / 255, 0.20)
+                           : Qt.rgba(0, 0, 0, 0.06)
 
                     Rectangle {
                         x: 12
@@ -221,6 +265,12 @@ Item {
                         font.family: Design.fontFamily
                         font.styleName: Design.styleRegular
                         font.pixelSize: 14
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.jumpToEvent(index)
                     }
                 }
             }

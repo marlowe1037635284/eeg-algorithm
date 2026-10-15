@@ -134,6 +134,10 @@ class PostProcess : public QObject
                    NOTIFY viewChanged)
     Q_PROPERTY(double windowSeconds READ window_seconds WRITE set_window_seconds
                    NOTIFY viewChanged)
+    // 当前选中的事件标注（events 里的下标，-1 = 没选）。波形上那根事件竖线与顶端的
+    // 圆点选中后换成高亮色，弹窗里对应那一行也点亮 —— 两边共用这一份状态
+    Q_PROPERTY(int selectedEvent READ selected_event WRITE set_selected_event
+                   NOTIFY viewChanged)
     Q_PROPERTY(QStringList channelNames READ channel_names CONSTANT)
     Q_PROPERTY(QStringList channelColors READ channel_colors CONSTANT)
 
@@ -250,6 +254,7 @@ public:
     int current_channel() const { return m_current_channel; }
     double window_start_seconds() const { return m_window_start; }
     double window_seconds() const { return m_window_seconds; }
+    int selected_event() const { return m_selected_event; }
     QStringList channel_names() const;
     QStringList channel_colors() const;
 
@@ -311,6 +316,7 @@ public slots:
     void set_current_channel(int value);
     void set_window_start_seconds(double value);
     void set_window_seconds(double value);
+    void set_selected_event(int value);
 
 signals:
     void recordChanged();
@@ -426,6 +432,8 @@ private:
         // 事件标注（时刻 / 标签 / 颜色）。随任务一起拷进来，工作线程便不必
         // 反过来问 GUI 线程要数据 —— 那种反向依赖是死锁的经典配方
         QVariantList events;
+        // 当前选中的事件下标（-1 = 没选）。波形上那根竖线与顶端圆点据此换成高亮色
+        int selected_event = -1;
         // 基本信息那五行。报告页的「记录信息」一节直接用它，不再从 info 重新拼一遍
         QVariantList record_info;
         // 上一轮的结果快照。窗口类改动命中指纹时，compute 直接复用它、只重画波形、
@@ -575,6 +583,8 @@ private:
     int m_current_channel = 0;
     double m_window_start = 0.0;
     double m_window_seconds = 5.0;
+    // 当前选中的事件标注（events 里的下标，-1 = 没选）
+    int m_selected_event = -1;
     QSize m_view_size;
     // 最近一轮结果对应的片段（秒）与色标上限。单独存一份是为了让
     //「参数刚改、结果还没回来」的那一小段时间里界面拿到的仍是上一轮的值，

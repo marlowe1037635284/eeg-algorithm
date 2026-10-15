@@ -280,8 +280,9 @@ Item {
                 anchors.fill: parent
                 anchors.leftMargin: 22
                 anchors.rightMargin: 22
-                // 同上，与内置超级管理员的密码一致（见 kBuiltinAdminPassword）
-                text: "admin123456"
+                // Debug 构建时预填内置管理员密码，方便开发测试；
+                // Release 构建时密码框必须为空，用户需手动输入
+                text: AppDebugBuild ? "admin123456" : ""
                 color: "#3d3d3d"
                 selectionColor: Design.primary
                 selectedTextColor: "#ffffff"

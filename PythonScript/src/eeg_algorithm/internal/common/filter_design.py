@@ -27,7 +27,7 @@ def lowpass_sos(cutoff_hz: float, sample_rate_hz: float, order: int = 4) -> NDAr
 def bandpass_sos(low_hz: float, high_hz: float, sample_rate_hz: float, order: int = 4) -> NDArray[np.float64]:
     validate_frequency_edges(low_hz, high_hz, sample_rate_hz, "bandpass_sos")
     return signal.butter(order, (low_hz, high_hz), btype="bandpass", fs=sample_rate_hz, output="sos")
-
+ 
 
 def bandstop_sos(low_hz: float, high_hz: float, sample_rate_hz: float, order: int = 4) -> NDArray[np.float64]:
     validate_frequency_edges(low_hz, high_hz, sample_rate_hz, "bandstop_sos")

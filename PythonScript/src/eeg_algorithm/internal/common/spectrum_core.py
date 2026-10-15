@@ -39,3 +39,30 @@ def select_frequency_range(
     mask = (frequencies >= low_hz) & (frequencies <= high_hz)
     return np.ascontiguousarray(frequencies[mask]), np.ascontiguousarray(psd[..., mask])
 
+def band_peak_frequencies(
+    frequencies: NDArray[np.float32],
+    psd: NDArray[np.float32],
+) -> dict[str, float | None]:
+    """输入单通道PSD，返回五个频段的峰值频率，单位Hz。"""
+    bands = (
+        ("delta", 0.5, 4.0),
+        ("theta", 4.0, 8.0),
+        ("alpha", 8.0, 13.0),
+        ("beta", 13.0, 30.0),
+        ("gamma", 30.0, 45.0),
+    )
+
+    peaks = {}
+    for name, low, high in bands:
+        # 左闭右开，避免边界点同时属于两个频段。
+        mask = (frequencies >= low) & (frequencies < high)
+        band_f = frequencies[mask]
+        band_psd = psd[mask]
+
+        if band_psd.size == 0:
+            peaks[name] = None
+        else:
+            index = int(np.argmax(band_psd))
+            peaks[name] = float(band_f[index])
+
+    return peaks

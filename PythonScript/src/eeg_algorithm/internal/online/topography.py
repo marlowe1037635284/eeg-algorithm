@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from eeg_algorithm.types import AbsoluteTimeRange, ChannelLayout, SignalBlock, TopographyQuery, TopographyResult
 
-from eeg_algorithm.internal.common.topography_core import band_rms_values, interpolate_topography
+from eeg_algorithm.internal.common.topography_core import band_rms_values, interpolate_topography ,summarize_electrode_values
 from eeg_algorithm.internal.validation import validate_frequency_band
 
 
@@ -14,6 +14,10 @@ def compute_online_topography(
 ) -> TopographyResult:
     validate_frequency_band(query.band, layout.sample_rate_hz, "compute_online_topography")
     electrode_values = band_rms_values(rolling_signal.values, layout.sample_rate_hz, query.band)
+    peak_electrode, peak_rms, mean_rms = summarize_electrode_values(
+        electrode_values,
+        layout.channel_names,
+    )
     grid_x, grid_y, grid_values, head_mask = interpolate_topography(
         electrode_values, layout, query.grid_width, query.grid_height
     )
@@ -28,5 +32,8 @@ def compute_online_topography(
         head_mask=head_mask,
         electrode_values=electrode_values,
         electrode_names=layout.channel_names,
+        peak_electrode=peak_electrode,
+        peak_rms=peak_rms,
+        mean_rms=mean_rms,
     )
 

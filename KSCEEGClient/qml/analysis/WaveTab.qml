@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls.Basic
 import KSCEEGClient
 
 // 「数据分析与后处理」· 波形页。
@@ -26,6 +27,11 @@ Item {
     readonly property int pinSize: 36
     readonly property int pinInset: 4
     readonly property int pinGap: pinInset + pinSize
+
+    // 图钉点开后那块「标注放大器」：卡片宽、每行事件的高与行距
+    readonly property int pinPopupWidth: 240
+    readonly property int pinRowHeight: 38
+    readonly property int pinRowSpacing: 10
 
     // 绘制区（不含时间轴）作为波形图的像素尺寸报给 C++
     function report_size() {
@@ -91,22 +97,133 @@ Item {
 
     // ---------- 图钉 ----------
     // 卡片左上角的标记：浅灰圆底 + 图钉。波形已按 pinGap 整体下移，图钉落在
-    // 顶部那段空出来的绘制区里。声明在 Flickable 之后，压在波形图上层
+    // 顶部那段空出来的绘制区里。声明在 Flickable 之后，压在波形图上层。
+    // 点它开合「标注放大器」，开着时圆底转浅蓝、描边与图钉字形转主色
     Rectangle {
+        id: pin
+
         x: root.pinInset
         y: root.pinInset
         width: root.pinSize
         height: root.pinSize
         radius: root.pinSize / 2
-        color: "#d9d9d9"
+        color: pinPopup.visible ? "#e5e9eb" : "#d9d9d9"
+        border.width: 1
+        border.color: pinPopup.visible ? Design.primary : "transparent"
 
         Image {
             anchors.centerIn: parent
             width: 19
             height: 19
-            source: Design.assetRoot + "icons/icon-pin.svg"
+            source: Design.assetRoot
+                    + (pinPopup.visible ? "icons/icon-pin-active.svg"
+                                        : "icons/icon-pin.svg")
             sourceSize: Qt.size(19, 19)
             fillMode: Image.PreserveAspectFit
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: pinPopup.visible ? pinPopup.close() : pinPopup.open()
+        }
+    }
+
+    // ---------- 标注放大器 ----------
+    // 图钉展开的那块：这一路记录里标过的事件，圆点色号与波形上的事件竖线同源
+    //（都用 Analysis.events 里的 color），时间写墙钟、标签写当时选的那一个
+    Popup {
+        id: pinPopup
+
+        // 贴在图钉右侧、与图钉顶大致齐平
+        x: root.pinInset + root.pinSize + 10
+        y: root.pinInset + 4
+        width: root.pinPopupWidth
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        background: Rectangle {
+            radius: 12
+            color: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.92)
+        }
+
+        contentItem: Item {
+            implicitWidth: root.pinPopupWidth
+            implicitHeight: 50 + eventList.height + 10
+
+            Text {
+                x: 16
+                y: 13
+                text: qsTr("标注放大器")
+                color: Design.textPrimary
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
+                font.pixelSize: 16
+            }
+
+            Rectangle {
+                x: 14
+                y: 40
+                width: parent.width - 28
+                height: 1
+                color: Design.divider
+            }
+
+            ListView {
+                id: eventList
+
+                x: 14
+                y: 50
+                width: parent.width - 28
+                // 限高：事件标多了会一路往下铺，顶出窗口底部就没法看了
+                height: Math.min(contentHeight, 264)
+                spacing: root.pinRowSpacing
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                interactive: contentHeight > height
+                model: Analysis.events
+
+                delegate: Rectangle {
+                    required property var modelData
+
+                    width: eventList.width
+                    height: root.pinRowHeight
+                    radius: 6
+                    color: Qt.rgba(0, 0, 0, 0.06)
+
+                    Rectangle {
+                        x: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 12
+                        height: 12
+                        radius: 6
+                        // 颜色缺失时退回波形侧画竖线用的那个紫
+                        color: modelData.color && modelData.color.length > 0
+                               ? modelData.color : "#7c3aed"
+                    }
+
+                    Text {
+                        x: 58
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.wallClock
+                        color: "#333333"
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleMedium
+                        font.pixelSize: 16
+                    }
+
+                    Text {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.label
+                        color: Design.textSecondary
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 14
+                    }
+                }
+            }
         }
     }
 

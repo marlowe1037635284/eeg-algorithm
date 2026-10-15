@@ -221,6 +221,7 @@ qt_add_qml_module(appKSCEEGClient
         assets/icons/peak-badge.svg
         assets/icons/slider-thumb.svg
         assets/icons/icon-pin.svg
+        assets/icons/icon-pin-active.svg
 )
 
 # 字体文件又大（4 个字重共 26MB），塞进 Qt 资源会让 rcc 生成的 .cpp 膨胀到 130MB 以上，

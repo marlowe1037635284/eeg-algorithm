@@ -1231,10 +1231,13 @@ void PostProcess::build_record_info()
         QVariantMap{{QStringLiteral("label"), tr("采样率 / 幅值")},
                     {QStringLiteral("value"),
                      QStringLiteral("%1 Hz · 100 μV").arg(m_sample_rate)}},
+        // 电极贴合取的是**采集时实测的阻抗结果**（由界面在停止采集时落盘，
+        // 形如「16/16 良好」）。没有值就是那次采集没扫过阻抗 —— 写「未扫描」而不是
+        // 「—」：占位符看着像扫了却没出结果，与采集前确认弹窗同一口径
         QVariantMap{{QStringLiteral("label"), tr("电极贴合 / 事件")},
                     {QStringLiteral("value"),
                      QStringLiteral("%1 · %2 个")
-                         .arg(text("quality", QStringLiteral("—")),
+                         .arg(text("quality", tr("未扫描")),
                               text("eventCount", QStringLiteral("0")))}},
     };
 }

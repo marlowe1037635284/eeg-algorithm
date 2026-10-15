@@ -279,6 +279,26 @@ QDateTime parse_utc_stamp(const QString &raw)
     return stamp.toLocalTime();
 }
 
+// 文本落库前的归一：把 null QString 变成「空串」。
+//
+// 两者在业务上是同一件事，落到 SQL 上却完全不同：Qt 的 SQLite 驱动把 null QString
+// 绑成 SQL NULL，撞上 recording_sessions / session_events 这些 TEXT NOT NULL 的列
+// 就是「NOT NULL constraint failed」，**整条语句当场失败**，只留一行 qWarning，
+// 界面那边一点反应都没有。
+//
+// 而 QML 的空串经常是 null：JS 的字面量 ""（含三元表达式的 "" 分支）、函数返回的 ""
+// 传到 C++ 参数里 isNull() 为真（实测）。同一批字段里，有的（从输入框读来的）
+// 是非 null 空串、有的（界面自己拼的）是 null —— 这种差异正是它难查的原因。
+// 于是「采集几秒后停止」那条路上，电极贴合值（没扫阻抗时就是空串）一绑就把整条
+// UPDATE 打回去，历史记录里的时长永远是 00:00:00，事件数、落盘路径也一起丢。
+//
+// 凡是 QML 可能传空串的文本列，绑定前都过一遍这里
+QString text_for_sql(const QString &text)
+{
+    // 注意别写成 QString()：那是 null，与空串不是一回事
+    return text.isNull() ? QStringLiteral("") : text;
+}
+
 // 界面上写的 "2026-9-22 16:44:12"（月日时不补零）
 QString format_stamp(const QString &raw)
 {
@@ -398,6 +418,7 @@ bool AppDatabase::createTables()
                        "channel_count INTEGER NOT NULL DEFAULT 0,"
                        "sample_rate INTEGER NOT NULL DEFAULT 0,"
                        "event_count INTEGER NOT NULL DEFAULT 0,"
+                       "electrode_quality TEXT NOT NULL DEFAULT '',"
                        "file_path TEXT NOT NULL DEFAULT '')"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_sessions_patient "
                        "ON recording_sessions(patient_no)"),
@@ -443,6 +464,10 @@ bool AppDatabase::createTables()
     ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("event_count"),
                   QStringLiteral("INTEGER NOT NULL DEFAULT 0"));
     ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("file_path"),
+                  QStringLiteral("TEXT NOT NULL DEFAULT ''"));
+    // 采集时的电极贴合结果（「N/16 良好」）。老库没有这一列，补上后历史记录预览
+    // 才能显示采集当时实测的贴合值，而不是一个写死的占位
+    ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("electrode_quality"),
                   QStringLiteral("TEXT NOT NULL DEFAULT ''"));
 
     // 用户管理页要用到、而最初建表时没有的几列。老库上这几列不存在，
@@ -1046,7 +1071,7 @@ QVariantList AppDatabase::sessions(const QString &patient_no)
     QSqlQuery query(m_database);
     const QString columns =
         QStringLiteral("SELECT s.id, s.patient_no, p.name, s.started_at, s.duration_s,"
-                       "       s.channel_count, s.sample_rate, s.event_count"
+                       "       s.channel_count, s.sample_rate, s.event_count, s.electrode_quality"
                        "  FROM recording_sessions s"
                        "  LEFT JOIN patients p ON p.patient_no = s.patient_no");
 
@@ -1108,19 +1133,20 @@ QVariantList AppDatabase::sessions(const QString &patient_no)
         row[QStringLiteral("channels")] = QString::number(channels);
         row[QStringLiteral("rate")] = QStringLiteral("%1 Hz").arg(rate);
         row[QStringLiteral("events")] = QString::number(query.value(7).toInt());
-        // 电极质量没有数据源：协议一次只给 4 路不带电极名的阻抗值，
-        // 推不出「N/16 良好」。写死一个数字比留空更糟
-        row[QStringLiteral("quality")] = QStringLiteral("—");
+        // 电极贴合是采集结束时落盘的真实结果（「16/16 良好」）。没扫过阻抗的记录
+        // 这一列是空串，**原样返回**：显示成「—」还是「未扫描」由界面按自己的口径定。
+        // 数据层在这里写死一个占位的话，「没扫过」和「扫了但没读到」就分不开了
+        row[QStringLiteral("quality")] = query.value(8).toString();
         row[QStringLiteral("level")] = QString();
         rows.append(row);
     }
     return rows;
 }
 
-void AppDatabase::recordCollection(const QString &patient_no, int channel_count, int sample_rate)
+int AppDatabase::recordCollection(const QString &patient_no, int channel_count, int sample_rate)
 {
     if (!ensureOpen() || patient_no.trimmed().isEmpty())
-        return;
+        return -1;
 
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
@@ -1130,27 +1156,56 @@ void AppDatabase::recordCollection(const QString &patient_no, int channel_count,
     query.addBindValue(std::max(0, channel_count));
     query.addBindValue(std::max(0, sample_rate));
     if (!query.exec())
+    {
         qWarning() << "[db] 写采集记录失败:" << query.lastError().text();
+        return -1;
+    }
+    // SQLite 的 lastInsertId 返回 QVariant::LongLong，转 int 给 QML 用
+    return query.lastInsertId().toInt();
 }
 
 void AppDatabase::finishCollection(const QString &patient_no, int duration_seconds,
                                    int event_count, const QString &file_path,
-                                   const QVariantList &events)
+                                   const QString &electrode_quality,
+                                   const QVariantList &events,
+                                   int session_id)
 {
     if (!ensureOpen() || patient_no.trimmed().isEmpty())
         return;
 
-    // 补在**这一位患者最近一条**记录上：一次采集对应一条，停止时补的是刚开的那条。
-    // 用 id 排序取最大，而不是按时间字符串排 —— 同一秒内开两条时字符串分不出先后
+    // 这两个字段都可能是 QML 给的空串（没扫阻抗时电极贴合是 ""、
+    // 采集起不来时落盘路径也是 ""），必须是「空串」而不是 null，否则整条 UPDATE
+    // 会被 NOT NULL 约束打回去 —— 见 text_for_sql 的说明
+    const QString file_path_value = text_for_sql(file_path);
+    const QString quality_value = text_for_sql(electrode_quality);
+
     QSqlQuery query(m_database);
-    query.prepare(QStringLiteral(
-        "UPDATE recording_sessions SET duration_s = ?, event_count = ?, file_path = ? "
-        " WHERE id = (SELECT id FROM recording_sessions WHERE patient_no = ? "
-        "             ORDER BY id DESC LIMIT 1)"));
-    query.addBindValue(std::max(0, duration_seconds));
-    query.addBindValue(std::max(0, event_count));
-    query.addBindValue(file_path);
-    query.addBindValue(patient_no.trimmed());
+    if (session_id >= 0)
+    {
+        // 精确更新：用 recordCollection 返回的 id，避免子查询匹配错行
+        query.prepare(QStringLiteral(
+            "UPDATE recording_sessions SET duration_s = ?, event_count = ?, file_path = ?, "
+            " electrode_quality = ? WHERE id = ?"));
+        query.addBindValue(std::max(0, duration_seconds));
+        query.addBindValue(std::max(0, event_count));
+        query.addBindValue(file_path_value);
+        query.addBindValue(quality_value);
+        query.addBindValue(session_id);
+    }
+    else
+    {
+        // 回退：子查询找该患者最近一条记录
+        query.prepare(QStringLiteral(
+            "UPDATE recording_sessions SET duration_s = ?, event_count = ?, file_path = ?, "
+            " electrode_quality = ? "
+            " WHERE id = (SELECT id FROM recording_sessions WHERE patient_no = ? "
+            "             ORDER BY id DESC LIMIT 1)"));
+        query.addBindValue(std::max(0, duration_seconds));
+        query.addBindValue(std::max(0, event_count));
+        query.addBindValue(file_path_value);
+        query.addBindValue(quality_value);
+        query.addBindValue(patient_no.trimmed());
+    }
     if (!query.exec())
     {
         qWarning() << "[db] 补全采集记录失败:" << query.lastError().text();
@@ -1160,23 +1215,27 @@ void AppDatabase::finishCollection(const QString &patient_no, int duration_secon
     if (events.isEmpty())
         return;
 
-    // 事件要挂到刚补完的那条记录上，所以得把它的 id 取回来。取法必须与上面
-    // 那句 UPDATE 完全一致（同一位患者、id 最大的那条），否则事件会挂到别人的记录上
-    QSqlQuery locate(m_database);
-    locate.prepare(QStringLiteral(
-        "SELECT id FROM recording_sessions WHERE patient_no = ? ORDER BY id DESC LIMIT 1"));
-    locate.addBindValue(patient_no.trimmed());
-    if (!locate.exec() || !locate.next())
+    // 事件要挂到刚补完的那条记录上。优先用调用方传入的 session_id，
+    // 否则回退到子查询（与上面 UPDATE 的 WHERE 条件一致）
+    int effective_sid = session_id;
+    if (effective_sid < 0)
     {
-        qWarning() << "[db] 事件落库时找不到对应记录:" << patient_no;
-        return;
+        QSqlQuery locate(m_database);
+        locate.prepare(QStringLiteral(
+            "SELECT id FROM recording_sessions WHERE patient_no = ? ORDER BY id DESC LIMIT 1"));
+        locate.addBindValue(patient_no.trimmed());
+        if (!locate.exec() || !locate.next())
+        {
+            qWarning() << "[db] 事件落库时找不到对应记录:" << patient_no;
+            return;
+        }
+        effective_sid = locate.value(0).toInt();
     }
-    const int session_id = locate.value(0).toInt();
 
     // 重复写保护：同一份事件被写第二遍时先清掉旧的
     QSqlQuery clear(m_database);
     clear.prepare(QStringLiteral("DELETE FROM session_events WHERE session_id = ?"));
-    clear.addBindValue(session_id);
+    clear.addBindValue(effective_sid);
     clear.exec();
 
     QSqlQuery insert(m_database);
@@ -1186,11 +1245,13 @@ void AppDatabase::finishCollection(const QString &patient_no, int duration_secon
     for (const QVariant &entry : events)
     {
         const QVariantMap event = entry.toMap();
-        insert.bindValue(0, session_id);
+        insert.bindValue(0, effective_sid);
         insert.bindValue(1, event.value(QStringLiteral("offsetSeconds")).toDouble());
-        insert.bindValue(2, event.value(QStringLiteral("wallClock")).toString());
-        insert.bindValue(3, event.value(QStringLiteral("label")).toString());
-        insert.bindValue(4, event.value(QStringLiteral("dotColor")).toString());
+        // 取不到值（键不存在）时 toString() 给的是 null QString，同样要归一，
+        // 否则一条事件就会因 NOT NULL 约束写不进去
+        insert.bindValue(2, text_for_sql(event.value(QStringLiteral("wallClock")).toString()));
+        insert.bindValue(3, text_for_sql(event.value(QStringLiteral("label")).toString()));
+        insert.bindValue(4, text_for_sql(event.value(QStringLiteral("dotColor")).toString()));
         if (!insert.exec())
         {
             qWarning() << "[db] 写入事件失败:" << insert.lastError().text();
@@ -1250,7 +1311,8 @@ QVariantMap AppDatabase::session(const QString &record_no)
     QSqlQuery query(m_database);
     query.prepare(QStringLiteral(
         "SELECT s.id, s.patient_no, p.name, p.gender, p.age, p.department, s.started_at,"
-        "       s.duration_s, s.channel_count, s.sample_rate, s.event_count, s.file_path"
+        "       s.duration_s, s.channel_count, s.sample_rate, s.event_count, s.file_path,"
+        "       s.electrode_quality"
         "  FROM recording_sessions s"
         "  LEFT JOIN patients p ON p.patient_no = s.patient_no"
         " WHERE s.id = ? LIMIT 1"));
@@ -1282,8 +1344,10 @@ QVariantMap AppDatabase::session(const QString &record_no)
     row[QStringLiteral("rate")] = query.value(9).toInt();
     row[QStringLiteral("events")] = query.value(10).toInt();
     row[QStringLiteral("filePath")] = query.value(11).toString();
-    // 电极质量没有数据源（协议只给 4 路不带电极名的阻抗），与 sessions() 保持一致
-    row[QStringLiteral("quality")] = QStringLiteral("—");
+    // 电极贴合是采集结束时落盘的真实结果（「16/16 良好」），与 sessions() 同一口径：
+    // 空串原样返回，占位由各自的界面补 —— 后处理页要按「未扫描」显示（见
+    // PostProcess::build_record_info），而它是靠空串认出「采集时没扫过阻抗」的
+    row[QStringLiteral("quality")] = query.value(12).toString();
     row[QStringLiteral("level")] = QString();
     return row;
 }
@@ -1437,7 +1501,11 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
     out << QStringLiteral("通道数,") << row.value(QStringLiteral("channels")).toInt() << "\n";
     out << QStringLiteral("采样率,") << row.value(QStringLiteral("rate")).toInt() << "\n";
     out << QStringLiteral("事件数,") << row.value(QStringLiteral("events")).toInt() << "\n";
-    out << QStringLiteral("电极质量,") << row.value(QStringLiteral("quality")).toString() << "\n";
+    // 电极质量那一格：没有值时写「未扫描」而不是留空 —— 留空会被当成漏了或者写坏了，
+    // 而「没扫过阻抗」是这次采集本来就正常的一种情况（口径同后处理页）
+    const QString quality = row.value(QStringLiteral("quality")).toString();
+    out << QStringLiteral("电极质量,") << (quality.isEmpty() ? QStringLiteral("未扫描") : quality)
+        << "\n";
     out << QStringLiteral("说明,本次采集未落盘原始数据，此文件仅为记录摘要\n");
     file.close();
 

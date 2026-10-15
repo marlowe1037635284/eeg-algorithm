@@ -59,7 +59,10 @@ Item {
                  ? detail.channels + " ch · " + detail.rate + " Hz" : "—" },
         { x: 25,  y: 236, label: qsTr("幅值 / 时基"), value: displayScaleText },
         { x: 309, y: 236, label: qsTr("事件数"),   value: detail.events !== undefined ? String(detail.events) : "0" },
-        { x: 594, y: 236, label: qsTr("电极贴合"), value: detail.quality !== undefined ? detail.quality : "—" }
+        // 电极贴合是采集时实测的阻抗分档；没扫过阻抗时库里是空串（数据层不写占位），
+        // 这里补一个破折号 —— 后处理页那边区分得更细，写的是「未扫描」
+        { x: 594, y: 236, label: qsTr("电极贴合"),
+          value: detail.quality !== undefined && detail.quality.length > 0 ? detail.quality : "—" }
     ]
 
     // 「幅值 / 时基」= 这一屏波形现在的显示标尺。幅值取 Recording 那一栏

@@ -196,6 +196,11 @@ QVariantMap RecordReport::exportPdf(const QVariantMap &session, const QVariantLi
         = QStringLiteral("%1 通道 · %2 Hz")
               .arg(session.value(QStringLiteral("channels")).toInt())
               .arg(session.value(QStringLiteral("rate")).toInt());
+    // 电极贴合是采集时实测的阻抗分档。没扫过阻抗时库里是空串（数据层不再写占位），
+    // 这张表里补一个破折号 —— 后处理页那边区分得更细，写的是「未扫描」
+    const QString stored_quality = session.value(QStringLiteral("quality")).toString();
+    const QString quality_value
+        = stored_quality.isEmpty() ? QStringLiteral("—") : stored_quality;
 
     struct Field
     {
@@ -212,7 +217,7 @@ QVariantMap RecordReport::exportPdf(const QVariantMap &session, const QVariantLi
         {QStringLiteral("事件标注"),
          QStringLiteral("%1 条").arg(events.size())},
         {QStringLiteral("显示量程"), QStringLiteral("%1 μV / 全程").arg(kYRangeUV)},
-        {QStringLiteral("电极贴合"), session.value(QStringLiteral("quality")).toString()},
+        {QStringLiteral("电极贴合"), quality_value},
     };
 
     const qreal cell_w = content_w / 3.0;

@@ -63,6 +63,8 @@ ApplicationWindow {
     property int pendingEventIndex: -1
     // 本次采集属于哪位患者（用来在停止时把采集记录补全）。空串表示没有进行中的会话
     property string openSessionPatient: ""
+    // recordCollection 返回的会话 id，供 finishCollection 精确更新，避免子查询匹配错行
+    property int openSessionId: -1
     // 从患者管理页点「记录」进来时带的历史记录页过滤条件
     property string historyPatientFilter: ""
     // 「数据分析与后处理」要分析的那条记录号。它是**整屏替换**历史记录页的，
@@ -100,11 +102,18 @@ ApplicationWindow {
             if (Acq.collecting || window.openSessionPatient.length === 0)
                 return
             var summary = Acq.collection_summary()
+            // 电极贴合值也要跟着记录落盘：不存的话，历史记录预览里就只剩写死的占位。
+            // 没扫过阻抗（electrodeScanValid 为 false）传空串，显示什么由各处界面自己定
+            //（后处理页是「未扫描」，列表与预览是「—」）
+            var electrodeQuality = Acq.electrodeScanValid
+                    ? Design.electrodeQualityText(Acq.electrodeQuality) : ""
             // 事件要跟着记录一起存：只存个数的话，「采集记录预览」里那条事件带
             // 就永远是空的 —— 个数拼不回时刻与标签
             appDatabase.finishCollection(window.openSessionPatient, summary.durationSeconds,
-                                         summary.eventCount, summary.filePath, Acq.events)
+                                         summary.eventCount, summary.filePath,
+                                         electrodeQuality, Acq.events, window.openSessionId)
             window.openSessionPatient = ""
+            window.openSessionId = -1
         }
     }
 
@@ -426,6 +435,7 @@ ApplicationWindow {
         historyPatientFilter = ""
         analysisRecordNo = ""
         openSessionPatient = ""
+        openSessionId = -1
         pendingPatientRow = null
         // 后处理页可能开着一条记录：退出登录时把它放掉，别把文件留在手里
         Analysis.close()
@@ -694,13 +704,25 @@ ApplicationWindow {
                     // 采样率用**实际落盘**的速率：设备固定 1000Hz，系统设置选 2000 时
                     // 文件会升采样成 2000Hz，记录行要与文件头一致（否则历史列表和
                     // 分析页会对同一次采集显示出两个采样率）
-                    appDatabase.recordCollection(page.patientNo, Acq.acquired_channel_count(),
-                                                 Acq.effective_record_sample_rate())
+                    var sid = appDatabase.recordCollection(page.patientNo, Acq.acquired_channel_count(),
+                                                           Acq.effective_record_sample_rate())
                     // 记下这次会话属于谁，停止时用它补全记录
                     window.openSessionPatient = page.patientNo
+                    window.openSessionId = sid
                 }
-                if (page.startCollection)
-                    page.startCollection()
+                if (page.startCollection) {
+                    var started = page.startCollection()
+                    // start_collection 失败时（设备未连接等），采集从未真正开始，
+                    // collectingChanged 信号不会发出，finishCollection 永远不会被调用，
+                    // 导致历史记录里时长一直是 00:00:00。这里补调一次，把刚插入的那条
+                    // 记录用 0 时长收尾，至少让数据库状态一致
+                    if (started === false && window.openSessionPatient.length > 0) {
+                        appDatabase.finishCollection(window.openSessionPatient, 0, 0, "", "", [],
+                                                     window.openSessionId)
+                        window.openSessionPatient = ""
+                        window.openSessionId = -1
+                    }
+                }
             }
         }
     }

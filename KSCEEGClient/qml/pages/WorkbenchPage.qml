@@ -131,7 +131,7 @@ Item {
         // 再由 C++ 侧的 start_collection() 发 's' 让设备停发阻抗帧、切回脑电数据流
         electrodePanel.cancelScan()
         // 带上病历号：C++ 会按患者建子目录落盘（目录名用病历号，不用姓名）
-        Acq.start_collection(recordDir, patientNo)
+        return Acq.start_collection(recordDir, patientNo)
     }
 
     // 「截图」：只抓当前显示的波形 + 波形左边的通道名，

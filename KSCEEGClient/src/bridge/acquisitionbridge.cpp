@@ -1931,12 +1931,15 @@ void AcquisitionBridge::on_collecting_changed(bool collecting)
 {
     if (collecting == m_collecting)
     {
+        // 停止采集时即使状态没变也要通知 QML：start_collection 失败时
+        // m_collecting 始终为 false，采集线程仍会发 collecting_changed(false)，
+        // 如果不补发信号，QML 的 finishCollection 就永远不会被调用，
+        // 历史记录里时长就一直是 00:00:00
+        if (!collecting)
+            emit collectingChanged();
         return;
     }
     m_collecting = collecting;
-    if (collecting)
-    {
-        }
     emit collectingChanged();
 }
 

@@ -1434,13 +1434,15 @@ QVariantMap AppDatabase::exportSession(const QString &record_no, const QString &
     // 脱敏开关打开时，导出的文件名与摘要里的患者姓名 / 病历号一并打码。
     // 导出物离开程序后就不再受界面开关约束，必须在写出的这一刻就换掉；
     // 只打码「展示用」的这两项，记录号（R-0011）与采集参数照旧 —— 那不是患者身份信息
+    //
+    // 注意：文件名里不能用 * 等 Windows 禁用字符，脱敏时用 "已脱敏" 替代 "***"
     const bool masked = maskingEnabled();
     QString export_patient_no = row.value(QStringLiteral("patientNo")).toString();
     QString export_patient = row.value(QStringLiteral("patient")).toString();
     if (masked)
     {
         if (!export_patient_no.isEmpty())
-            export_patient_no = QStringLiteral("***");
+            export_patient_no = QStringLiteral("已脱敏");
         if (!export_patient.isEmpty())
             export_patient = QStringLiteral("***");
     }

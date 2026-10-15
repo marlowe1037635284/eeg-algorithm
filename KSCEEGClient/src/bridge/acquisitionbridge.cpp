@@ -201,7 +201,13 @@ QImage render_topography(const TopographyFrame &frame, int size)
 // 频段名 → (preset, 低, 高)。写错的话算法会直接拒绝，界面上则表现为「点了没反应」
 bool band_from_name(const QString &band, QString *preset, double *low_hz, double *high_hz)
 {
-    if (band == QLatin1String("delta"))
+    if (band == QLatin1String("full"))
+    {
+        *preset = QStringLiteral("full");
+        *low_hz = 0.5;
+        *high_hz = 45.0;
+    }
+    else if (band == QLatin1String("delta"))
     {
         *preset = QStringLiteral("delta");
         *low_hz = 0.5;

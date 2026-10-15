@@ -110,26 +110,28 @@ Item {
     // 都会与图对不上，而色标是按图读值的唯一依据。
     // 频段选择块：range 原本五块全写成 "0.5-4"（占位），换成真实边界；
     // band 字段与 C++ 的 band_from_name 认的取值一一对应，写错那边会直接忽略
+    // 第一个「全频」覆盖 0.5-45 Hz 全频段，letter 用文字而非希腊字母
+    // 盒宽 46px，间距 6px，左右各留约 12px 边距
     readonly property var bandSelectors: [
-        { band: "delta", letter: "δ", range: "0.5-4", boxX: 26,  letterX: 45,  rangeX: 33 },
-        { band: "theta", letter: "θ", range: "4-8",   boxX: 84,  letterX: 103, rangeX: 91 },
-        { band: "alpha", letter: "α", range: "8-13",  boxX: 142, letterX: 161, rangeX: 149 },
-        { band: "beta",  letter: "β", range: "13-30", boxX: 199, letterX: 218, rangeX: 206 },
-        { band: "gamma", letter: "γ", range: "30-45", boxX: 258, letterX: 278, rangeX: 265 }
+        { band: "full",  letter: "全频", range: "0.5-45", boxX: 12,  letterX: 22,  rangeX: 19  },
+        { band: "delta", letter: "δ",    range: "0.5-4",  boxX: 64,  letterX: 83,  rangeX: 71  },
+        { band: "theta", letter: "θ",    range: "4-8",    boxX: 116, letterX: 135, rangeX: 123 },
+        { band: "alpha", letter: "α",    range: "8-13",   boxX: 168, letterX: 187, rangeX: 175 },
+        { band: "beta",  letter: "β",    range: "13-30",  boxX: 220, letterX: 239, rangeX: 227 },
+        { band: "gamma", letter: "γ",    range: "30-45",  boxX: 272, letterX: 291, rangeX: 279 }
     ]
 
     // 四项统计由 C++ 侧算好并格式化（topoStats 固定四项），这边不做二次加工。
     // 取不到时统一显示短横，免得界面上出现 "undefined"
+    // 注意：band_rms_values 计算的是 RMS 值，单位是 μV（不是 μV²/Hz）
     readonly property var metrics: {
         var stats = Acq.topoStats
         if (!stats || stats.length !== 4)
             stats = ["—", "—", "—", "—"]
         return [
             { label: qsTr("峰值电极"), value: stats[0] },
-            { label: qsTr("峰值功率(μV²/Hz)"), value: stats[1] },
-            { label: qsTr("全脑均值(μV²/Hz)"), value: stats[2] },
-            { label: qsTr("枕/额比"), value: stats[3] },
-            { label: qsTr("时窗"), value: "2.0s" }
+            { label: qsTr("峰值功率(μV)"), value: stats[1] },
+            { label: qsTr("全脑均值(μV)"), value: stats[2] }
         ]
     }
 
@@ -306,7 +308,7 @@ Item {
     Text {
         x: 141
         y: 286
-        text: qsTr("μV²/Hz")
+        text: qsTr("μV")
         color: Design.textSecondary
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -388,7 +390,7 @@ Item {
             Rectangle {
                 x: modelData.boxX
                 y: 353
-                width: 48.74
+                width: 46
                 height: 51
                 radius: 10
                 color: parent.active ? Design.primarySoft : Qt.rgba(0xc9 / 255, 0xc9 / 255, 0xc9 / 255, 0.29)
@@ -397,9 +399,9 @@ Item {
             }
 
             Text {
-                x: modelData.letterX
+                x: modelData.boxX
                 y: 356
-                width: 14
+                width: 46
                 height: 22
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
@@ -411,9 +413,9 @@ Item {
             }
 
             Text {
-                x: modelData.rangeX
+                x: modelData.boxX
                 y: 378
-                width: 34
+                width: 46
                 height: 19
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
@@ -427,7 +429,7 @@ Item {
             MouseArea {
                 x: modelData.boxX
                 y: 353
-                width: 48.74
+                width: 46
                 height: 51
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
@@ -457,7 +459,7 @@ Item {
             height: 22
 
             Text {
-                x: 26
+                x: 6
                 y: 0
                 height: 22
                 verticalAlignment: Text.AlignVCenter
@@ -470,7 +472,7 @@ Item {
 
             Text {
                 anchors.right: parent.right
-                anchors.rightMargin: 24
+                anchors.rightMargin: 6
                 y: 0
                 height: 22
                 verticalAlignment: Text.AlignVCenter

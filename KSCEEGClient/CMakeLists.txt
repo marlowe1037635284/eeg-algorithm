@@ -215,6 +215,8 @@ qt_add_qml_module(appKSCEEGClient
         assets/icons/icon-check.svg
         assets/icons/icon-check-login.svg
         assets/icons/icon-lock.svg
+        assets/icons/icon-change-password.svg
+        assets/icons/icon-logout.svg
         assets/icons/head-panel.svg
         assets/icons/head-outline.svg
         assets/icons/topo-circle.svg

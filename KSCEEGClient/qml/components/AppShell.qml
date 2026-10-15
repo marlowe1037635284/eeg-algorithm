@@ -206,7 +206,7 @@ Item {
     // 点用户区弹出的账号菜单。退出登录挪进来之后，手滑点一下不会再直接把人踢出去了
     UserMenu {
         id: userMenu
-        x: 1750
+        x: 1660
         y: 50
         onChangePasswordRequested: shell.changePasswordRequested()
         onLogoutRequested: shell.logoutRequested()

@@ -352,7 +352,7 @@ Item {
     // 点用户区弹出的账号菜单（与 AppShell 里那一份同款，见 UserMenu.qml）
     UserMenu {
         id: userMenu
-        x: 1750
+        x: 1660
         y: 50
         onChangePasswordRequested: root.changePasswordRequested()
         onLogoutRequested: root.logoutRequested()

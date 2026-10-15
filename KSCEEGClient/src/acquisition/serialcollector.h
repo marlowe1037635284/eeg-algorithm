@@ -119,7 +119,10 @@ signals:
                        qint64 frame_number_skips);
     void status_message(const QString &message);
     void failed(const QString &message);
-    // 「设备失去连接」：拔线 / 掉电 / 驱动把设备移除（串口报 ResourceError）时才发。
+    // 「设备失去连接」：拔线 / 掉电 / 驱动把设备移除时才发。两条判据：
+    //   1) 串口报 ResourceError（驱动明确说设备没了）
+    //   2) 采集中连续 kDataStallTimeoutMs 收不到任何字节（串口还好、只是不再来数据 ——
+    //      设备侧那条连接线被拔就属于这种，驱动不会报错）
     // 必须与 failed() 分开 —— failed 还会用于落盘失败、命令发送失败这些
     // 「采集仍在继续」的情形，界面不该为它们弹断连警示框
     void device_lost(const QString &message);

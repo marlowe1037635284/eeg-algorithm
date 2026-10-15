@@ -37,6 +37,10 @@ constexpr int kChunkIntervalMs = 33;
 // 状态栏刷新周期
 constexpr int kStatsIntervalMs = 500;
 
+// 采集中的「数据停滞」判定时长。设备在采集中是持续出帧的（1000 Hz），
+// 连续这么久一个字节都没收到，只能是链路断了。见 run() 里那一段说明
+constexpr int kDataStallTimeoutMs = 3000;
+
 // 单块样本的时长上限。下游若因为别的原因卡住，这里兜住内存：最多退回
 // 「每秒一块」，不会让队列里堆起几百个巨大的样本块
 constexpr int kMaxChunkSeconds = 1;
@@ -700,8 +704,11 @@ void SerialCollector::run()
 
     QElapsedTimer chunk_timer;
     QElapsedTimer stats_timer;
+    // 「最近一次收到字节」的计时，拔线兜底检测用（见收数据那一段）
+    QElapsedTimer data_timer;
     chunk_timer.start();
     stats_timer.start();
+    data_timer.start();
 
     // ==================== 采集主循环 ====================
     //
@@ -749,6 +756,9 @@ void SerialCollector::run()
                 }
 
                 state.collecting = true;
+                // 从这一刻起才要求「持续有数据」：计时归零，否则开始前那段
+                // 空闲时间会被算进去，刚点「开始采集」就立刻误报断连
+                data_timer.restart();
                 if (port.write(QByteArray(1, serial_protocol::kCommandStart)) < 0)
                 {
                     emit failed(tr("发送开始命令失败：%1").arg(port.errorString()));
@@ -843,20 +853,45 @@ void SerialCollector::run()
         }
 
         // ---- 2) 收数据 ----
-        // waitForReadyRead 返回 false 绝大多数情况只是「这段时间没数据」，属正常，
-        // 所以不能拿它当出错处理。只有 error() 变成 ResourceError 才意味着
-        // 串口真的没了（拔线、设备掉电、驱动把设备移除），那时再等没有意义
-        if (port.waitForReadyRead(kPollTimeoutMs))
-        {
-            state.rx_buffer.append(port.readAll());
-        }
-        else if (port.error() == QSerialPort::ResourceError)
+        // 先看串口是否已经报错，**不能**只在 waitForReadyRead 返回 false 时才查：
+        // 拔线时它在 Windows 上可能把「设备被移除」当成一次可读事件而返回 true，
+        // readAll() 却读不到任何字节，那条 else if 就永远走不到 ——
+        // 波形停了、界面却在「采集中」静静地一直等下去。
+        // ResourceError 才是「设备没了」（拔线、掉电、驱动移除设备）
+        if (port.error() == QSerialPort::ResourceError)
         {
             const QString reason = tr("串口异常断开：%1").arg(port.errorString());
             emit failed(reason);
             // 单独再发一条「设备失去连接」。界面据此在最上层弹断连警示框 ——
             // 必须在 collecting_changed(false) 之前发：它排在那个信号前面入队，
             // 接收方处理它时「当时是否正在采集」还是断开前的真实状态
+            emit device_lost(reason);
+            break;
+        }
+
+        if (port.waitForReadyRead(kPollTimeoutMs))
+        {
+            const QByteArray incoming = port.readAll();
+            if (!incoming.isEmpty())
+            {
+                state.rx_buffer.append(incoming);
+                // 收到字节 = 链路还活着。放读之后重置，就不会因为某次
+                // 落盘阻塞把计时拖长而误判（阻塞结束后这批数据会立刻补上）
+                data_timer.restart();
+            }
+        }
+
+        // 采集中却长时间一个字节都收不到：链路已断。必须在这里兜底 ——
+        // 「EEG 设备与上位机之间的连接线被拔」这种情况，串口本身往往还是好的
+        // （USB 转串口那一段没掉），QSerialPort 不会置 ResourceError，
+        // 光靠上面那道错误检查永远发现不了。发现不了，采集就会一直「在采」
+        // 而波形不动，且不给用户任何提示
+        if (state.collecting && data_timer.elapsed() >= kDataStallTimeoutMs)
+        {
+            const QString reason =
+                tr("已连续 %1 秒未收到设备数据，连接可能已断开")
+                    .arg(kDataStallTimeoutMs / 1000);
+            emit failed(reason);
             emit device_lost(reason);
             break;
         }

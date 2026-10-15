@@ -72,15 +72,19 @@ struct BandDef
     double low_hz;
     double high_hz;
     const char *color;
+    // 频谱图里这一段色带的填充色。**不透明**、且是单独写死的一组浅色，
+    // 不是 color 加 alpha 叠出来的：设计稿里五条带子各自是一整块很淡的底，
+    // 由 color 调 alpha 得到的是「灰底 + 一点色调」，叠在面板灰上偏暗偏脏
+    const char *fill;
 };
 
 const BandDef kBands[5] = {
-    {"delta", "δ", "Delta", 0.5, 4.0, "#1f4e79"},
-    {"theta", "θ", "Theta", 4.0, 8.0, "#4a90c2"},
-    {"alpha", "α", "Alpha", 8.0, 13.0, "#7ec850"},
-    {"beta", "β", "Beta", 13.0, 30.0, "#f2a03d"},
+    {"delta", "δ", "Delta", 0.5, 4.0, "#1f4e79", "#e2eff7"},
+    {"theta", "θ", "Theta", 4.0, 8.0, "#4a90c2", "#e5f3f0"},
+    {"alpha", "α", "Alpha", 8.0, 13.0, "#7ec850", "#e0f1f6"},
+    {"beta", "β", "Beta", 13.0, 30.0, "#f2a03d", "#f6f0e9"},
     // γ 原来用亮黄 #f2d024，在浅色底上几乎看不清；换成紫色，与其他频带同等的可读性
-    {"gamma", "γ", "Gamma", 30.0, 45.0, "#8e5bd0"},
+    {"gamma", "γ", "Gamma", 30.0, 45.0, "#8e5bd0", "#f5ebee"},
 };
 
 constexpr int kBandCount = 5;
@@ -935,25 +939,17 @@ QImage render_spectrum_image(const Psd &psd, double f_min, double f_max,
     const auto to_x = [&](double hz) { return (hz - f_min) / f_span * width; };
     const auto to_y = [&](double db) { return (db_max - db) / db_span * height; };
 
-    // 频带底色。δ 与 θ 偏冷、β 与 γ 偏暖，与统计页那根图例是同一套颜色
+    // 频带底色。每段铺满自己的横跨范围、不透明 —— f_min 落在 δ 的下界（0.5Hz）上，
+    // 于是第一条带子从 x=0 起，曲线起点也就压在带子上（原来是 0-0.5Hz 留一段透明底，
+    // 曲线在最左边悬空）。f_max 落在 γ 的上界（45Hz），右边缘同样铺满，没有尾巴要补
     for (int i = 0; i < kBandCount; ++i)
     {
         const double low = std::max(kBands[i].low_hz, f_min);
         const double high = std::min(kBands[i].high_hz, f_max);
         if (high <= low)
             continue;
-        QColor tint(kBands[i].color);
-        tint.setAlpha(38);
-        painter.fillRect(QRectF(to_x(low), 0.0, to_x(high) - to_x(low), height), tint);
-    }
-
-    // γ 之上（>45Hz）在原型里仍是连续的背景带；只铺到 45Hz 会留一段白底
-    const double tail_low = std::min(kBands[kBandCount - 1].high_hz, f_max);
-    if (f_max > tail_low)
-    {
-        QColor tint(kBands[kBandCount - 1].color);
-        tint.setAlpha(38);
-        painter.fillRect(QRectF(to_x(tail_low), 0.0, to_x(f_max) - to_x(tail_low), height), tint);
+        painter.fillRect(QRectF(to_x(low), 0.0, to_x(high) - to_x(low), height),
+                         QColor(QString::fromLatin1(kBands[i].fill)));
     }
 
     // 曲线。dB 下限以下夹到边界上（画到图外会变成一条穿出画布的斜线）
@@ -1351,6 +1347,25 @@ QStringList PostProcess::band_colors()
     for (const BandDef &band : kBands)
         colors.append(QString::fromLatin1(band.color));
     return colors;
+}
+
+// 每个频段的 { key, letter, low, high }。频谱图要在各色带的正中写 δ θ α β γ，
+// 位置得由边界算 —— QML 里再抄一套边界就成了第四处副本（见文件头那段警告），
+// 所以边界统一从这里出去
+QVariantList PostProcess::band_ranges()
+{
+    QVariantList ranges;
+    for (const BandDef &band : kBands)
+    {
+        QVariantMap item;
+        item.insert(QStringLiteral("key"), QString::fromLatin1(band.key));
+        // 同 band_names()：希腊字母必须 fromUtf8
+        item.insert(QStringLiteral("letter"), QString::fromUtf8(band.letter));
+        item.insert(QStringLiteral("low"), band.low_hz);
+        item.insert(QStringLiteral("high"), band.high_hz);
+        ranges.append(item);
+    }
+    return ranges;
 }
 
 // ---------- 参数 ----------
@@ -2509,15 +2524,23 @@ void PostProcess::compute_spectrum(Result &result, const QVector<QVector<double>
     const Psd psd = welch_psd(row.constData() + window_first, window_last - window_first,
                               sample_rate);
 
-    double f_max = std::min(60.0, std::floor(sample_rate / 2.0));
-    if (f_max <= 1.0)
-        f_max = std::max(1.0, sample_rate / 2.0);
+    // 横轴固定 0.5-45 Hz：下界取 δ 的下界（去掉直流与极低频漂移那一段），
+    // 上界取 γ 的上界（49Hz 低通之后 45 以上基本只剩噪声），与地形图那张「全频段」
+    // 用的是同一对数（kFullBandLowHz / kFullBandHighHz）。采样率不足 90Hz 时
+    // 奈奎斯特更低，按奈奎斯特收窄，免得在无数据的频段上画一条假曲线
+    const double f_min = kFullBandLowHz;
+    double f_max = std::min(kFullBandHighHz, std::floor(sample_rate / 2.0));
+    if (f_max <= f_min)
+        f_max = std::max(f_min + 1.0, sample_rate / 2.0);
 
     double db_max = -1.0e9;
     double db_min = 1.0e9;
     for (int i = 0; i < psd.frequencies.size(); ++i)
     {
-        if (psd.frequencies.at(i) > f_max)
+        const double hz = psd.frequencies.at(i);
+        if (hz < f_min)
+            continue;
+        if (hz > f_max)
             break;
         const double value = psd.values.at(i);
         const double db = value > 0.0 ? 10.0 * std::log10(value) : -120.0;
@@ -2530,11 +2553,11 @@ void PostProcess::compute_spectrum(Result &result, const QVector<QVector<double>
         db_min = -90.0;
     }
     // 上下各留一档，曲线不贴边框；下界封在 -120（再低只是噪声地板）
-    result.spectrum_f_min = 0.0;
+    result.spectrum_f_min = f_min;
     result.spectrum_f_max = f_max;
     result.spectrum_db_max = std::ceil(db_max / 10.0) * 10.0;
     result.spectrum_db_min = std::max(-120.0, std::floor(db_min / 10.0) * 10.0);
-    result.spectrum_image = render_spectrum_image(psd, 0.0, f_max, result.spectrum_db_min,
+    result.spectrum_image = render_spectrum_image(psd, f_min, f_max, result.spectrum_db_min,
                                                   result.spectrum_db_max,
                                                   job.spectrum_width, job.spectrum_height);
 }

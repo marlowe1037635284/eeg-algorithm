@@ -145,6 +145,8 @@ class PostProcess : public QObject
     Q_PROPERTY(QStringList bandKeys READ band_keys CONSTANT)
     Q_PROPERTY(QStringList bandNames READ band_names CONSTANT)
     Q_PROPERTY(QStringList bandColors READ band_colors CONSTANT)
+    // 每项 { key, letter, low, high }。频谱图按边界算各色带正中的位置写 δ θ α β γ
+    Q_PROPERTY(QVariantList bandRanges READ band_ranges CONSTANT)
 
     // ---------- 状态与结果 ----------
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -261,6 +263,7 @@ public:
     static QStringList band_keys();
     static QStringList band_names();
     static QStringList band_colors();
+    static QVariantList band_ranges();
 
     bool busy() const { return m_busy; }
     QString status_text() const { return m_status_text; }
@@ -465,8 +468,8 @@ private:
         double topo_scale_max = 0.0;
 
         double wave_range_uv = 100.0;
-        double spectrum_f_min = 0.0;
-        double spectrum_f_max = 60.0;
+        double spectrum_f_min = 0.5;
+        double spectrum_f_max = 45.0;
         double spectrum_db_min = -90.0;
         double spectrum_db_max = 10.0;
 

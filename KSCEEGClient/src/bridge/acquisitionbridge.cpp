@@ -497,7 +497,8 @@ void AcquisitionBridge::close_port()
 //
 // 设计稿上**没有串口选择控件** —— 它的前提是「设备已连接」（顶栏那个
 // 「Neurolink-6016 已连接」的胶囊）。所以这里按这个前提办事：自动打开枚举到的
-// 那个口。参考实现的约定是取最后一个（真机通常枚举成编号最大的那个 COM 口）。
+// 那个口。选口规则是取 COM 编号最大的那个（真机上设备通常挂在编号更大的口上，
+// 直接取 last() 会被枚举顺序坑到）。
 //
 // 与 open_port 的差别在于「等结果」：open_port 只表示「已发起」，串口在采集线程里
 // 异步打开，结果经队列信号回来。而确认框里的「连接」一栏就绑在 portOpen 上，
@@ -518,13 +519,47 @@ bool AcquisitionBridge::connect_device()
     }
 
     refresh_ports();
+    // 扫描结果：扫到几个口、分别是哪些。自动连接是「盲选」（取枚举到的最后一个），
+    // 出问题时这几条日志是唯一能看出到底扫到了什么的地方。
+    // 逐个列出并带上描述名——多个口时只有 portName 分不出哪个才是脑电设备
+    const QList<QSerialPortInfo> scan_infos = QSerialPortInfo::availablePorts();
+    emit logMessage(tr("自动扫描到 %1 个串口").arg(scan_infos.size()));
+    for (const QSerialPortInfo &info : scan_infos)
+    {
+        const QString description = info.description().trimmed();
+        emit logMessage(description.isEmpty()
+                            ? tr("  串口：%1").arg(info.portName())
+                            : tr("  串口：%1（%2）").arg(info.portName(), description));
+    }
     if (m_available_ports.isEmpty())
     {
         set_error(tr("没有找到可用的串口，请检查设备连接与驱动"));
         return false;
     }
 
-    const QString port_name = m_available_ports.last();
+    // 选口：比 COM 后面的数字，取最大的那个。这里比的是数值而不是字符串，
+    // 否则 COM9 会被认为比 COM10 大
+    QString port_name;
+    int best_number = -1;
+    for (const QString &candidate : m_available_ports)
+    {
+        if (!candidate.startsWith(QLatin1String("COM"), Qt::CaseInsensitive))
+        {
+            continue;
+        }
+        bool ok = false;
+        const int number = candidate.mid(3).toInt(&ok);
+        if (ok && number > best_number)
+        {
+            best_number = number;
+            port_name = candidate;
+        }
+    }
+    if (port_name.isEmpty())
+    {
+        // 没有 COMx 形式的（例如非 Windows 平台），退回原来的枚举最后一个
+        port_name = m_available_ports.last();
+    }
     emit logMessage(tr("串口未打开，自动使用 %1").arg(port_name));
     // 先清掉上一轮的错误，好在等待时用它判断「失败已经回来了」
     clear_error();
@@ -542,6 +577,15 @@ bool AcquisitionBridge::connect_device()
     }
     // 收尾再转一次，把最后那个 portStateChanged 也送到 QML
     QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    // 结果说清楚连的是哪个口。失败原因已由 on_port_open_failed() 记过，这里不重复
+    if (m_port_open)
+    {
+        emit logMessage(tr("设备已连接：%1").arg(port_name));
+    }
+    else
+    {
+        emit logMessage(tr("连接设备失败：%1 未打开").arg(port_name));
+    }
     return m_port_open;
 }
 

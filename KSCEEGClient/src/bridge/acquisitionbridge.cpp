@@ -203,7 +203,8 @@ bool band_from_name(const QString &band, QString *preset, double *low_hz, double
 {
     if (band == QLatin1String("full"))
     {
-        *preset = QStringLiteral("full");
+        // 算法侧 BandPreset 没有 "full"，全频对应 full_0_5_45（0.5–45 Hz）
+        *preset = QStringLiteral("full_0_5_45");
         *low_hz = 0.5;
         *high_hz = 45.0;
     }

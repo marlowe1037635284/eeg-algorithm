@@ -269,65 +269,16 @@ Item {
                     font.pixelSize: 16
                 }
 
-                // 导出图标：一个开口方框 + 指向右上的箭头（原型图 355.png 的样式），
-                // 用几个矩形拼出来，不值得为此单拉一个 SVG 资源。
-                // 之前画的是「向下箭头 + 托盘」的下载图标，与原型不一致
-                Item {
+                // 导出图标：方框 + 指向右上的箭头，直接使用设计给的 SVG。
+                // 之前是用几个矩形手拼的，与原型线条对不齐；SVG 自带 17×17 视框与白色填充
+                Image {
                     x: 16
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 16
-                    height: 16
-
-                    // 方框：左竖、底横、右竖三段，右上角留口给箭头出去
-                    Rectangle {
-                        x: 1
-                        y: 4
-                        width: 2
-                        height: 10
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        x: 1
-                        y: 12
-                        width: 12
-                        height: 2
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        x: 11
-                        y: 9
-                        width: 2
-                        height: 5
-                        color: "#ffffff"
-                    }
-
-                    // 箭杆：45° 斜杠，从框内指向右上
-                    Rectangle {
-                        anchors.centerIn: parent
-                        width: 2
-                        height: 9
-                        rotation: -45
-                        color: "#ffffff"
-                    }
-
-                    // 箭头：右上角的两段短线拼成「⌐」
-                    Rectangle {
-                        x: 8
-                        y: 2
-                        width: 6
-                        height: 2
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        x: 12
-                        y: 2
-                        width: 2
-                        height: 6
-                        color: "#ffffff"
-                    }
+                    width: 17
+                    height: 17
+                    source: Design.assetRoot + "icons/icon-export.svg"
+                    sourceSize: Qt.size(17, 17)
+                    fillMode: Image.PreserveAspectFit
                 }
 
                 MouseArea {
@@ -671,11 +622,12 @@ Item {
         font.pixelSize: 13
     }
 
+    // 高度按原型比例：按钮高约为标题条(75)的 0.58 → 43，并在标题条内垂直居中
     Rectangle {
         x: 1739
-        y: 64
+        y: 79
         width: 147
-        height: 73
+        height: 43
         radius: 12
         color: backMouse.pressed ? Qt.rgba(0.44, 0.57, 0.67, 0.22) : Design.primarySoft
         border.width: 1
@@ -684,7 +636,7 @@ Item {
         Text {
             anchors.centerIn: parent
             text: qsTr("返回历史记录")
-            color: Design.primary
+            color: Design.textPrimary
             font.family: Design.fontFamily
             font.styleName: Design.styleMedium
             font.pixelSize: 16

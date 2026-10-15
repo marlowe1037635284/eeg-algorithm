@@ -21,6 +21,12 @@ Item {
     readonly property int lanes: Math.max(1, Analysis.channelCount)
     readonly property int traceWidth: Math.max(64, width - nameWidth - rangeWidth)
 
+    // 左上角图钉：直径、距两边的偏移，以及它占出的顶部间隙。波形整块下移一个
+    // 间隙，图钉就不会压住最上面那一路波形
+    readonly property int pinSize: 36
+    readonly property int pinInset: 4
+    readonly property int pinGap: pinInset + pinSize
+
     // 绘制区（不含时间轴）作为波形图的像素尺寸报给 C++
     function report_size() {
         if (traceWidth > 0 && height > axisHeight)
@@ -56,9 +62,9 @@ Item {
         id: view
 
         x: root.nameWidth
-        y: 0
+        y: root.pinGap
         width: root.traceWidth
-        height: parent.height - root.axisHeight
+        height: parent.height - root.axisHeight - root.pinGap
         contentWidth: width
         contentHeight: root.lanes * root.laneHeight
         clip: true
@@ -83,6 +89,27 @@ Item {
         }
     }
 
+    // ---------- 图钉 ----------
+    // 卡片左上角的标记：浅灰圆底 + 图钉。波形已按 pinGap 整体下移，图钉落在
+    // 顶部那段空出来的绘制区里。声明在 Flickable 之后，压在波形图上层
+    Rectangle {
+        x: root.pinInset
+        y: root.pinInset
+        width: root.pinSize
+        height: root.pinSize
+        radius: root.pinSize / 2
+        color: "#d9d9d9"
+
+        Image {
+            anchors.centerIn: parent
+            width: 19
+            height: 19
+            source: Design.assetRoot + "icons/icon-pin.svg"
+            sourceSize: Qt.size(19, 19)
+            fillMode: Image.PreserveAspectFit
+        }
+    }
+
     // ---------- 通道名 ----------
     // 与波形同一个泳道中心：泳道高由 C++ 与 QML 共用（Analysis.laneHeight），
     // 两处各写一个数就会错行
@@ -93,10 +120,11 @@ Item {
             required property int index
 
             x: 0
-            y: index * root.laneHeight - view.contentY
+            y: root.pinGap + index * root.laneHeight - view.contentY
             width: root.nameWidth
             height: root.laneHeight
-            visible: y > -root.laneHeight && y < view.height
+            visible: y > root.pinGap - root.laneHeight
+                     && y < root.height - root.axisHeight
             clip: true
 
             Text {
@@ -128,10 +156,11 @@ Item {
             required property int index
 
             x: 0
-            y: index * root.laneHeight - view.contentY
+            y: root.pinGap + index * root.laneHeight - view.contentY
             width: root.width
             height: root.laneHeight
-            visible: y > -root.laneHeight && y < view.height
+            visible: y > root.pinGap - root.laneHeight
+                     && y < root.height - root.axisHeight
 
             Rectangle {
                 x: root.nameWidth

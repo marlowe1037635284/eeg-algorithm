@@ -168,9 +168,9 @@ struct SpectrumRequest
 {
     int request_id = 0;
     QString channel_name;
-    QString band_preset = QStringLiteral("full_0_5_30");
+    QString band_preset = QStringLiteral("full_0_5_45");
     double band_low_hz = 0.5;
-    double band_high_hz = 30.0;
+    double band_high_hz = 45.0;
     double window_s = 2.0;
 };
 Q_DECLARE_METATYPE(SpectrumRequest)

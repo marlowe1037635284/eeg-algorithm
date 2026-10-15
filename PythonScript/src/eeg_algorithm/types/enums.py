@@ -14,6 +14,7 @@ class BandPreset(Enum):
     BETA = "beta"
     GAMMA = "gamma"
     FULL_0_5_30 = "full_0_5_30"
+    FULL_0_5_45 = "full_0_5_45"
     CUSTOM = "custom"
 
 

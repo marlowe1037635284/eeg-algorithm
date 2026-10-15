@@ -1694,10 +1694,11 @@ void AcquisitionBridge::tick_spectrum()
     SpectrumRequest request;
     request.request_id = ++m_spectrum_request_id;
     request.channel_name = m_spectrum_channel;
-    // 曲线要看到整个有意义的频段，所以查询用 0.5–30 Hz 而不是某个窄带
-    request.band_preset = QStringLiteral("full_0_5_30");
+    // 曲线要看到整个有意义的频段（γ 的上界就是 45 Hz），所以查询用
+    // 0.5–45 Hz 而不是某个窄带
+    request.band_preset = QStringLiteral("full_0_5_45");
     request.band_low_hz = 0.5;
-    request.band_high_hz = 30.0;
+    request.band_high_hz = 45.0;
     request.window_s = kWindowS;
     m_worker.post_spectrum_request(request);
 }
@@ -1775,9 +1776,8 @@ void AcquisitionBridge::on_spectrum_ready(const SpectrumFrame &frame)
 
     // 曲线归一化成 0~1，QML 只负责按画布高度缩放。
     //
-    // PSD 的频点是 3.9 Hz 一档（算法侧 nperseg 固定 256，见接口文档），
-    // 0.5–30 Hz 只有 7 个点，所以这条曲线天然是折线而不是平滑曲线 ——
-    // 这是算法侧分辨率决定的，不是显示做得粗糙
+    // PSD 的频点间隔由算法侧决定（nperseg = 采样率 × 2），1000 Hz 下是
+    // 0.5 Hz 一档，0.5–45 Hz 共 90 个点，画出来足够密
     const float peak = *std::max_element(frame.psd.begin(), frame.psd.end());
     const double denominator = peak > 0.0f ? static_cast<double>(peak) : 1.0;
 
@@ -1817,7 +1817,8 @@ void AcquisitionBridge::on_spectrum_ready(const SpectrumFrame &frame)
                 sum += frame.psd.at(i);
             }
         }
-        values.append(QStringLiteral("%1μV²").arg(sum, 0, 'f', 1));
+        // 只给裸数值：单位已由面板标题的 "(μV²/Hz)" 统一交代
+        values.append(QStringLiteral("%1").arg(sum, 0, 'f', 1));
     }
     m_spectrum_band_values = values;
     m_spectrum_status_text.clear();

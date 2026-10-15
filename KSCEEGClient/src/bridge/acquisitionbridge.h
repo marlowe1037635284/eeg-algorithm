@@ -135,7 +135,8 @@ class AcquisitionBridge : public QObject, public ChunkSink
                    NOTIFY spectrumChannelChanged)
     // PSD 曲线，已归一化成 0~1 的高度（从大到小排列的画布坐标由 QML 处理）
     Q_PROPERTY(QVariantList spectrumCurve READ spectrum_curve NOTIFY spectrumRevisionChanged)
-    // 五个频段（δ/θ/α/β/γ）的功率，固定五项，单位 µV²
+    // 五个频段（δ/θ/α/β/γ）的功率，固定五项，单位 µV²。
+    // 只给裸数值（如 "8.4"），单位由频谱面板标题的 "(μV²/Hz)" 统一交代
     Q_PROPERTY(QStringList spectrumBandValues READ spectrum_band_values
                    NOTIFY spectrumRevisionChanged)
     Q_PROPERTY(QString spectrumStatusText READ spectrum_status_text

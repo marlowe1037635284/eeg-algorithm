@@ -117,6 +117,7 @@ class BandPreset(Enum):
     BETA = "beta"                    # 13–30 Hz
     GAMMA = "gamma"                  # 30–45 Hz
     FULL_0_5_30 = "full_0_5_30"      # 0.5–30 Hz
+    FULL_0_5_45 = "full_0_5_45"      # 0.5–45 Hz
     CUSTOM = "custom"
 
 

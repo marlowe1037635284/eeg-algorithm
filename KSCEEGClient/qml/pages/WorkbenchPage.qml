@@ -836,14 +836,14 @@ Item {
         x: 1572
         y: 150
         width: 331
-        height: 590
+        height: 525
     }
 
     SpectrumPanel {
         x: 1572
-        y: 754
+        y: 689
         width: 331
-        height: 280
+        height: 345
         collecting: root.collecting
         frozen: root.frozen
     }

@@ -775,11 +775,15 @@ double stable_channel_range_uv(const QVector<double> &row, int chunk)
 // 所以整张图比视口高，由 QML 那边滚动着看 —— 这样滚动不必重算一遍分析
 QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rate,
                          double window_start, double window_seconds, int current_channel,
-                         const QVector<double> &channel_range_uv, int width,
+                         const QVector<double> &channel_range_uv, int width, double pixel_ratio,
                          const QVariantList &events, int selected_event)
 {
     const int channels = data.size();
-    const int height = channels * PostProcess::lane_height();
+    // 泳道高按物理像素倍率放大（QML 那边报来的宽度同样已乘过它）。贴回逻辑尺寸时
+    // 正好 1:1，1 像素宽的折线既不糊也不起台阶 —— 与实时波形、预览弹窗同一套做法
+    const double dpr = pixel_ratio > 0.0 ? pixel_ratio : 1.0;
+    const double lane = PostProcess::lane_height() * dpr;
+    const int height = static_cast<int>(std::lround(channels * lane));
     QImage image(std::max(2, width), std::max(2, height), QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::transparent);
     if (channels <= 0 || width < 2)
@@ -796,7 +800,7 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
     painter.setPen(QPen(QColor(0, 0, 0, 26), 1.0));
     for (int i = 0; i < channels; ++i)
     {
-        const double centre = i * PostProcess::lane_height() + PostProcess::lane_height() / 2.0;
+        const double centre = i * lane + lane / 2.0;
         painter.drawLine(QPointF(0.0, centre), QPointF(width, centre));
     }
 
@@ -831,7 +835,12 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         painter.drawLine(QPointF(x, 0.0), QPointF(x, height));
     }
 
-    const double half_lane = PostProcess::lane_height() * 0.5;
+    const double half_lane = lane * 0.5;
+
+    // 波形折线开抗锯齿。上面为让网格线保持 1 像素的锐利把它关了，但折线不能跟着关：
+    // 每列 min/max 连成的竖线与相邻列的斜接在关掉 AA 时是一段段台阶，密起来看就是
+    // 一圈「毛刺」。实时波形（AcquisitionBridge）同样只为折线开 AA，实测几乎不花时间
+    painter.setRenderHint(QPainter::Antialiasing, true);
 
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -845,7 +854,7 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
                                     ? channel_range_uv.at(channel) : 25.0;
         const double scale = half_lane / std::max(1.0, range_uv);
 
-        const double centre = channel * PostProcess::lane_height() + half_lane;
+        const double centre = channel * lane + half_lane;
         const bool active = channel == current_channel;
         // 当前导联用设计稿的红色（与 QML 侧的 Design.waveCurrent 同值），
         // 其余压成灰 —— 设计稿图例写的就是「当前通道 / 其余通道」
@@ -894,12 +903,12 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
             polyline.append(QPointF(x, y_high));
         }
 
-        painter.setPen(QPen(color, active ? 1.4 : 1.0));
+        // 线宽 1.5 像素，同样乘物理像素倍率：不乘的话高 DPI 下这条线又细回逻辑像素了
+        painter.setPen(QPen(color, 1.5 * dpr));
         painter.drawPolyline(polyline);
     }
 
-    // 事件顶端的小圆点
-    painter.setRenderHint(QPainter::Antialiasing, true);
+    // 事件顶端的小圆点（AA 已在波形之前打开，这里跟着一起用）
     for (int i = 0; i < events.size(); ++i)
     {
         const QVariantMap event = events.at(i).toMap();
@@ -914,7 +923,7 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
             color = kSelectedEventColor;
         painter.setPen(Qt::NoPen);
         painter.setBrush(color);
-        painter.drawEllipse(QPointF(x, 5.0), 4.0, 4.0);
+        painter.drawEllipse(QPointF(x, 5.0 * dpr), 4.0 * dpr, 4.0 * dpr);
     }
 
     return image;
@@ -1654,14 +1663,16 @@ void PostProcess::set_selected_event(int value)
     schedule_recompute();
 }
 
-void PostProcess::set_view_size(int width, int height)
+void PostProcess::set_view_size(int width, int height, double pixel_ratio)
 {
     if (width <= 0 || height <= 0)
         return;
     const QSize size(width, height);
-    if (size == m_view_size)
+    const double ratio = pixel_ratio > 0.0 ? pixel_ratio : 1.0;
+    if (size == m_view_size && qFuzzyCompare(ratio, m_view_pixel_ratio))
         return;
     m_view_size = size;
+    m_view_pixel_ratio = ratio;
     schedule_recompute();
 }
 
@@ -1753,6 +1764,7 @@ void PostProcess::run_recompute()
     // Image.Stretch 会把波形横向拉伸约 5%
     job.wave_width = std::max(64, m_view_size.width());
     job.wave_height = m_view_size.height();
+    job.wave_scale = m_view_pixel_ratio;
     job.spectrum_width = std::max(64, m_view_size.width());
     job.spectrum_height = std::max(64, m_view_size.height());
     job.events = m_events;
@@ -2493,8 +2505,8 @@ void PostProcess::compute_wave(Result &result, const QVector<QVector<double>> &d
 
     result.wave_image = render_wave_image(data, sample_rate, job.window_start,
                                           job.window_seconds, job.current_channel,
-                                          channel_range_uv, job.wave_width, job.events,
-                                          job.selected_event);
+                                          channel_range_uv, job.wave_width, job.wave_scale,
+                                          job.events, job.selected_event);
 }
 
 // 频谱图那一张的出图。原来曲线取自 Python 对**分析片段**（整段）算的 Welch，窗口动

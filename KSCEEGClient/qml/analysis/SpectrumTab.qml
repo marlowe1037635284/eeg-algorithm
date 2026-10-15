@@ -16,7 +16,9 @@ Item {
 
     function report_size() {
         if (plotWidth > 0 && plotHeight > 0)
-            Analysis.set_view_size(plotWidth, plotHeight)
+            // 第三参数是物理像素倍率，频谱按逻辑像素出图（曲线是矢量的，放大后由
+            // Image 自身平滑），故显式传 1.0 —— QML 不会替 C++ 的默认参数兜底
+            Analysis.set_view_size(plotWidth, plotHeight, 1.0)
     }
     onPlotWidthChanged: report_size()
     onPlotHeightChanged: report_size()

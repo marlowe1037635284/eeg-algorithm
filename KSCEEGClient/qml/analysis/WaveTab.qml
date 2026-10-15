@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Window
 import KSCEEGClient
 
 // 「数据分析与后处理」· 波形页。
@@ -33,10 +34,17 @@ Item {
     readonly property int pinRowHeight: 38
     readonly property int pinRowSpacing: 10
 
-    // 绘制区（不含时间轴）作为波形图的像素尺寸报给 C++
+    // 物理像素倍率。波形是 1 像素宽的折线，若按逻辑像素画再被系统放大，斜线会发虚、
+    // 起台阶 —— 与实时波形面板（WaveformPanel）同一套做法，200% 缩放时封顶 1.5 倍
+    readonly property real pixelRatio: Math.min(Screen.devicePixelRatio, 1.5)
+
+    // 绘制区（不含时间轴）作为波形图的像素尺寸报给 C++。宽按物理像素报，倍率也一并
+    // 报过去：C++ 的泳道高（它自己定的）会跟着乘这份倍率，贴回来正好 1:1
     function report_size() {
         if (traceWidth > 0 && height > axisHeight)
-            Analysis.set_view_size(traceWidth, Math.round(height - axisHeight))
+            Analysis.set_view_size(Math.round(traceWidth * pixelRatio),
+                                   Math.round((height - axisHeight) * pixelRatio),
+                                   pixelRatio)
     }
     onTraceWidthChanged: report_size()
     onHeightChanged: report_size()

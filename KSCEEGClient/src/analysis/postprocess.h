@@ -197,8 +197,10 @@ public:
                           const QVariantMap &info);
     Q_INVOKABLE void close();
 
-    // 波形与频谱绘制区的像素尺寸，由 QML 在尺寸变化时报上来
-    Q_INVOKABLE void set_view_size(int width, int height);
+    // 波形与频谱绘制区的像素尺寸，由 QML 在尺寸变化时报上来。
+    // pixel_ratio 是绘制区的**物理像素倍率**（高 DPI 下 > 1）：波形按它把图出得
+    // 更大、贴回来时正好 1:1，1 像素宽的折线才不会在放大时糊掉或起台阶
+    Q_INVOKABLE void set_view_size(int width, int height, double pixel_ratio = 1.0);
 
     // ---------- 导出 ----------
     // 三个导出都返回 { success, message, path }。目录由调用方给（与历史记录页
@@ -429,6 +431,9 @@ private:
         // 波形绘制区（不含左边的通道名列）像素尺寸
         int wave_width = 1200;
         int wave_height = 600;
+        // 波形的物理像素倍率：图按 wave_width × (通道数 × 泳道高) 再乘上它出，
+        // 贴回逻辑尺寸时正好 1:1（见 set_view_size 注释）
+        double wave_scale = 1.0;
         // 频谱绘制区像素尺寸
         int spectrum_width = 1200;
         int spectrum_height = 600;
@@ -589,6 +594,10 @@ private:
     // 当前选中的事件标注（events 里的下标，-1 = 没选）
     int m_selected_event = -1;
     QSize m_view_size;
+    // 绘制区的物理像素倍率（见 set_view_size）。只对波形生效：波形的泳道高由
+    // C++ 内部决定（lane_height），不像频谱那样拿 QML 报来的高度，得靠这个倍率
+    // 才能跟着高 DPI 一起放大
+    double m_view_pixel_ratio = 1.0;
     // 最近一轮结果对应的片段（秒）与色标上限。单独存一份是为了让
     //「参数刚改、结果还没回来」的那一小段时间里界面拿到的仍是上一轮的值，
     // 而不是 0 —— 显示 0 会让报告页闪一下「片段 0.0-0.0 s」

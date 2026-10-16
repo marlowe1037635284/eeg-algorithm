@@ -340,9 +340,9 @@ Item {
             GradientStop { position: 1.0000; color: Acq.topoPalette[6] }
         }
 
-        // 刻度。右端**不能写死**：图是按每帧峰值归一化配色的，写死的话
-        // 数字和实际配色对不上，读出来的值就是错的。
-        // 三个刻度分别贴着色条左端 / 居中 / 右端，才和色条是同一条标尺
+        // 刻度。范围固定 0~50（Acq.topoScaleMax 恒为 50）：图也按这个固定上限
+        // 归一化配色，所以数字和颜色是同一条标尺，超过 50 的值都落在色条顶端。
+        // 三个刻度分别贴着色条左端 / 居中 / 右端
         Text {
             anchors.left: parent.left
             anchors.top: parent.bottom

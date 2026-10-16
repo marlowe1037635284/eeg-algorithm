@@ -121,7 +121,8 @@ struct TopographyFrame
     double peak_power = 0.0;           // µV²/Hz
     double mean_power = 0.0;           // µV²/Hz，全脑平均
     double frontal_occipital_ratio = 0.0;
-    // 本帧的配色上限。图是按每帧峰值归一化配色的，色标条右端必须跟着它走
+    // 配色上限（µV²/Hz）。实时侧固定为 50（见 kTopographyScaleMax），
+    // 图与色标条共用它归一化，超过上限的值在色标顶端饱和
     double scale_max = 0.0;
 };
 Q_DECLARE_METATYPE(TopographyFrame)

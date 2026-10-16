@@ -77,7 +77,9 @@ class PostProcess : public QObject
     Q_PROPERTY(double notchHz READ notch_hz WRITE set_notch_hz NOTIFY paramsChanged)
     // 重参考 / 降采样都用「选项下标」，与下拉框一一对应。取值表见 referenceChoices /
     // downsampleChoices —— 降采样那几个数是**按记录实际采样率算的**，
-    // 不能照设计稿写死 1000Hz（设计稿那张图是 256Hz 的记录，写了也没意义）
+    // 不能照设计稿写死 1000Hz（设计稿那张图是 256Hz 的记录，写了也没意义）。
+    // referenceChoices 还随通道数变（4/8 通道没有双侧乳突，选项表少一项），
+    // 所以它只在下拉框里有意义：传给算法前要换算成固定方法号，见 schedule_recompute
     Q_PROPERTY(int referenceIndex READ reference_index WRITE set_reference_index
                    NOTIFY paramsChanged)
     Q_PROPERTY(int downsampleIndex READ downsample_index WRITE set_downsample_index

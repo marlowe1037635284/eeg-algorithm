@@ -30,6 +30,32 @@
 namespace
 {
 
+// ==================== 重参考选项 ====================
+// 4/8 通道蒙太奇里没有 T3/T4 电极，「双侧乳突」重参考只能退化成减 0.5*(T3+T4)，
+// 而 T3/T4 恰恰是这两套蒙太奇里噪声最大的两路 —— 减它等于把噪声摊到每一路。
+// 所以这两种通道数不给这个选项；16 通道含 T3/T4，选项表保持不动。
+
+bool reference_mastoid_available(int channels)
+{
+    return channels != 4 && channels != 8;
+}
+
+// 选项表下标 → 算法约定的方法号（0 双侧乳突 / 1 平均参考 / 2 不重参考）。
+// 有双侧乳突时两者一一对应；没有时选项表少了首项，整体后移一位。
+int reference_method_of_choice(int channels, int choice_index)
+{
+    return reference_mastoid_available(channels) ? choice_index : choice_index + 1;
+}
+
+// 反向：给定方法号，求它在当前通道数下选项表里的下标。没有双侧乳突而方法号
+// 又是 0 时退回「不重参考」——这是删掉首项后唯一安全的下标。
+int reference_choice_of_method(int channels, int method)
+{
+    if (reference_mastoid_available(channels))
+        return method;
+    return method == 0 ? 1 : method - 1;
+}
+
 // ==================== 字节读取 ====================
 // .eegbin 是小端裸格式，用 QDataStream 反而要配 setByteOrder 且对 float32
 // 没有直接支持；这里按偏移手工取，与 recordingpreview.cpp 同一套
@@ -1166,6 +1192,15 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
     for (int i = 0; i < raw->samples.size(); ++i)
         raw->samples[i] = read_f32_le(samples + static_cast<qint64>(i) * eegbin::kBytesPerSample);
 
+    // 换记录前后通道数可能不同，重参考选项表跟着变（4/8 通道没有双侧乳突），
+    // 下标不能原样沿用。这里按「方法」守恒地搬：平均参考仍是平均参考、不重参考
+    // 仍是不重参考；原来若选的双侧乳突而新记录没这一项，退回不重参考
+    const int previous_method =
+        reference_method_of_choice(m_channels, m_params.reference_index);
+    const int remapped_choice = reference_choice_of_method(raw->channels, previous_method);
+    const bool reference_remapped = remapped_choice != m_params.reference_index;
+    m_params.reference_index = remapped_choice;
+
     m_raw = raw;
     m_channels = raw->channels;
     m_sample_rate = raw->sample_rate;
@@ -1200,6 +1235,10 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
 
     build_record_info();
     emit recordChanged();
+    // referenceChoices 挂的是 recordChanged，上面的 emit 已经让界面刷新选项表；
+    // 下标若因通道数变化被搬动，这里再补一次参数通知，让下拉框同步到搬动后的值
+    if (reference_remapped)
+        emit paramsChanged();
     schedule_recompute();
     audit_log::record(QStringLiteral("打开记录进行后处理：%1").arg(record_no));
     return true;
@@ -1280,7 +1319,10 @@ void PostProcess::build_record_info()
 
 QStringList PostProcess::reference_choices() const
 {
-    return {tr("双侧乳突"), tr("平均参考"), tr("不重参考")};
+    if (reference_mastoid_available(m_channels))
+        return {tr("双侧乳突"), tr("平均参考"), tr("不重参考")};
+    // 4/8 通道没有双侧乳突电极，只留平均参考与不重参考
+    return {tr("平均参考"), tr("不重参考")};
 }
 
 QStringList PostProcess::downsample_choices() const
@@ -1735,7 +1777,9 @@ void PostProcess::run_recompute()
     job.low_pass_hz = m_params.low_pass_hz;
     job.notch_enabled = m_params.notch_enabled;
     job.notch_hz = m_params.notch_hz;
-    job.reference_index = m_params.reference_index;
+    // 界面给的是选项表下标；算法要的是固定方法号（0 双侧乳突 / 1 平均参考 /
+    // 2 不重参考）。4/8 通道的选项表少了首项，这里必须翻译，不能直接透传
+    job.reference_index = reference_method_of_choice(m_channels, m_params.reference_index);
     job.downsample_index = m_params.downsample_index;
     job.baseline_enabled = m_params.baseline_enabled;
     job.asr_enabled = m_params.asr_enabled;

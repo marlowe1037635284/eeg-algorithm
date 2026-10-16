@@ -21,6 +21,9 @@ Item {
     property int pixelSize: 16
     property color textColor: "#3b3b3b"
     property real fieldRadius: 12
+    // 箭头离右边缘的距离。默认按各处一直用的 16.5；后处理参数面板里的窄框
+    // 按那张设计稿贴到 8.5 —— 同一套控件在不同尺度的框里留白本来就不一样
+    property real arrowRightMargin: 16.5
 
     signal activated(int index)
 
@@ -55,7 +58,7 @@ Item {
     }
 
     Image {
-        x: parent.width - 24
+        x: parent.width - root.arrowRightMargin - width
         anchors.verticalCenter: parent.verticalCenter
         width: 7.47
         height: 7

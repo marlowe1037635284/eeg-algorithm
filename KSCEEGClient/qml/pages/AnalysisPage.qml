@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Effects
 import KSCEEGClient
 
 // 「数据分析与后处理」页。从历史记录页的「分析」进来，整屏替换掉历史记录。
@@ -683,103 +684,35 @@ Item {
     }
 
     // ---------- 标签页图标 ----------
-    // 设计稿里每个标签前有个小图标。导出的素材里只有背景与外框矢量、没有这六个
-    // （它们在 Figma 里是 foreignObject 包着的图标帧），所以按同一套线条语汇
-    // 用 Canvas 现画：线宽 1.6、圆头圆角，尺寸与设计稿的 18×18 一致
-    component TabIcon: Canvas {
+    // 六个图标用设计给的 SVG（assets/icons/tab-*.svg：波形 / 频谱 / 通道 / 统计 /
+    // 地形图 / 报告，kind 与文件名一一对应）。它们是单色填充，用 MultiEffect 把填充
+    // 重染成当前态的颜色：选中 = 主色、未选中 = 次级灰 —— 与原来手绘 Canvas 的
+    // tint 行为一致。Image 要先 layer.enabled 取到纹理，才能喂给 MultiEffect
+    // 当 source（用法同 TopographyTab 里那张头型遮罩）
+    component TabIcon: Item {
         id: icon
 
         property string kind: "wave"
         property color tint: Design.textSecondary
 
-        onKindChanged: requestPaint()
-        onTintChanged: requestPaint()
-        onWidthChanged: requestPaint()
-        onHeightChanged: requestPaint()
+        Image {
+            id: glyph
 
-        onPaint: {
-            var ctx = getContext("2d")
-            ctx.reset()
-            ctx.strokeStyle = icon.tint
-            ctx.lineWidth = 1.6
-            ctx.lineCap = "round"
-            ctx.lineJoin = "round"
+            anchors.fill: parent
+            source: Design.assetRoot + "icons/tab-" + icon.kind + ".svg"
+            sourceSize: Qt.size(Math.max(1, Math.round(icon.width)),
+                                Math.max(1, Math.round(icon.height)))
+            fillMode: Image.PreserveAspectFit
+            visible: false
+            layer.enabled: true
+        }
 
-            var w = width
-            var h = height
-
-            if (kind === "wave") {
-                ctx.beginPath()
-                ctx.moveTo(w * 0.05, h * 0.55)
-                ctx.lineTo(w * 0.25, h * 0.55)
-                ctx.lineTo(w * 0.38, h * 0.15)
-                ctx.lineTo(w * 0.55, h * 0.85)
-                ctx.lineTo(w * 0.70, h * 0.35)
-                ctx.lineTo(w * 0.82, h * 0.55)
-                ctx.lineTo(w * 0.95, h * 0.55)
-                ctx.stroke()
-            } else if (kind === "spectrum") {
-                ctx.beginPath()
-                ctx.moveTo(w * 0.08, h * 0.08)
-                ctx.lineTo(w * 0.08, h * 0.92)
-                ctx.lineTo(w * 0.94, h * 0.92)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.18, h * 0.80)
-                ctx.lineTo(w * 0.36, h * 0.45)
-                ctx.lineTo(w * 0.55, h * 0.65)
-                ctx.lineTo(w * 0.88, h * 0.18)
-                ctx.stroke()
-            } else if (kind === "channel") {
-                ctx.beginPath()
-                for (var i = 0; i < 4; ++i) {
-                    var x = w * (0.18 + i * 0.22)
-                    var top = h * (0.55 - i * 0.09)
-                    ctx.moveTo(x, h * 0.92)
-                    ctx.lineTo(x, top)
-                }
-                ctx.stroke()
-            } else if (kind === "stats") {
-                ctx.beginPath()
-                ctx.moveTo(w * 0.08, h * 0.92)
-                ctx.lineTo(w * 0.94, h * 0.92)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.24, h * 0.92)
-                ctx.lineTo(w * 0.24, h * 0.58)
-                ctx.moveTo(w * 0.50, h * 0.92)
-                ctx.lineTo(w * 0.50, h * 0.30)
-                ctx.moveTo(w * 0.76, h * 0.92)
-                ctx.lineTo(w * 0.76, h * 0.46)
-                ctx.stroke()
-            } else if (kind === "topography") {
-                ctx.beginPath()
-                ctx.arc(w / 2, h / 2, w * 0.42, 0, Math.PI * 2)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.08, h * 0.5)
-                ctx.lineTo(w * 0.92, h * 0.5)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.ellipse(w * 0.30, h * 0.12, w * 0.20, h * 0.38, 0, 0, Math.PI * 2)
-                ctx.stroke()
-            } else {
-                // 报告：一页纸 + 两条正文线
-                ctx.beginPath()
-                ctx.moveTo(w * 0.22, h * 0.08)
-                ctx.lineTo(w * 0.62, h * 0.08)
-                ctx.lineTo(w * 0.82, h * 0.30)
-                ctx.lineTo(w * 0.82, h * 0.92)
-                ctx.lineTo(w * 0.22, h * 0.92)
-                ctx.closePath()
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.36, h * 0.54)
-                ctx.lineTo(w * 0.68, h * 0.54)
-                ctx.moveTo(w * 0.36, h * 0.72)
-                ctx.lineTo(w * 0.68, h * 0.72)
-                ctx.stroke()
-            }
+        MultiEffect {
+            anchors.fill: parent
+            source: glyph
+            // 1.0 = 完全按 colorizationColor 着色，只保留源图的 alpha
+            colorization: 1.0
+            colorizationColor: icon.tint
         }
     }
 }

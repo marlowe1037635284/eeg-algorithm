@@ -225,6 +225,12 @@ qt_add_qml_module(appKSCEEGClient
         assets/icons/icon-pin.svg
         assets/icons/icon-pin-active.svg
         assets/icons/divider-section.svg
+        assets/icons/tab-wave.svg
+        assets/icons/tab-spectrum.svg
+        assets/icons/tab-channel.svg
+        assets/icons/tab-stats.svg
+        assets/icons/tab-topography.svg
+        assets/icons/tab-report.svg
 )
 
 # 字体文件又大（4 个字重共 26MB），塞进 Qt 资源会让 rcc 生成的 .cpp 膨胀到 130MB 以上，

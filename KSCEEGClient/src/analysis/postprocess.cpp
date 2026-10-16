@@ -2057,8 +2057,6 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         chain.append(tr("ASR 限幅 ×%1").arg(job.asr_cutoff));
     if (divisor > 1)
         chain.append(tr("降采样 %1 Hz").arg(static_cast<double>(source_rate) / divisor, 0, 'g', 4));
-    if (job.baseline_enabled)
-        chain.prepend(tr("基线校正"));
     if (job.qc_repair_index > 0)
         chain.append(tr("线性插值修复"));
 
@@ -2353,7 +2351,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         sections.append(QVariantMap{
             {QStringLiteral("title"), tr("处理链")},
             {QStringLiteral("chips"), chain_chips},
-            {QStringLiteral("note"), tr("顺序：高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正")},
+            {QStringLiteral("note"), tr("顺序：高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 线性插值修复")},
         });
 
         double rms_sum = 0.0;

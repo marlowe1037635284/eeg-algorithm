@@ -35,7 +35,7 @@ struct ArtifactSpan
 // 打开就是一片「算法模块不可用」。
 //
 // 因此离线流水线按接口文档里那套**固定顺序**在本类里实现：
-//   高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正
+//   高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 线性插值修复
 // 与 eeg_algorithm.internal.offline.pipeline.run_preprocessing_pipeline 逐段对应，
 // 数值口径尽量取齐（Butterworth 4 阶、零相位、Welch 512 点 / 50% 重叠 / 密度谱）。
 // 将来 Python 通路可用时，把 compute_pipeline() 换成一次跨语言调用即可 ——

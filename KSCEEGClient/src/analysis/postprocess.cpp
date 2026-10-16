@@ -104,6 +104,9 @@ constexpr int kMaxPsdSegments = 64;
 // 被选中的事件标注（波形上那根竖线与顶端圆点）的高亮色
 const QColor kSelectedEventColor(218, 168, 42);
 
+// 伪迹覆盖层的淡红色（半透明，铺在波形折线之下）
+const QColor kArtifactOverlayColor(244, 67, 54, 46);
+
 // ==================== 双二阶与滤波器设计 ====================
 
 struct Biquad
@@ -776,7 +779,8 @@ double stable_channel_range_uv(const QVector<double> &row, int chunk)
 QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rate,
                          double window_start, double window_seconds, int current_channel,
                          const QVector<double> &channel_range_uv, int width, double pixel_ratio,
-                         const QVariantList &events, int selected_event)
+                         const QVariantList &events, int selected_event,
+                         const QVector<ArtifactSpan> &artifact_spans)
 {
     const int channels = data.size();
     // 泳道高按物理像素倍率放大（QML 那边报来的宽度同样已乘过它）。贴回逻辑尺寸时
@@ -802,6 +806,24 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
     {
         const double centre = i * lane + lane / 2.0;
         painter.drawLine(QPointF(0.0, centre), QPointF(width, centre));
+    }
+
+    // 伪迹覆盖层：把每个伪迹段的时域区间在对应通道泳道上铺一层淡红。画在波形折线
+    // 之下，折线压在上面仍看得清；超出窗口的段裁到窗口边界，跨窗口也能画对。
+    // 关掉伪迹检测时 artifact_spans 为空，这里自然什么都不画
+    for (const ArtifactSpan &span : artifact_spans)
+    {
+        if (span.channel < 0 || span.channel >= channels
+            || span.end_seconds <= span.start_seconds)
+            continue;
+        const double start = std::max(span.start_seconds, window_start);
+        const double end = std::min(span.end_seconds, window_start + window_seconds);
+        if (end <= start)
+            continue;
+        const double x0 = (start - window_start) / window_seconds * width;
+        const double x1 = (end - window_start) / window_seconds * width;
+        painter.fillRect(QRectF(x0, span.channel * lane, std::max(1.0, x1 - x0), lane),
+                         kArtifactOverlayColor);
     }
 
     // 事件竖线（画在波形之下）。与预览弹窗同一套：划出窗口的事件跟着消失，
@@ -2210,6 +2232,22 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                 artifact_samples += length;
         }
 
+        // 覆盖层要的是**全部**伪迹段（与所选片段无关）：波形窗口可能只落在片段一角，
+        // 预先把整段区间折算成秒，出图时再按窗口裁剪
+        if (sample_rate > 0.0)
+        {
+            for (const offlinealgorithm::Segment &segment : output.artifact_segments)
+            {
+                const int index = eeg_montage::index_of(segment.channel_name);
+                if (index < 0)
+                    continue;
+                result.artifact_spans.append(
+                    ArtifactSpan{index,
+                                 static_cast<double>(segment.start_sample) / sample_rate,
+                                 static_cast<double>(segment.end_sample) / sample_rate});
+            }
+        }
+
         for (int channel = 0; channel < channels; ++channel)
         {
             if (weak_set.contains(channel))
@@ -2537,7 +2575,8 @@ void PostProcess::compute_wave(Result &result, const QVector<QVector<double>> &d
     result.wave_image = render_wave_image(data, sample_rate, job.window_start,
                                           job.window_seconds, job.current_channel,
                                           channel_range_uv, job.wave_width, job.wave_scale,
-                                          job.events, job.selected_event);
+                                          job.events, job.selected_event,
+                                          result.artifact_spans);
 }
 
 // 频谱图那一张的出图。原来曲线取自 Python 对**分析片段**（整段）算的 Welch，窗口动

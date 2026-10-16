@@ -14,6 +14,16 @@
 
 #include <memory>
 
+// 伪迹覆盖层的一段异常区间（只进波形图，定义在此以便出图函数与 Result 共用）。
+// channel 是 eeg_montage 的通道下标；时间相对**预处理后整段信号**，单位秒，
+// [start_seconds, end_seconds) 半开 —— 与 Result::segment_start 同口径
+struct ArtifactSpan
+{
+    int channel = 0;
+    double start_seconds = 0.0;
+    double end_seconds = 0.0;
+};
+
 // 「数据分析与后处理」页的全部计算与出图。
 //
 // ==================== 为什么offline 处理放在 C++ ====================
@@ -489,6 +499,10 @@ private:
         QImage correlation_image;
         // 六个频段各一张，顺序同 bandKeys()
         QVector<QImage> topo_images;
+
+        // 伪迹覆盖层（只进波形图）：按通道的异常区间。指纹命中做增量重算时，
+        // 波形图直接复用它，不必再跑一遍算法
+        QVector<ArtifactSpan> artifact_spans;
 
         // 预处理后的整段数据（帧优先交错，单位 µV），「导出数据」用它。
         // 一轮十分钟的记录约 10 MB —— 为了导出再算一遍要几百毫秒，

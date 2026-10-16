@@ -2436,7 +2436,10 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         result.report_sections = sections;
     }
 
-    // ---------- 17. 底栏那一行 ----------
+    // ---------- 17. 底栏状态条 ----------
+    // 一条里「标签：值」两段颜色不同（设计稿 info.png：标签 #212121、值 #7092ab），
+    // 组与组之间还有 20 的间距。颜色和间距都是排版的事，这里只把内容切好成
+    // 「组 → 段」，上色与间距交给 QML
     {
         const QVector<double> &row = data.at(std::clamp(job.current_channel, 0, channels - 1));
         double lowest = row.at(first);
@@ -2447,22 +2450,50 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             highest = std::max(highest, row.at(i));
         }
 
-        result.status_line =
-            tr("%1(第%2/%3)通道   片段内范围: %4 ~ %5 μV   片段: %6 - %7 s   %8   处理链: %9   质检: 弱信号 %10 · 异常值 %11 点 · 低相关 %12 通道")
-                .arg(eeg_montage::channel_name(job.current_channel))
-                .arg(job.current_channel + 1)
-                .arg(channels)
-                .arg(lowest, 0, 'f', 1)
-                .arg(highest, 0, 'f', 1)
-                .arg(result.segment_start, 0, 'f', 1)
-                .arg(result.segment_start + result.segment_seconds, 0, 'f', 1)
-                .arg(job.artifact_detection_enabled
-                         ? (artifact_samples == 0 ? tr("无伪差") : tr("有伪差"))
-                         : tr("伪差检测: 关"))
-                .arg(chain.isEmpty() ? tr("未启用") : chain.join(QStringLiteral(" → ")))
-                .arg(job.qc_signal_enabled ? QString::number(weak_channels) : tr("关"))
-                .arg(job.qc_range_enabled ? QString::number(outlier_samples) : tr("关"))
-                .arg(job.qc_correlation_enabled ? QString::number(low_correlation.size()) : tr("关"));
+        const auto label = [](const QString &text)
+        {
+            return QVariantMap{{QStringLiteral("text"), text},
+                               {QStringLiteral("kind"), QStringLiteral("label")}};
+        };
+        const auto value = [](const QString &text)
+        {
+            return QVariantMap{{QStringLiteral("text"), text},
+                               {QStringLiteral("kind"), QStringLiteral("value")}};
+        };
+
+        // 质检三项：关掉的整段不出现。设计稿里三项都是数，拿「关」当值占位只会
+        // 让这一组又长又难读
+        QStringList quality;
+        if (job.qc_signal_enabled)
+            quality.append(tr("弱信号 %1 点").arg(weak_channels));
+        if (job.qc_range_enabled)
+            quality.append(tr("异常值 %1 点").arg(outlier_samples));
+        if (job.qc_correlation_enabled)
+            quality.append(tr("低相关 %1 通道").arg(low_correlation.size()));
+
+        result.status_groups = QVariantList{
+            QVariantList{label(tr("%1(第%2/%3)通道")
+                                  .arg(eeg_montage::channel_name(job.current_channel))
+                                  .arg(job.current_channel + 1)
+                                  .arg(channels))},
+            QVariantList{label(tr("窗口内范围：")),
+                         value(QStringLiteral("%1~%2μV")
+                                   .arg(lowest, 0, 'f', 1)
+                                   .arg(highest, 0, 'f', 1))},
+            QVariantList{label(tr("片段：")),
+                         value(QStringLiteral("%1-%2 s")
+                                   .arg(result.segment_start, 0, 'f', 1)
+                                   .arg(result.segment_start + result.segment_seconds, 0, 'f', 1))},
+            QVariantList{label(job.artifact_detection_enabled
+                                   ? (artifact_samples == 0 ? tr("无伪差") : tr("有伪差"))
+                                   : tr("伪差检测：关"))},
+            QVariantList{label(tr("处理链：")),
+                         value(chain.isEmpty() ? tr("未启用")
+                                               : chain.join(QStringLiteral(" → ")))},
+            QVariantList{label(tr("质检：")),
+                         value(quality.isEmpty() ? tr("未启用")
+                                                 : quality.join(QStringLiteral("；")))},
+        };
     }
 
     result.ok = true;
@@ -2698,9 +2729,9 @@ QVariantList PostProcess::report_sections() const
     return m_result.report_sections;
 }
 
-QString PostProcess::status_line() const
+QVariantList PostProcess::status_groups() const
 {
-    return m_result.status_line;
+    return m_result.status_groups;
 }
 
 // ==================== 出图 ====================

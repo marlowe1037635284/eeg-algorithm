@@ -167,8 +167,10 @@ class PostProcess : public QObject
     Q_PROPERTY(QVariantList topoStats READ topo_stats NOTIFY resultChanged)
     // 报告页的分节内容：{ title, rows: [{label, value, kind}], chips: [...] , note }
     Q_PROPERTY(QVariantList reportSections READ report_sections NOTIFY resultChanged)
-    // 底栏那一行：处理链 / 片段 / 质检 / 窗口内幅值范围
-    Q_PROPERTY(QString statusLine READ status_line NOTIFY resultChanged)
+    // 底栏状态条：分组的分段文本。每组是若干段 { text, kind }，kind = "label" |
+    // "value"。分组只为排版上的间距（设计稿 info.png 里组间 20、组内紧贴），
+    // 上色交给 QML 按 kind 做 —— 标签走正文色、值走主色
+    Q_PROPERTY(QVariantList statusGroups READ status_groups NOTIFY resultChanged)
     // 有效片段（秒），报告页与底栏都要显示
     Q_PROPERTY(double segmentStartSeconds READ segment_start_seconds NOTIFY resultChanged)
     Q_PROPERTY(double segmentSeconds READ segment_seconds NOTIFY resultChanged)
@@ -276,7 +278,7 @@ public:
     QVariantList channel_bands() const;
     QVariantList topo_stats() const;
     QVariantList report_sections() const;
-    QString status_line() const;
+    QVariantList status_groups() const;
     double segment_start_seconds() const { return m_segment_start; }
     double segment_seconds() const { return m_segment_seconds; }
     double topo_scale_max() const { return m_topo_scale_max; }
@@ -469,7 +471,7 @@ private:
         QVariantList channel_bands;
         QVariantList topo_stats;
         QVariantList report_sections;
-        QString status_line;
+        QVariantList status_groups;
         double topo_scale_max = 0.0;
 
         double wave_range_uv = 100.0;

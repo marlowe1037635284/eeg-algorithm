@@ -65,11 +65,10 @@ Item {
     readonly property int contentWidth: 1323
     // 有通道条时内容压在通道条（y=692）上沿；其余有图页的内容压到时间轴
     // （y=754）上沿，否则正文会盖住时间轴。通道页 / 统计页 / 报告页没有时间轴，
-    // 内容一路铺到状态行（y=848）上方的留白处；地形图页最低到 674，在 683
-    // 之内，不会被裁
+    // 内容压到状态条（y=824）上沿；地形图页最低到 674，在 683 之内，不会被裁
     readonly property int contentHeight:
         tabHasChannelStrip ? 608
-                           : (tabHasTimeline ? 683 : 767)
+                           : (tabHasTimeline ? 683 : 753)
 
     // ---------- 打开记录 ----------
     // 记录号进来之后，从库里取这条记录的字段与事件标注，一并交给 Analysis。
@@ -527,44 +526,85 @@ Item {
                 }
             }
 
-            // ---------- 状态行 ----------
-            // 文案很长（导联 / 片段内范围 / 处理链 / 质检一长串），窄窗口放不下。
+            // ---------- 状态条 ----------
+            // 设计稿 info.png：1315×54 的胶囊条（圆角 9、panelFill 底 + panelBorder
+            // 1px 描边），一行 14px 的「标签：值」——标签走正文色、值走主色，
+            // 组与组之间留 20、组内紧贴（冒号后面不带空格）
+            //
+            // 文案很长（导联 / 窗口内范围 / 处理链 / 质检一长串），窄窗口放不下。
             // 不再直接省略号截断，而是横向可滚动：内容溢出时底部才浮出一条细滑块，
-            // 提示「还能往右拖」。放得下时滑块不出现、文字照旧左对齐，视觉与原来一致
+            // 提示「还能往右拖」。放得下时滑块不出现、文字照旧左对齐
             Rectangle {
                 x: root.contentX
-                y: 848
+                y: 824
                 width: root.contentWidth
-                height: 30
-                radius: 6
+                height: 54
+                radius: 9
                 clip: true
-                color: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.28)
+                color: Design.panelFill
+                border.width: 1
+                border.color: Design.panelBorder
 
                 Flickable {
                     id: statusFlick
                     anchors.fill: parent
-                    contentWidth: Math.max(width, statusText.implicitWidth + 28)
+                    // 左右各留 23 的内边距（设计稿里文字压在离框 23 处）
+                    contentWidth: Math.max(width, statusRow.implicitWidth + 46)
                     contentHeight: height
                     boundsBehavior: Flickable.StopAtBounds
                     flickableDirection: Flickable.HorizontalFlick
                     // 放得下就别让它有可拖动的余量，免得跟点击/滚轮抢事件
                     interactive: contentWidth > width + 1
 
+                    // 外层 Row 的 spacing 是「组间距」，内层 Row 的 0 让标签与值紧贴
+                    Row {
+                        id: statusRow
+                        x: 23
+                        y: Math.round((statusFlick.height - height) / 2)
+                        spacing: 20
+
+                        Repeater {
+                            model: Analysis.statusGroups
+
+                            delegate: Row {
+                                required property var modelData
+                                spacing: 0
+
+                                Repeater {
+                                    model: modelData
+
+                                    // 声明了 required 的 delegate 不再从上下文取
+                                    // modelData，这里显式拿内层 Repeater 的那一项
+                                    delegate: Text {
+                                        required property var modelData
+
+                                        text: modelData.text
+                                        color: modelData.kind === "value" ? Design.primary
+                                                                          : Design.textPrimary
+                                        font.family: Design.fontFamily
+                                        font.styleName: Design.styleRegular
+                                        font.pixelSize: 14
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 还没结果 / 正在算 / 出错时的兜底。字号与配色跟上面那行对齐，
+                    // 免得刚进页面时这条突然换个样
                     Text {
-                        id: statusText
-                        x: 14
+                        x: 23
                         height: statusFlick.height
                         verticalAlignment: Text.AlignVCenter
-                        text: Analysis.statusLine.length > 0
-                              ? Analysis.statusLine
-                              : (Analysis.busy ? qsTr("正在计算…")
-                                               : (Analysis.errorText.length > 0
-                                                  ? Analysis.errorText
-                                                  : qsTr("正在等待分析结果")))
-                        color: Design.textSecondary
+                        visible: Analysis.statusGroups.length === 0
+                        text: Analysis.busy ? qsTr("正在计算…")
+                                            : (Analysis.errorText.length > 0
+                                               ? Analysis.errorText
+                                               : qsTr("正在等待分析结果"))
+                        color: Design.textPrimary
                         font.family: Design.fontFamily
                         font.styleName: Design.styleRegular
-                        font.pixelSize: 13
+                        font.pixelSize: 14
                     }
 
                     // 细滑块。只在内容溢出时出现（AsNeeded），不画底槽、只留滑块，

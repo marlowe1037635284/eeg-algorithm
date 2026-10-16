@@ -2096,11 +2096,13 @@ bool AcquisitionBridge::scan_electrodes()
     }
 
     // 分档阈值（kΩ）。数值来自设备实测阻抗（B0…D0 帧每路一个 24 位值，
-    // 单位欧姆，经 serial_protocol::kKohmPerOhm 换算）；< 0 表示该路未连接
-    constexpr double kGoodBelow = 10.0;
-    constexpr double kPoorBelow = 18.0;
-    constexpr double kOffBelow = 30.0;
-    constexpr double kMaxBar = 60.0;
+    // 单位欧姆，经 serial_protocol::kKohmPerOhm 换算）；< 0 表示该路未连接。
+    // 四档：≤10 良好、10~40 一般、40~120 不良、>120（或未连接）脱落
+    constexpr double kGoodMax = 10.0;
+    constexpr double kFairMax = 40.0;
+    constexpr double kPoorMax = 120.0;
+    // 进度条满量程取「脱落」的下界，这样四档在条上的长度区分得开
+    constexpr double kMaxBar = 120.0;
 
     int good = 0;
     int fair = 0;
@@ -2116,17 +2118,17 @@ bool AcquisitionBridge::scan_electrodes()
         const bool disconnected = kohm < 0.0;
 
         QString level;
-        if (disconnected || kohm >= kOffBelow)
+        if (disconnected || kohm > kPoorMax)
         {
             level = QStringLiteral("脱落");
             ++off;
         }
-        else if (kohm < kGoodBelow)
+        else if (kohm <= kGoodMax)
         {
             level = QStringLiteral("良好");
             ++good;
         }
-        else if (kohm < kPoorBelow)
+        else if (kohm <= kFairMax)
         {
             level = QStringLiteral("一般");
             ++fair;

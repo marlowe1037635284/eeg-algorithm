@@ -220,13 +220,13 @@ Item {
                     onToggled: Analysis.asrEnabled = !Analysis.asrEnabled
                 }
 
-                // 滑块：值域 5~100，与 C++ 侧 set_asr_cutoff 的夹取范围一致
+                // 滑块：值域 0~40，与 C++ 侧 set_asr_cutoff 的夹取范围一致
                 RowSlider {
                     y: 50
                     label: qsTr("Cutoff 程度")
                     text: Analysis.asrCutoff
-                    from: 5
-                    to: 100
+                    from: 0
+                    to: 40
                     value: Analysis.asrCutoff
                     onMoved: (value) => Analysis.asrCutoff = Math.round(value)
                 }

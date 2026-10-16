@@ -412,7 +412,7 @@ private:
         int downsample_index = 0;
         bool baseline_enabled = false;
         bool asr_enabled = false;
-        int asr_cutoff = 40;
+        int asr_cutoff = 20;
         // 伪迹检测开关与「窗口和缩放」里的幅度（0 = 自动），以及质检三个阈值与修复方式
         bool artifact_detection_enabled = false;
         double wave_amplitude_uv = 0.0;
@@ -570,7 +570,7 @@ private:
         int downsample_index = 0;
         bool baseline_enabled = false;
         bool asr_enabled = false;
-        int asr_cutoff = 40;
+        int asr_cutoff = 20;
         bool artifact_detection_enabled = false;
         double wave_amplitude_uv = 0.0;   // 0 = 自动
         bool qc_signal_enabled = true;

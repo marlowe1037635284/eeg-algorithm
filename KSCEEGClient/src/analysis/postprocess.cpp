@@ -1479,7 +1479,7 @@ void PostProcess::set_asr_enabled(bool value)
 
 void PostProcess::set_asr_cutoff(int value)
 {
-    const int clamped = std::clamp(value, 5, 100);
+    const int clamped = std::clamp(value, 0, 40);
     if (m_params.asr_cutoff == clamped)
         return;
     m_params.asr_cutoff = clamped;

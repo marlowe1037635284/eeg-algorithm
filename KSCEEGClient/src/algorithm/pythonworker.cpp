@@ -442,10 +442,14 @@ void PythonWorker::run()
                         try
                         {
                             const qint64 missing_last = item.chunk.first_sequence_id - 1;
+                            // 缺口结束时间戳必须严格早于下一块的首时间戳：算法侧用
+                            // `timestamps_ns[0] <= _last_timestamp_ns` 判「时间戳重复或倒退」，
+                            // 若把结束时间戳传成下一块的首时间戳，缺口后的第一块会被直接拒掉
+                            const qint64 gap_end_timestamp_ns = item.chunk.first_timestamp_ns - 1;
                             session->bridge.attr("notify_gap")(
                                 session->session_id, session->next_expected_sequence_id,
                                 missing_last, item.chunk.first_timestamp_ns,
-                                item.chunk.first_timestamp_ns, std::string("sequence_align"));
+                                gap_end_timestamp_ns, std::string("sequence_align"));
                             session->gap_count += 1;
                         }
                         catch (const py::error_already_set &exc)

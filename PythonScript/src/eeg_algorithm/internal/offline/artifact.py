@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 from numpy.typing import NDArray
-from scipy import signal as scipy_signal
+
 
 from eeg_algorithm.types import (
     ArtifactDetectionConfig,
@@ -12,11 +12,30 @@ from eeg_algorithm.types import (
     SignalBlock,
 )
 
-from eeg_algorithm.internal.common.filter_design import highpass_sos
+from scipy.signal import detrend, welch
 
 # 伪迹异常类型标识（用于界面按类型区分标注）
 ARTIFACT = "artifact"
+# 第一步：阈值候选
+ENABLE_AMPLITUDE = True
+BASELINE_SEC = 0.5
+UPDATE_SEC = 0.5
+K_SIGMA = 5.0
+MIN_STD_UV = 1.0
+MERGE_GAP_SEC = 0.08
 
+# 第二步：持续时间
+ENABLE_DURATION = True
+MIN_DURATION_SEC = 0.10
+MAX_DURATION_SEC = 0.50
+
+# 第三步：低频功率占比
+ENABLE_SPECTRUM = True
+SPECTRUM_LOW_HZ = 0.5
+SPECTRUM_HIGH_HZ = 5.0
+SPECTRUM_TOTAL_HIGH_HZ = 30.0
+MIN_LOW_POWER_RATIO = 0.60
+SPECTRUM_WINDOW_SEC = 2.0
 
 def detect_artifacts_offline(
     signal: SignalBlock,
@@ -36,9 +55,6 @@ def detect_artifacts_offline(
     artifact_mask = _detect_artifacts(
         values,
         layout.sample_rate_hz,
-        config.jump_ratio,
-        config.high_freq_hz,
-        config.high_freq_ratio,
     )
     segments = _extract_segments(artifact_mask, layout.channel_names, signal.timestamps_ns, ARTIFACT)
     return ArtifactReport(
@@ -50,69 +66,126 @@ def detect_artifacts_offline(
 def _detect_artifacts(
     values: NDArray[np.float32],
     sample_rate_hz: float,
-    jump_ratio: float,
-    high_freq_hz: float,
-    high_freq_ratio: float,
 ) -> NDArray[np.bool_]:
-    """伪迹检测：跳变伪迹 + 高频能量伪迹组合（任一命中即标记）。"""
-    jump_mask = _detect_jumps(values, jump_ratio)
-    high_freq_mask = _detect_high_freq(values, sample_rate_hz, high_freq_hz, high_freq_ratio)
-    return jump_mask | high_freq_mask
-
-
-def _detect_jumps(
-    values: NDArray[np.float32],
-    jump_ratio: float,
-) -> NDArray[np.bool_]:
-    """跳变/尖峰伪迹：一阶差分超过中位数差分的 jump_ratio 倍。"""
     mask = np.zeros(values.shape, dtype=np.bool_)
-    if values.shape[1] < 2:
-        return mask
-    ratio = float(jump_ratio)
-    if ratio <= 0:
-        return mask
+
     for c in range(values.shape[0]):
-        x = values[c]
-        diff = np.abs(np.diff(x))
-        median_diff = float(np.median(diff))
-        if median_diff <= 0:
-            continue
-        jump = diff > ratio * median_diff
-        idx = np.flatnonzero(jump)
-        if idx.size:
-            mask[c, idx + 1] = True  # 跳变发生处的样本
+        x = np.asarray(values[c], dtype=np.float64)
+
+        # 第一步：阈值候选，内部包含80 ms间隔合并。
+        candidates = _detect_amplitude_candidates(x, sample_rate_hz)
+
+        # 第二步：持续时间筛选。
+        if ENABLE_DURATION:
+            candidates = _filter_duration(candidates, sample_rate_hz)
+
+        # 第三步：频谱筛选。
+        if ENABLE_SPECTRUM:
+            candidates = _filter_spectrum(x, candidates, sample_rate_hz)
+
+        # 只有最终通过的候选，才写入掩码。
+        for start, end in candidates:
+            mask[c, start:end] = True
+
     return mask
 
+def _detect_amplitude_candidates(x, fs):
+    base_n = max(4, round(BASELINE_SEC * fs))
+    block_n = max(1, round(UPDATE_SEC * fs))
 
-def _detect_high_freq(
-    values: NDArray[np.float32],
-    sample_rate_hz: float,
-    high_freq_hz: float,
-    high_freq_ratio: float,
-) -> NDArray[np.bool_]:
-    """高频能量伪迹：1 秒窗口内高通分量能量占比超过 high_freq_ratio。"""
-    mask = np.zeros(values.shape, dtype=np.bool_)
-    n_channels, n_samples = values.shape
-    nyquist = sample_rate_hz / 2.0
-    if n_samples < 2 or not 0 < high_freq_hz < nyquist:
-        return mask
-    sos = highpass_sos(high_freq_hz, sample_rate_hz)
-    window = max(1, int(round(sample_rate_hz)))
-    ratio = float(high_freq_ratio)
-    for c in range(n_channels):
-        x = values[c]
-        try:
-            hf = scipy_signal.sosfiltfilt(sos, x)
-        except ValueError:
-            continue
-        for start in range(0, n_samples, window):
-            end = min(start + window, n_samples)
-            orig_energy = float(np.sum(x[start:end] ** 2))
-            hf_energy = float(np.sum(hf[start:end] ** 2))
-            if orig_energy > 0 and (hf_energy / orig_energy) > ratio:
-                mask[c, start:end] = True
-    return mask
+    if len(x) <= base_n:
+        return []
 
+    mu = float(np.mean(x[:base_n]))
+    sigma = max(float(np.std(x[:base_n])), MIN_STD_UV)
+    flags = np.zeros(len(x), dtype=np.bool_)
+
+    # 与上传脚本一致：False仍以2σ生成候选。
+    k = K_SIGMA if ENABLE_AMPLITUDE else 2.0
+
+    for left in range(base_n, len(x), block_n):
+        right = min(len(x), left + block_n)
+        abnormal = np.abs(x[left:right] - mu) > k * sigma
+        flags[left:right] = abnormal
+
+        # 整块没有超阈值点，才更新背景。
+        if not abnormal.any() and right - left >= 4:
+            mu = float(np.mean(x[left:right]))
+            sigma = max(
+                float(np.std(x[left:right])),
+                MIN_STD_UV,
+            )
+
+    # 将连续True转成候选区间[start, end)。
+    edges = np.diff(
+        np.r_[False, flags, False].astype(np.int8)
+    )
+    starts = np.flatnonzero(edges == 1)
+    ends = np.flatnonzero(edges == -1)
+
+    # 合并间隔不超过80 ms的候选。
+    gap = round(MERGE_GAP_SEC * fs)
+    candidates = []
+
+    for start, end in zip(starts, ends):
+        start, end = int(start), int(end)
+
+        if candidates and start - candidates[-1][1] <= gap:
+            candidates[-1] = (candidates[-1][0], end)
+        else:
+            candidates.append((start, end))
+
+    return candidates
+
+
+def _filter_duration(candidates, fs):
+    return [
+        (start, end)
+        for start, end in candidates
+        if MIN_DURATION_SEC <= (end - start) / fs
+        <= MAX_DURATION_SEC
+    ]
+
+
+def _filter_spectrum(x, candidates, fs):
+    accepted = []
+    win = max(16, round(SPECTRUM_WINDOW_SEC * fs))
+
+    if len(x) < win:
+        return accepted
+
+    for start, end in candidates:
+        mid = (start + end) // 2
+
+        # 尽量以候选中心取窗；靠近边缘时向记录内部移动。
+        left = max(0, min(mid - win // 2, len(x) - win))
+        chunk = x[left:left + win]
+
+        # 保留上传脚本的线性去趋势、Welch和补零设置。
+        frequencies, psd = welch(
+            detrend(chunk, type="linear"),
+            fs=fs,
+            nperseg=len(chunk),
+            nfft=max(len(chunk), round(4 * fs)),
+        )
+
+        low_mask = (
+            (frequencies >= SPECTRUM_LOW_HZ)
+            & (frequencies <= SPECTRUM_HIGH_HZ)
+        )
+        total_mask = (
+            (frequencies >= SPECTRUM_LOW_HZ)
+            & (frequencies <= SPECTRUM_TOTAL_HIGH_HZ)
+        )
+
+        denominator = float(np.sum(psd[total_mask]))
+
+        if denominator > 0:
+            ratio = float(np.sum(psd[low_mask])) / denominator
+            if ratio >= MIN_LOW_POWER_RATIO:
+                accepted.append((start, end))
+
+    return accepted
 
 def _extract_segments(
     mask: NDArray[np.bool_],

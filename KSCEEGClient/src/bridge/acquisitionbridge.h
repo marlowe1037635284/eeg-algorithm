@@ -173,7 +173,9 @@ public:
     // 连接设备：串口未开则自动打开，并**等结果回来再返回**。
     // 供「开始采集」弹确认框之前调用 —— 确认框里的「连接」一栏要显示真实状态，
     // 而 open_port 只表示「已发起」（异步打开），发起后立刻弹框会先显示成「未连接」
-    Q_INVOKABLE bool connect_device();
+    // preferred_port 非空且仍在枚举列表里时优先用它（自动重连时传掉线前的口）；
+    // 否则退回「取 COM 编号最大」的盲选
+    Q_INVOKABLE bool connect_device(const QString &preferred_port = QString());
     // 开始采集：开串口（若未开）、建算法会话、开始落盘。
     // 串口连接在 connect_device() 里已经做过；这里只兜底（直接调用本函数的场景）。
     // patient_no 非空时按患者建子目录落盘（目录名用病历号，不用姓名）
@@ -181,10 +183,6 @@ public:
     Q_INVOKABLE void stop_collection();
     Q_INVOKABLE void reset_session();
     Q_INVOKABLE void clear_error();
-
-    // 截图存放目录：程序执行目录下的 snapshoot 子目录（与 records 并列）。
-    // 目录不存在时创建。创建失败返回空串，界面据此提示保存失败
-    Q_INVOKABLE QString snapshot_dir();
 
     // 演示数据源：不接设备，直接在进程内合成 16 通道样本，按真实采集的节拍
     // 走**同一条** deliver() 通路灌进去。
@@ -371,6 +369,11 @@ private:
     void on_port_open_failed(const QString &message);
     void on_port_closed(const QString &message);
     void on_device_lost(const QString &message);
+    // 非预期掉线后的自动重连：串口线程自己结束时启动定时器，设备插回来后
+    // 由 try_reconnect() 重新走 connect_device()。故意断开（退出登录、换串口）
+    // 不会走到这里
+    void schedule_reconnect();
+    void try_reconnect();
     void on_stats_changed(qint64 received, qint64 saved, qint64 dropped, qint64 frame_skips);
     void on_status_message(const QString &message);
     void on_failed(const QString &message);
@@ -535,7 +538,15 @@ private:
     bool m_impedance_pending = false;
 
     QStringList m_available_ports;
+    // 最近一次尝试打开的串口名。自动重连优先用它，避免设备换号后连错口
+    QString m_last_port_name;
     bool m_port_open = false;
+    // 拔线 / 掉电后的自动重连。interval 取 1.5 秒：设备重新枚举通常要这么久，
+    // 再快只会在「端口还没出现」上空转
+    QTimer m_reconnect_timer;
+    // close_port() 主动断开期间置真，用来把「用户要断开」与「设备掉了」分开 ——
+    // 前者绝不能触发自动重连
+    bool m_closing_intentionally = false;
     bool m_collecting = false;
     QString m_status_text;
     QString m_error_text;

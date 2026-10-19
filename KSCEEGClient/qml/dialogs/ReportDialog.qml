@@ -14,7 +14,14 @@ Item {
     id: root
 
     signal dismissed()
-    signal exportRequested(string recordNo)
+    // 报告正文已经截好图（临时 PNG），交给外层转成 PDF 写进文件保存目录。
+    // 走「截图 → PDF」而不是在 C++ 里重排一遍：预览长什么样，导出就该是什么样
+    // 后四个参数是「报告纸张在卡片正文里的裁剪比例」，由本组件按自己的版式算好，
+    // 外层不要重新抄一遍坐标 —— 版式一改，导出区域会跟着走
+    signal exportPdfRequested(string imagePath, string reportNo,
+                              real cropLeft, real cropTop,
+                              real cropWidth, real cropHeight)
+    signal exportFailed(string message)
 
     // 要出报告的记录号，弹出前由 Main 回填
     property string recordNo: ""
@@ -24,6 +31,11 @@ Item {
     function reload() {
         const row = database ? database.session(recordNo) : ({})
         detail = row
+        // 换一条记录就回到成品状态，并把上一次的截取丢掉 —— 否则新报告
+        // 打开时还停在旧记录的那一帧上
+        editing = false
+        playing = false
+        hasCapture = false
 
         // 波形读的是这条记录落盘的那个原始文件；没落盘就退到空态说明白
         if (row.filePath !== undefined && row.filePath.length > 0)
@@ -37,9 +49,14 @@ Item {
     property var detail: ({})
 
     // ---------- 报告取数 ----------
-    // 报告编号直接用记录号（如 R-0001）
-    readonly property string reportNo:
-        detail.no !== undefined && detail.no.length > 0 ? detail.no : "—"
+    // 报告编号规则：EEG-年月日流水号（流水号两位，如 EEG-2026101908）。
+    // 编号由数据层生成并落库，预览与导出必须拿同一个号，不能各算各的
+    readonly property string reportNo: {
+        if (!database || recordNo.length === 0)
+            return "—"
+        const no = database.reportNumber(recordNo)
+        return no !== undefined && no !== null && no.length > 0 ? no : "—"
+    }
 
     // 医院名走系统设置；没配过就显示空
     readonly property string hospitalName: {
@@ -78,6 +95,23 @@ Item {
     readonly property string rateText:
         detail.rate !== undefined ? String(detail.rate) + qsTr("HZ") : "—"
 
+    // ---------- 实时波形截图（编辑态） ----------
+    // 打开报告时是「成品」状态：只有「编辑」按钮，底下是上次截取的那一屏。
+    // 点「编辑」才展开回放 / 截取 / 确认 —— 这三个按钮不该一直挂在报告上
+    property bool editing: false
+    // 「截取」是否已经拿过一帧。确认后回到成品状态时用它决定窗口位置要
+    // 恢复到哪一帧，而不是停在用户随后拖到的位置
+    property bool hasCapture: false
+    property double capturedWindowStart: 0
+    // 正在 grabToImage / 导出。期间把导出按钮收起来，免得被截进报告里
+    property bool exporting: false
+    // 报告纸张在卡片正文里的位置与尺寸。导出时截的是整张卡片正文，
+    // 按这四个数裁出真正要印的那一页
+    readonly property int paperX: 9
+    readonly property int paperY: 79
+    readonly property int paperWidth: 612
+    readonly property int paperHeight: 866
+
     // ---------- 回放 ----------
     property bool playing: false
     readonly property double totalSeconds: Math.max(0.01, Recording.durationSeconds)
@@ -93,7 +127,7 @@ Item {
     Timer {
         interval: 16
         repeat: true
-        running: root.playing && Recording.loaded
+        running: root.playing && root.editing && Recording.loaded
         onTriggered: {
             const next = Recording.windowStart + 0.05
             if (next >= root.windowSpan) {
@@ -114,6 +148,51 @@ Item {
         if (h > 0)
             return h + ":" + String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
         return String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0")
+    }
+
+    // 导出当前这份报告：把正文按 A4 的像素尺寸截下来，由 C++ 裁掉卡片边距后
+    // 写入 PDF。截之前先退出编辑态，回放 / 截取 / 确认那一排不会进报告。
+    // 临时 PNG 放在导出目录里，C++ 读完会删掉
+    function exportPdf() {
+        if (root.exporting)
+            return
+        if (!database || !frame.contentRoot) {
+            root.exportFailed(qsTr("导出失败：报告尚未就绪"))
+            return
+        }
+        const folder = database.recordDirectory()
+        if (!folder || folder.length === 0) {
+            root.exportFailed(qsTr("找不到可用的导出目录"))
+            return
+        }
+
+        root.exporting = true
+        root.playing = false
+        root.editing = false
+        if (root.hasCapture)
+            Recording.windowStart = root.capturedWindowStart
+
+        const stem = root.reportNo === "—" ? qsTr("脑电检查报告") : root.reportNo
+        const temp = folder + "/" + stem + "_report_tmp.png"
+
+        // 等一帧再截：editing=false 后控制条要先真正隐藏，否则会截进 PDF
+        Qt.callLater(function() {
+            // 目标尺寸按卡片与报告纸张的尺寸比放大，保证裁出来的正文正好
+            // 接近 A4@150dpi（1240×1754）
+            frame.contentRoot.grabToImage(function(result) {
+                root.exporting = false
+                if (!result || !result.saveToFile(temp)) {
+                    root.exportFailed(qsTr("导出失败：无法生成报告截图"))
+                    return
+                }
+                // 裁剪比例按卡片实际尺寸算，而不是在调用方写死一组数字
+                root.exportPdfRequested(temp, stem,
+                                        root.paperX / frame.cardWidth,
+                                        root.paperY / frame.cardHeight,
+                                        root.paperWidth / frame.cardWidth,
+                                        root.paperHeight / frame.cardHeight)
+            }, Qt.size(1277, 1937))
+        })
     }
 
     // ---------- 报告里的两个小零件 ----------
@@ -213,6 +292,7 @@ Item {
     }
 
     DialogFrame {
+        id: frame
         title: qsTr("脑电检查报告")
         cardX: 645
         cardY: 62
@@ -243,21 +323,23 @@ Item {
                 font.letterSpacing: -0.27
             }
 
+            visible: !root.exporting
+
             MouseArea {
                 id: headerExportMouse
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
-                onClicked: root.exportRequested(root.recordNo)
+                onClicked: root.exportPdf()
             }
         }
 
         // ---------- 报告纸张 ----------
         Rectangle {
-            x: 9
-            y: 79
-            width: 612
-            height: 866
+            x: root.paperX
+            y: root.paperY
+            width: root.paperWidth
+            height: root.paperHeight
             radius: 6
             color: "#ffffff"
             border.width: 1
@@ -465,6 +547,8 @@ Item {
             width: 67
             height: 28
             radius: 6
+            // 编辑态下由回放 / 截取 / 确认接管；成品状态只留这一颗按钮
+            visible: !root.editing && !root.exporting
             color: editMouse.pressed ? Qt.rgba(0.44, 0.57, 0.67, 0.26)
                                      : Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.14)
             border.width: 1
@@ -485,6 +569,7 @@ Item {
                 anchors.fill: parent
                 hoverEnabled: true
                 cursorShape: Qt.PointingHandCursor
+                onClicked: root.editing = true
             }
         }
 
@@ -716,11 +801,13 @@ Item {
             }
 
             // ---------- 控制条 ----------
+            // 只在编辑态出现。成品状态的报告上不该挂着回放 / 截取 / 确认
             Rectangle {
                 x: 0
                 y: 347
                 width: wavePanel.width
                 height: 34
+                visible: root.editing
                 color: Qt.rgba(0, 0, 0, 0.04)
             }
 
@@ -731,6 +818,7 @@ Item {
                 width: 70
                 height: 28
                 radius: 6
+                visible: root.editing
                 color: replayMouse.pressed ? "#64879f" : Design.primary
                 opacity: Recording.loaded ? 1.0 : 0.45
 
@@ -796,6 +884,7 @@ Item {
                 width: 181
                 height: 4
                 radius: 2
+                visible: root.editing
                 color: Qt.rgba(0, 0, 0, 0.10)
             }
 
@@ -805,6 +894,7 @@ Item {
                 width: 181 * root.playheadRatio
                 height: 4
                 radius: 2
+                visible: root.editing
                 color: Qt.rgba(0x70 / 255, 0x92 / 255, 0xab / 255, 0.65)
             }
 
@@ -814,6 +904,7 @@ Item {
                 width: 10
                 height: 10
                 radius: 5
+                visible: root.editing
                 color: "#59809c"
                 border.width: 1
                 border.color: "#ffffff"
@@ -824,6 +915,7 @@ Item {
                 y: 350
                 height: 28
                 verticalAlignment: Text.AlignVCenter
+                visible: root.editing
                 text: root.formatClock(root.playheadRatio * root.totalSeconds)
                       + " / " + root.formatClock(root.totalSeconds)
                 color: Design.textSecondary
@@ -832,13 +924,16 @@ Item {
                 font.pixelSize: 10
             }
 
-            // 「截取」：本轮只做样式与点击态
+            // 「截取」：暂停回放，把当前这一屏记下来。
+            // 真正「进入报告」的时机是随后的「确认」——确认时窗口恢复到这一帧，
+            // 用户在那之前又把波形拖走也不会影响截取结果
             Rectangle {
                 x: 376
                 y: 350
                 width: 67
                 height: 28
                 radius: 6
+                visible: root.editing
                 color: clipMouse.pressed ? Qt.rgba(0, 0, 0, 0.14) : Qt.rgba(0, 0, 0, 0.06)
 
                 Text {
@@ -855,16 +950,23 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        root.playing = false
+                        root.capturedWindowStart = Recording.windowStart
+                        root.hasCapture = true
+                    }
                 }
             }
 
-            // 「确认」：按当前这份报告导出 PDF
+            // 「确认」：收起回放 / 截取，报告回到成品状态。
+            // 成品状态展示的就是刚才截取的那一帧
             Rectangle {
                 x: 452
                 y: 350
                 width: 71
                 height: 28
                 radius: 6
+                visible: root.editing
                 color: confirmMouse.pressed ? "#64879f" : Design.primary
 
                 Text {
@@ -881,7 +983,14 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: root.exportRequested(root.recordNo)
+                    onClicked: {
+                        root.playing = false
+                        // 回到「截取」时那一刻：确认之后背景控制条收起，
+                        // 报告上留下的必须是被截下来的那一屏
+                        if (root.hasCapture)
+                            Recording.windowStart = root.capturedWindowStart
+                        root.editing = false
+                    }
                 }
             }
         }

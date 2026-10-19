@@ -31,4 +31,17 @@ public:
     // 返回 { success, message, path }。失败时 message 说明原因，path 为空
     Q_INVOKABLE QVariantMap exportPdf(const QVariantMap &session, const QVariantList &events,
                                       const QString &directory) const;
+
+    // 「脑电检查报告」弹窗的导出：那边是 QML 按设计稿排的版，C++ 再照着重排一遍
+    // 必然走样，所以由 QML 把正文区 grabToImage 成临时 PNG，这里只负责按 A4 出页。
+    //
+    // crop_* 是相对截图的裁剪比例（0~1）。弹窗截的是整张卡片，而报告纸张只占
+    // 卡片里的一块，裁掉卡片边距与标题栏才能得到「只剩报告正文」的那一页。
+    // 临时 PNG 在成功后删除。
+    //
+    // 返回 { success, message, path }
+    Q_INVOKABLE QVariantMap exportImagePdf(const QString &image_path, const QString &directory,
+                                           const QString &stem, qreal crop_left,
+                                           qreal crop_top, qreal crop_width,
+                                           qreal crop_height) const;
 };

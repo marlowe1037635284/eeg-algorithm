@@ -20,6 +20,10 @@ Item {
     property string scanError: ""
     // 是否正在采集（由工作台注入 root.collecting）。采集中禁止再发起阻抗扫描
     property bool collecting: false
+    // 「低阻抗自动提醒」阈值（kΩ），由工作台从系统设置注入。任一通道的实测
+    // 阻抗超过它，扫描完成后就要弹框提醒 —— 与固定分档（10/40/120）无关，
+    // 这是用户自己定的那条线
+    property int impedanceThreshold: 40
 
     // 设备实际采到的 16 路。有扫描结果就按结果走，没有则退回「未扫描」全灰默认
     readonly property var quality: Acq.electrodeScanValid ? Acq.electrodeQuality : []
@@ -100,6 +104,21 @@ Item {
     readonly property bool hasDetachedElectrode: {
         for (var i = 0; i < rows.length; ++i) {
             if (rows[i].level === "脱落")
+                return true
+        }
+        return false
+    }
+
+    // 是否有通道超过「低阻抗自动提醒」阈值。脱落通道单独由上面那条判据覆盖；
+    // 这里比较的是实测 kΩ 值，而不是固定分档的等级 —— 阈值可配，等级不可配。
+    // 未扫描时 rows 里没有 kohm 字段，不会误判
+    readonly property bool hasHighImpedance: {
+        if (!hasScan)
+            return false
+        for (var i = 0; i < rows.length; ++i) {
+            if (rows[i].level === "脱落")
+                continue
+            if (Number(rows[i].kohm) > impedanceThreshold)
                 return true
         }
         return false

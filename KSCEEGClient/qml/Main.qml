@@ -349,7 +349,7 @@ ApplicationWindow {
         Privacy.enabled = appDatabase.setting("data_mask", "false") === "true"
     }
 
-    // 导出一条采集记录。导出目录跟「系统设置 → 记录保存目录」用同一个 —— 记录本来就
+    // 导出一条采集记录。导出目录跟「系统设置 → 文件保存目录」用同一个 —— 记录本来就
     // 落在那里，导出再落到同一个地方，用户不必跑到两个目录里找东西。
     // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录，这里直接信它
     function exportRecord(recordNo) {
@@ -385,6 +385,21 @@ ApplicationWindow {
 
         var result = recordReport.exportPdf(detail,
                                             appDatabase.sessionEvents(recordNo), folder)
+        showToast(result.message, result.success ? "success" : "error")
+    }
+
+    // 「脑电检查报告」的导出：QML 已经把弹窗正文截图成临时 PNG（版式与预览
+    // 完全一致），这里只把它写进 PDF。裁剪比例由 ReportDialog 按自己的版式
+    // 随信号一起给过来，这里不再维护第二份坐标
+    function exportReportPdf(imagePath, reportNo, cropLeft, cropTop, cropWidth, cropHeight) {
+        var folder = appDatabase.recordDirectory()
+        if (!folder || folder.length === 0) {
+            showToast(qsTr("找不到可用的导出目录"), "error")
+            return
+        }
+
+        var result = recordReport.exportImagePdf(imagePath, folder, reportNo,
+                                                 cropLeft, cropTop, cropWidth, cropHeight)
         showToast(result.message, result.success ? "success" : "error")
     }
 
@@ -497,6 +512,10 @@ ApplicationWindow {
             // 落盘目录同理：工作台重建时读一次设置，采集时就近用它。
             // recordDirectory() 会把「本机不存在的旧路径」自动纠正成默认目录
             recordDir: appDatabase.recordDirectory()
+            // 低阻抗自动提醒阈值。设置页会把它收敛到 1–200，这里再兜一次底，
+            // 免得库里被手工改成脏数据后每条通道都触发弹框
+            impedanceThreshold: Math.max(1, Math.min(200,
+                Number(appDatabase.setting("low_impedance_kohm", "40")) || 40))
 
             onLogoutRequested: window.requestLogout()
             onChangePasswordRequested: window.openChangePassword()
@@ -868,7 +887,12 @@ ApplicationWindow {
                 Recording.close()
                 window.closeDialog()
             }
-            onExportRequested: (recordNo) => window.exportRecordPdf(recordNo)
+            onExportPdfRequested: (imagePath, reportNo, cropLeft, cropTop,
+                                   cropWidth, cropHeight) =>
+                                  window.exportReportPdf(imagePath, reportNo,
+                                                         cropLeft, cropTop,
+                                                         cropWidth, cropHeight)
+            onExportFailed: (message) => window.showToast(message, "error")
         }
     }
 

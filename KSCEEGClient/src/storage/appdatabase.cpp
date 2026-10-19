@@ -419,9 +419,16 @@ bool AppDatabase::createTables()
                        "sample_rate INTEGER NOT NULL DEFAULT 0,"
                        "event_count INTEGER NOT NULL DEFAULT 0,"
                        "electrode_quality TEXT NOT NULL DEFAULT '',"
-                       "file_path TEXT NOT NULL DEFAULT '')"),
+                       "file_path TEXT NOT NULL DEFAULT '',"
+                       "report_no TEXT NOT NULL DEFAULT '')"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_sessions_patient "
                        "ON recording_sessions(patient_no)"),
+
+        // 报告编号的按日流水号。单独一张表是为了让「已发放的号」不随记录删除
+        // 一起消失 —— 编号印在导出的 PDF 上，不能回收重发
+        QStringLiteral("CREATE TABLE IF NOT EXISTS report_sequences ("
+                       "day TEXT PRIMARY KEY NOT NULL,"
+                       "seq INTEGER NOT NULL DEFAULT 0)"),
 
         // 标注标签。系统设置页的「标签管理」与工作台的「手动标记」共用这一份 ——
         // 原来工作台那份标签是写死在 QML 里的，加一个标签要改代码
@@ -468,6 +475,10 @@ bool AppDatabase::createTables()
     // 采集时的电极贴合结果（「N/16 良好」）。老库没有这一列，补上后历史记录预览
     // 才能显示采集当时实测的贴合值，而不是一个写死的占位
     ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("electrode_quality"),
+                  QStringLiteral("TEXT NOT NULL DEFAULT ''"));
+    // 报告编号（EEG-年月日流水号）。老库没有这一列，补上后第一次打开报告时
+    // 才会生成并写回；没有它，每次预览 / 导出都得重新推算，两次可能给出不同编号
+    ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("report_no"),
                   QStringLiteral("TEXT NOT NULL DEFAULT ''"));
 
     // 用户管理页要用到、而最初建表时没有的几列。老库上这几列不存在，
@@ -1294,6 +1305,119 @@ QVariantList AppDatabase::sessionEvents(const QString &record_no)
     return rows;
 }
 
+QString AppDatabase::reportNumber(const QString &record_no)
+{
+    const int id = parse_record_id(record_no);
+    if (id < 0 || !ensureOpen())
+        return QString();
+    if (!sessionBelongsToCurrentUser(id))
+        return QString();
+
+    QSqlQuery query(m_database);
+    query.prepare(QStringLiteral(
+        "SELECT started_at, report_no FROM recording_sessions WHERE id = ? LIMIT 1"));
+    query.addBindValue(id);
+    if (!query.exec() || !query.next())
+    {
+        if (query.lastError().isValid())
+            qWarning() << "[db] 读取报告编号失败:" << query.lastError().text();
+        return QString();
+    }
+
+    // 已经生成过就一直用它：报告编号是这份文档的身份，重发一次不能换号
+    const QString existing = query.value(1).toString();
+    if (!existing.isEmpty())
+        return existing;
+
+    // 日期取采集当天（本地时区），不是打开报告的那一天 —— 隔天补打一份
+    // 昨天的报告，编号仍应落在昨天那一段
+    const QDateTime started = parse_utc_stamp(query.value(0).toString());
+    const QDate day = started.isValid() ? started.date() : QDate::currentDate();
+    const QString day_key = day.toString(QStringLiteral("yyyyMMdd"));
+    const QString prefix = QStringLiteral("EEG-%1").arg(day_key);
+
+    // 流水号必须独立记账，不能从「现有记录里最大的 report_no」推：删掉当天
+    // 最后一条记录后，再打开另一份报告会重新发出同一个编号，而已经导出的
+    // PDF 上印着的号不能回收。计数表按日持久化，删记录不影响已发放的号
+    m_database.transaction();
+
+    int next = 1;
+    QSqlQuery sequence_query(m_database);
+    sequence_query.prepare(QStringLiteral(
+        "SELECT seq FROM report_sequences WHERE day = ?"));
+    sequence_query.addBindValue(day_key);
+    if (sequence_query.exec() && sequence_query.next())
+    {
+        next = sequence_query.value(0).toInt() + 1;
+        QSqlQuery bump(m_database);
+        bump.prepare(QStringLiteral(
+            "UPDATE report_sequences SET seq = ? WHERE day = ?"));
+        bump.addBindValue(next);
+        bump.addBindValue(day_key);
+        bump.exec();
+    }
+    else
+    {
+        // 老库第一次发号：还没有计数行，从已有 report_no 的最大值接上，
+        // 避免升级后与已经打印出去的编号撞号
+        QSqlQuery scan(m_database);
+        scan.prepare(QStringLiteral(
+            "SELECT report_no FROM recording_sessions WHERE report_no LIKE ?"));
+        scan.addBindValue(prefix + QStringLiteral("%"));
+        if (scan.exec())
+        {
+            while (scan.next())
+            {
+                const QString no = scan.value(0).toString();
+                bool ok = false;
+                const int sequence = no.mid(prefix.size()).toInt(&ok);
+                if (ok)
+                    next = std::max(next, sequence + 1);
+            }
+        }
+
+        QSqlQuery insert(m_database);
+        insert.prepare(QStringLiteral(
+            "INSERT OR REPLACE INTO report_sequences(day, seq) VALUES(?, ?)"));
+        insert.addBindValue(day_key);
+        insert.addBindValue(next);
+        insert.exec();
+    }
+
+    // 流水号超过 99 时自然变成三位，不截断
+    const QString generated
+        = QStringLiteral("%1%2").arg(prefix).arg(next, 2, 10, QLatin1Char('0'));
+
+    // 只写还没发过号的那一行：万一有第二个实例同时发号，不覆盖别人已写下的身份
+    QSqlQuery update(m_database);
+    update.prepare(QStringLiteral(
+        "UPDATE recording_sessions SET report_no = ? WHERE id = ? AND report_no = ''"));
+    update.addBindValue(generated);
+    update.addBindValue(id);
+    if (!update.exec())
+    {
+        m_database.rollback();
+        // 写不回去也不算致命：返回本次算出来的号，至少这次预览与导出一致
+        qWarning() << "[db] 写报告编号失败:" << update.lastError().text();
+        return generated;
+    }
+    if (update.numRowsAffected() == 0)
+    {
+        // 已经被别的实例抢先发了号：撤销本次占号，改用那一份
+        m_database.rollback();
+        QSqlQuery reread(m_database);
+        reread.prepare(QStringLiteral(
+            "SELECT report_no FROM recording_sessions WHERE id = ? LIMIT 1"));
+        reread.addBindValue(id);
+        if (reread.exec() && reread.next() && !reread.value(0).toString().isEmpty())
+            return reread.value(0).toString();
+        return generated;
+    }
+
+    m_database.commit();
+    return generated;
+}
+
 // ==================== 采集记录（单条） ====================
 
 QVariantMap AppDatabase::session(const QString &record_no)
@@ -1558,6 +1682,11 @@ QString AppDatabase::recordDirectory()
     // 回退时把库里的值也改成默认，否则会出现「界面显示默认、落盘仍用旧路径」的裂脑
     if (stored != fallback)
         setSetting(QStringLiteral("record_dir"), fallback);
+
+    // 目录不保证已经存在（全新安装、用户手工删掉了）。截图与报告导出都直接往
+    // 这里写文件，不先建目录的话「首次采集前截图」必然失败 —— 旧实现在每次
+    // 截图时 mkpath 自己的 snapshoot 目录，搬到统一目录后这个保障不能丢
+    QDir().mkpath(fallback);
     return fallback;
 }
 

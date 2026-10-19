@@ -29,10 +29,43 @@ Item {
     readonly property int pinInset: 4
     readonly property int pinGap: pinInset + pinSize
 
-    // 图钉点开后那块「标注放大器」：卡片宽、每行事件的高与行距
-    readonly property int pinPopupWidth: 240
+    // 图钉点开后那块「标注放大器」：卡片宽、每行事件的高与行距。
+    // 宽度按最长的一条「时刻 + 标签」撑开 —— 固定 240 时，标签一长就会从
+    // 左边缘伸出去压住时刻，看起来像两段文字叠在一起
     readonly property int pinRowHeight: 38
     readonly property int pinRowSpacing: 10
+
+    // 量文字宽度用。字体必须与行内两段 Text 完全一致，否则算出来的宽度
+    // 会和实际排版差几个像素
+    TextMetrics {
+        id: pinClockMetrics
+        font.family: Design.fontFamily
+        font.styleName: Design.styleMedium
+        font.pixelSize: 16
+    }
+
+    TextMetrics {
+        id: pinLabelMetrics
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
+        font.pixelSize: 14
+    }
+
+    function pinRowWidth(event) {
+        pinClockMetrics.text = event.wallClock
+        pinLabelMetrics.text = event.label
+        // 12 圆点 + 6 间距 + 40 时刻起点 + 时刻 + 14 间距 + 标签 + 12 右边距
+        return 58 + pinClockMetrics.advanceWidth + 14 + pinLabelMetrics.advanceWidth + 14
+    }
+
+    readonly property real pinPopupWidth: {
+        let width = 240
+        const events = Analysis.events
+        for (let i = 0; i < events.length; ++i)
+            width = Math.max(width, pinRowWidth(events[i]) + 28)
+        // 再长也不让它横跨整块波形区：超出的部分靠行内省略号处理
+        return Math.min(width, 640)
+    }
 
     // 物理像素倍率。波形是 1 像素宽的折线，若按逻辑像素画再被系统放大，斜线会发虚、
     // 起台阶 —— 与实时波形面板（WaveformPanel）同一套做法，200% 缩放时封顶 1.5 倍
@@ -255,6 +288,7 @@ Item {
                     }
 
                     Text {
+                        id: clockText
                         x: 58
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.wallClock
@@ -264,10 +298,14 @@ Item {
                         font.pixelSize: 16
                     }
 
+                    // 从时刻文字右边起、到行尾为止都留给标签。弹窗宽度已经按
+                    // 最长标签算过，正常情况下能完整显示；万一超了才省略
                     Text {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 14
+                        x: 58 + clockText.implicitWidth + 14
+                        width: parent.width - x - 14
                         anchors.verticalCenter: parent.verticalCenter
+                        horizontalAlignment: Text.AlignRight
+                        elide: Text.ElideRight
                         text: modelData.label
                         color: Design.textSecondary
                         font.family: Design.fontFamily

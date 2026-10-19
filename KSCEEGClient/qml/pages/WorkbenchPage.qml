@@ -38,10 +38,14 @@ Item {
     // 可选的事件标签，来自系统设置里维护的那一份（由 Main 注入）。
     // 原来事件只有「手动标记」一种，标签是写死的
     property var tags: []
-    // 记录落盘目录，取自系统设置的「记录保存目录」（由 Main 注入）。
+    // 文件保存目录，取自系统设置的「文件保存目录」（由 Main 注入）。
+    // 记录落盘、截图、导出报告都落在这一处。
     // 空串表示没设过，由 C++ 侧退回默认目录 —— 原来这里**始终**传空串，
     // 于是系统设置里那个目录改了也不生效，记录一直落在默认位置
     property string recordDir: ""
+    // 「低阻抗自动提醒」阈值（kΩ），取自系统设置（由 Main 注入）。
+    // 阻抗扫描完成后，任一通道超过它就要弹框提醒
+    property int impedanceThreshold: 40
     // 刚进工作台时是**没有患者**的：设计稿对应「未选择患者 / 点击选择/登记」
     // 那块空态卡片，选完患者才切成患者信息。效果图 E:/UI/效果/未选择患者.png
     property bool hasPatient: false
@@ -133,17 +137,18 @@ Item {
         return Acq.start_collection(recordDir, patientNo)
     }
 
-    // 「截图」：只抓当前显示的波形 + 波形左边的通道名，
-    // 存成 PNG 放到程序运行目录下的 snapshoot 子目录
+    // 「截图」：只抓当前显示的波形 + 波形左边的通道名，存成 PNG。
+    // 保存目录与记录、报告等可导出文件统一走系统设置的「文件保存目录」——
+    // 原来固定落在 exe 旁边的 snapshoot 目录，用户改了设置也管不到它
     function saveSnapshot() {
         waveformPanel.grabWaveform(function(result) {
             if (!result) {
                 root.notifyRequested(qsTr("截图失败"), "error")
                 return
             }
-            var folder = Acq.snapshot_dir()
-            if (!folder) {
-                root.notifyRequested(qsTr("截图目录创建失败"), "error")
+            var folder = root.recordDir
+            if (!folder || folder.length === 0) {
+                root.notifyRequested(qsTr("找不到可用的保存目录"), "error")
                 return
             }
             var stamp = Qt.formatDateTime(new Date(), "yyyyMMdd-hhmmss")
@@ -826,14 +831,17 @@ Item {
         height: 499
         // 采集中禁用「阻抗扫描」按钮（见 ElectrodePanel）
         collecting: root.collecting
+        impedanceThreshold: root.impedanceThreshold
         // 扫描结果由面板自己算，这里只负责把小结交给外层弹提示 ——
         // 16 行列表在 331 宽的格子里只能露出 4 行，不看提示就不知道整体如何
         onScanFinished: (summary) => {
             if (summary.length > 0) {
                 root.notifyRequested(qsTr("阻抗扫描完成：") + summary, "info")
-                // 有电极脱落就弹框拦截：列表只能露出 4 行，脱落的电极很可能不在
+                // 有电极脱落、或有通道超过系统设置里的低阻抗提醒阈值，
+                // 都弹框拦截：列表只能露出 4 行，出问题的电极很可能不在
                 // 可见范围内，只靠轻提示容易被忽略
-                if (electrodePanel.hasDetachedElectrode)
+                if (electrodePanel.hasDetachedElectrode
+                        || electrodePanel.hasHighImpedance)
                     root.electrodeAlertRequested()
             }
         }

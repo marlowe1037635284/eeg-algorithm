@@ -302,6 +302,11 @@ AcquisitionBridge::AcquisitionBridge(PythonEngine *engine, QObject *parent)
                      &AcquisitionBridge::tick_demo_source);
     m_demo_timer.setInterval(kDisplayIntervalMs);
 
+    // 非预期掉线后的重连轮询。只在 on_port_closed 判定为「不是主动断开」时启动
+    QObject::connect(&m_reconnect_timer, &QTimer::timeout, this,
+                     &AcquisitionBridge::try_reconnect);
+    m_reconnect_timer.setInterval(1500);
+
     // 算法线程的信号一律队列投递（发信方在工作线程）
     QObject::connect(&m_worker, &PythonWorker::session_opened, this,
                      &AcquisitionBridge::on_session_opened, Qt::QueuedConnection);
@@ -425,6 +430,8 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
     // 新固件帧里带 CRC-16/MODBUS，由 client-config.json 的 serial_crc_enabled 控制，
     // 默认关闭（按老固件的 51 字节无 CRC 帧解析）
     config.crc_enabled = serial_crc_enabled(false);
+    // 记下这次用的口：掉线后自动重连优先回到它，而不是重新盲选
+    m_last_port_name = config.port_name;
 
     m_raw_buffer.reset(config.channel_count, m_sample_rate, kMaxWindowSeconds * 6);
     reset_channels(m_channel_count);
@@ -442,8 +449,17 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
                      &AcquisitionBridge::on_port_opened, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::port_open_failed, this,
                      &AcquisitionBridge::on_port_open_failed, Qt::QueuedConnection);
+    // 用 lambda 带上「是哪一份采集器」再投递：close_port 会先把 m_collector
+    // 换掉/置空，旧采集器排队的 port_closed 随后才到 —— 到那时它已不是当前
+    // 采集器，必须丢弃，否则主动断开也会被当成掉线去重连。
+    // 只比较指针、不解引用，采集器被 deleteLater 之后也安全
     QObject::connect(m_collector, &SerialCollector::port_closed, this,
-                     &AcquisitionBridge::on_port_closed, Qt::QueuedConnection);
+                     [this, collector = m_collector](const QString &message) {
+                         if (collector != m_collector)
+                             return;
+                         on_port_closed(message);
+                     },
+                     Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::device_lost, this,
                      &AcquisitionBridge::on_device_lost, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::stats_changed, this,
@@ -458,15 +474,23 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
                      &AcquisitionBridge::on_recording_changed, Qt::QueuedConnection);
 
     set_status(tr("正在打开 %1…").arg(config.port_name));
+    // 正在重连时被 open_port 抢先接管：轮询到此为止，避免又开一个
+    m_reconnect_timer.stop();
     m_collector->start();
     return true;
 }
 
 void AcquisitionBridge::close_port()
 {
+    // 从这里开始的断开都是「用户/程序要求的」，绝不能触发自动重连。
+    // 置位后 finally 式地在末尾复位，中途 return 的分支也覆盖到（见下）
+    m_closing_intentionally = true;
+    m_reconnect_timer.stop();
+
     if (m_collector == nullptr)
     {
         reset_port_flags();
+        m_closing_intentionally = false;
         return;
     }
 
@@ -493,6 +517,7 @@ void AcquisitionBridge::close_port()
     m_collector = nullptr;
 
     reset_port_flags();
+    m_closing_intentionally = false;
 }
 
 // ==================== 采集 ====================
@@ -508,7 +533,7 @@ void AcquisitionBridge::close_port()
 // 异步打开，结果经队列信号回来。而确认框里的「连接」一栏就绑在 portOpen 上，
 // 发起后立刻弹框会先显示成「未连接」—— 所以这里转一会儿事件循环，拿到确定的结果
 //（打开成功或失败）再返回。等待有上限，不会把界面卡死
-bool AcquisitionBridge::connect_device()
+bool AcquisitionBridge::connect_device(const QString &preferred_port)
 {
     // 演示模式下没有串口，直接算作已连接
     if (m_demo_enabled)
@@ -541,28 +566,36 @@ bool AcquisitionBridge::connect_device()
         return false;
     }
 
-    // 选口：比 COM 后面的数字，取最大的那个。这里比的是数值而不是字符串，
-    // 否则 COM9 会被认为比 COM10 大
+    // 选口：自动重连时优先用掉线前那一个；否则比 COM 后面的数字取最大的。
+    // 比数值而不是字符串，否则 COM9 会被认为比 COM10 大
     QString port_name;
-    int best_number = -1;
-    for (const QString &candidate : m_available_ports)
+    const QString preferred = preferred_port.trimmed();
+    if (!preferred.isEmpty() && m_available_ports.contains(preferred))
     {
-        if (!candidate.startsWith(QLatin1String("COM"), Qt::CaseInsensitive))
-        {
-            continue;
-        }
-        bool ok = false;
-        const int number = candidate.mid(3).toInt(&ok);
-        if (ok && number > best_number)
-        {
-            best_number = number;
-            port_name = candidate;
-        }
+        port_name = preferred;
     }
-    if (port_name.isEmpty())
+    else
     {
-        // 没有 COMx 形式的（例如非 Windows 平台），退回原来的枚举最后一个
-        port_name = m_available_ports.last();
+        int best_number = -1;
+        for (const QString &candidate : m_available_ports)
+        {
+            if (!candidate.startsWith(QLatin1String("COM"), Qt::CaseInsensitive))
+            {
+                continue;
+            }
+            bool ok = false;
+            const int number = candidate.mid(3).toInt(&ok);
+            if (ok && number > best_number)
+            {
+                best_number = number;
+                port_name = candidate;
+            }
+        }
+        if (port_name.isEmpty())
+        {
+            // 没有 COMx 形式的（例如非 Windows 平台），退回原来的枚举最后一个
+            port_name = m_available_ports.last();
+        }
     }
     emit logMessage(tr("串口未打开，自动使用 %1").arg(port_name));
     // 先清掉上一轮的错误，好在等待时用它判断「失败已经回来了」
@@ -574,7 +607,11 @@ bool AcquisitionBridge::connect_device()
 
     QElapsedTimer timer;
     timer.start();
-    while (!m_port_open && m_error_text.isEmpty() && timer.elapsed() < 2000)
+    // m_collector 为空 = 等待期间有人主动 close_port()（例如退出登录）。
+    // 这时必须立刻收手，不能再空转到 2 秒结束 —— 否则调用方会以为
+    // 这是一次普通的打开失败，又把自动重连拉起来
+    while (!m_port_open && m_error_text.isEmpty() && m_collector != nullptr
+           && timer.elapsed() < 2000)
     {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         QThread::msleep(5);
@@ -1466,17 +1503,6 @@ QString AcquisitionBridge::default_record_dir() const
     return QDir::toNativeSeparators(default_record_directory());
 }
 
-QString AcquisitionBridge::snapshot_dir()
-{
-    // 与 records 一样落在 exe 旁边：截图随程序一起拷贝/归档，不依赖 %LOCALAPPDATA%
-    const QString base = QCoreApplication::applicationDirPath();
-    const QString dir = QDir::fromNativeSeparators(base) + QStringLiteral("/snapshoot");
-    if (!QDir().mkpath(dir))
-        return QString();
-    // 返回正斜杠路径，QML 直接拼 "/文件名" 即可，不必再管分隔符
-    return dir;
-}
-
 QStringList AcquisitionBridge::channel_names() const
 {
     QStringList names;
@@ -1913,6 +1939,8 @@ void AcquisitionBridge::on_log_event(const AlgorithmLogEvent &event)
 void AcquisitionBridge::on_port_opened(const QString &message)
 {
     m_port_open = true;
+    // 自动重连成功：停止轮询，不再每隔 1.5 秒重开一次
+    m_reconnect_timer.stop();
     set_status(message);
     emit portStateChanged();
     emit logMessage(message);
@@ -1930,6 +1958,62 @@ void AcquisitionBridge::on_port_closed(const QString &message)
     reset_port_flags();
     set_status(message);
     emit logMessage(message);
+
+    // 线程自己结束 = 拔线 / 掉电 / 驱动移除设备。主动断开走不到这里
+    //（close_port 会先置 m_closing_intentionally 并清空 m_collector）
+    if (!m_closing_intentionally && !m_demo_enabled)
+        schedule_reconnect();
+}
+
+void AcquisitionBridge::schedule_reconnect()
+{
+    // 这里**不能**用 collector_active() 当门槛：port_closed 入队时线程往往
+    // 还没真正返回，isRunning() 可能仍为真。等这轮事件处理完线程就退了，
+    // 定时器下一拍自然会重连。try_reconnect() 里才判断线程是否真的还活着
+    if (m_demo_enabled)
+        return;
+    if (!m_reconnect_timer.isActive())
+    {
+        emit logMessage(tr("设备已断开，等待重新接回…"));
+        m_reconnect_timer.start();
+    }
+}
+
+void AcquisitionBridge::try_reconnect()
+{
+    if (collector_active())
+    {
+        m_reconnect_timer.stop();
+        return;
+    }
+
+    // 端口还没重新枚举出来时什么都不做：connect_device() 每一轮都会打一串
+    // 扫描日志，没有端口时反复调用只会在日志里刷屏
+    refresh_ports();
+    if (m_available_ports.isEmpty())
+        return;
+
+    // 优先重连刚才掉线的那个口。设备重新枚举后 COM 号可能变化，
+    // 机器上也可能还有编号更大的其它串口设备 —— 重连不该再盲选最大编号
+    const bool connected = m_last_port_name.isEmpty()
+                               ? connect_device()
+                               : connect_device(m_last_port_name);
+    if (connected)
+    {
+        m_reconnect_timer.stop();
+        emit logMessage(tr("设备已重新连接"));
+        return;
+    }
+
+    // 等待期间被别人主动 close_port()（退出登录等）：绝不能再把串口拉起来
+    if (m_collector == nullptr)
+        return;
+
+    // 打开失败时端口往往还在枚举列表里（设备已经被拔掉、但驱动还没来得及移除），
+    // 而 open_port() 内部的 close_port() 会把定时器停掉。这里必须重新拉起来，
+    // 否则这次失败之后就再也不重试了 —— 表现仍是「要重启程序」
+    if (!m_reconnect_timer.isActive())
+        m_reconnect_timer.start();
 }
 
 void AcquisitionBridge::on_device_lost(const QString &message)

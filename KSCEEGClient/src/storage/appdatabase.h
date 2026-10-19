@@ -107,6 +107,11 @@ public:
     //   { offsetSeconds, wallClock, label, color }
     Q_INVOKABLE QVariantList sessionEvents(const QString &record_no);
 
+    // 这条记录的报告编号，规则：EEG-年月日流水号（流水号两位）。
+    // 编号在第一次取值时生成并写回 recording_sessions.report_no，之后一直沿用 ——
+    // 预览与导出必须拿到同一个编号，不能各算各的。采集日期取 started_at 的本地日期
+    Q_INVOKABLE QString reportNumber(const QString &record_no);
+
     // 删一条采集记录：事件标注与**落盘的原始文件**一并删掉。
     // 留着文件的话确认框上那句「删除后无法恢复」就是假的
     Q_INVOKABLE bool removeSession(const QString &record_no);
@@ -123,7 +128,8 @@ public:
     Q_INVOKABLE QString setting(const QString &key, const QString &fallback = QString()) const;
     Q_INVOKABLE bool setSetting(const QString &key, const QString &value);
 
-    // 记录保存目录（record_dir 的专用读法）。库里存的值若指向本机不存在的路径
+    // 文件保存目录（record_dir 的专用读法）：记录、截图、导出文件都落在这里。
+    // 库里存的值若指向本机不存在的路径
     // （典型是换一台机器后残留的旧路径），回退到默认值（exe 同级 records）并写回库，
     // 保证界面显示和实际落盘用的是同一个目录
     Q_INVOKABLE QString recordDirectory();

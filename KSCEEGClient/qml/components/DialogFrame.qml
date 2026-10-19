@@ -34,6 +34,9 @@ Item {
 
     // 内容槽的坐标原点：默认落在卡片左上角，所以正文按「卡片内相对坐标」写
     default property alias contentChildren: body.data
+    // 卡片内的正文容器。需要把「整份内容」渲染成图片时（如报告导出 PDF），
+    // 调用方要从这里 grabToImage —— 只截正文，不带遮罩与标题栏
+    readonly property Item contentRoot: body
 
     signal dismissed()
 

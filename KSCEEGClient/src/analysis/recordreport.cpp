@@ -6,8 +6,10 @@
 #include <QFileInfo>
 #include <QFont>
 #include <QFontMetricsF>
+#include <QImage>
 #include <QPageSize>
 #include <QPainter>
+#include <QScopeGuard>
 #include <QPdfWriter>
 #include <QRectF>
 #include <QStringList>
@@ -54,6 +56,53 @@ QFont report_font(const QString &style, qreal point_size)
     font.setStyleName(style);
     font.setPointSizeF(point_size);
     return font;
+}
+
+// 文件名里只保留 Windows 允许的字符。脱敏打开时患者病历号会被换成 "***"，
+// 原样拼进文件名会让 QPdfWriter 打不开目标文件（Windows 文件名不允许 *），
+// 表现就是脱敏后导出一直报「写入 PDF 失败」。整段都变成占位符时返回空串，
+// 调用方退化成只用记录号，不把一个 "___" 写进去
+QString safe_file_part(const QString &text)
+{
+    const QString invalid = QStringLiteral("<>:\"/\\|?*");
+    QString out;
+    out.reserve(text.size());
+    for (const QChar ch : text)
+    {
+        if (ch.unicode() < 0x20 || invalid.contains(ch))
+            out.append(QLatin1Char('_'));
+        else
+            out.append(ch);
+    }
+    out = out.trimmed();
+    while (out.endsWith(QLatin1Char('.')))
+        out.chop(1);
+
+    // "***" → "___" 这类结果没有任何信息量，当作空
+    bool meaningful = false;
+    for (const QChar ch : out)
+    {
+        if (ch != QLatin1Char('_') && !ch.isSpace())
+        {
+            meaningful = true;
+            break;
+        }
+    }
+    return meaningful ? out : QString();
+}
+
+// PDF 目标路径统一从这里出：去掉目录里禁止的字符，已有同名文件先删掉
+QString prepare_target(const QDir &directory, const QString &stem, const QString &suffix,
+                       QString *error)
+{
+    const QString target = directory.filePath(stem + suffix);
+    if (QFile::exists(target) && !QFile::remove(target))
+    {
+        if (error)
+            *error = QStringLiteral("目标文件被占用，无法覆盖：%1").arg(target);
+        return QString();
+    }
+    return target;
 }
 
 // 与预览弹窗的 formatClock 同一套写法：不足一小时只写 mm:ss
@@ -108,16 +157,22 @@ QVariantMap RecordReport::exportPdf(const QVariantMap &session, const QVariantLi
     }
 
     const QString no = session.value(QStringLiteral("no")).toString();
-    const QString patient_no = session.value(QStringLiteral("patientNo")).toString();
-    const QString stem = QStringLiteral("%1_%2").arg(no, patient_no);
-    const QString target = target_dir.filePath(stem + QStringLiteral("_采集报告.pdf"));
+    const QString patient_no
+        = safe_file_part(session.value(QStringLiteral("patientNo")).toString());
+    // 病历号脱敏后没有可用字符时只用记录号 —— 把 "***" 直接拼进文件名在
+    // Windows 上必然写不出来
+    QString stem = patient_no.isEmpty()
+                       ? safe_file_part(no)
+                       : QStringLiteral("%1_%2").arg(safe_file_part(no), patient_no);
+    if (stem.isEmpty())
+        stem = QStringLiteral("采集报告");
 
-    // 目标已存在时先删掉：反复导出覆盖上一次才是预期行为，
-    // 报「文件已存在」只会让人以为导出坏了（与 AppDatabase::exportSession 一致）
-    if (QFile::exists(target) && !QFile::remove(target))
+    QString error;
+    const QString target
+        = prepare_target(target_dir, stem, QStringLiteral("_采集报告.pdf"), &error);
+    if (target.isEmpty())
     {
-        result[QStringLiteral("message")]
-            = QStringLiteral("目标文件被占用，无法覆盖：%1").arg(target);
+        result[QStringLiteral("message")] = error;
         return result;
     }
 
@@ -426,5 +481,101 @@ QVariantMap RecordReport::exportPdf(const QVariantMap &session, const QVariantLi
     result[QStringLiteral("path")] = target;
     result[QStringLiteral("message")] = QStringLiteral("已导出报告：%1").arg(target);
     audit_log::record(QStringLiteral("导出采集报告 PDF：%1 → %2").arg(no, target));
+    return result;
+}
+
+QVariantMap RecordReport::exportImagePdf(const QString &image_path, const QString &directory,
+                                         const QString &stem, qreal crop_left, qreal crop_top,
+                                         qreal crop_width, qreal crop_height) const
+{
+    QVariantMap result;
+    result[QStringLiteral("success")] = false;
+    result[QStringLiteral("path")] = QString();
+
+    // 临时 PNG 是 QML 为这一次导出生成的，无论后面从哪条路径返回都不该留下。
+    // 用作用域守卫而不是在每个 return 前删一遍 —— 漏一条路径就会在用户的
+    // 保存目录里留下一个来路不明的文件
+    const auto cleanup_temp = qScopeGuard([&image_path]() { QFile::remove(image_path); });
+    Q_UNUSED(cleanup_temp)
+
+    QImage page_image(image_path);
+    if (page_image.isNull())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("导出失败：报告截图不可用");
+        return result;
+    }
+
+    const QRect crop = page_image.rect().intersected(
+        QRect(QPoint(std::lround(page_image.width() * crop_left),
+                     std::lround(page_image.height() * crop_top)),
+              QSize(std::lround(page_image.width() * crop_width),
+                    std::lround(page_image.height() * crop_height))));
+    if (crop.isEmpty())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("导出失败：报告截图的裁剪区域无效");
+        return result;
+    }
+    const QImage content = page_image.copy(crop);
+
+    // 目录同样可能以 file:/// URL 形式传来（与 exportPdf 一致）
+    QString target_path = directory;
+    if (target_path.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
+        target_path = QUrl(target_path).toLocalFile();
+
+    const QDir target_dir(target_path);
+    if (target_path.isEmpty() || !target_dir.exists())
+    {
+        result[QStringLiteral("message")] = QStringLiteral("导出目录不可用");
+        return result;
+    }
+
+    QString error;
+    const QString safe_stem = safe_file_part(stem);
+    const QString target = prepare_target(
+        target_dir, safe_stem.isEmpty() ? QStringLiteral("脑电检查报告") : safe_stem,
+        QStringLiteral("_脑电检查报告.pdf"), &error);
+    if (target.isEmpty())
+    {
+        result[QStringLiteral("message")] = error;
+        return result;
+    }
+
+    QPdfWriter writer(target);
+    writer.setPageSize(QPageSize(QPageSize::A4));
+    writer.setPageMargins(QMarginsF(0, 0, 0, 0));
+    writer.setResolution(kDpi);
+    writer.setTitle(QStringLiteral("脑电检查报告 %1").arg(stem));
+
+    QPainter painter;
+    if (!painter.begin(&writer))
+    {
+        result[QStringLiteral("message")] = QStringLiteral("写入 PDF 失败");
+        return result;
+    }
+
+    const QRectF page(0.0, 0.0, painter.device()->width(), painter.device()->height());
+    // A4 与报告纸张的宽高比只差千分之一，按「完整装入、居中」摆放，
+    // 不做拉伸 —— 拉伸虽然填满整页，但字形会被横向压扁
+    const QSizeF content_size(content.size());
+    const qreal scale = std::min(page.width() / content_size.width(),
+                                 page.height() / content_size.height());
+    const QSizeF drawn = content_size * scale;
+    const QRectF target_rect(page.center() - QPointF(drawn.width() / 2.0, drawn.height() / 2.0),
+                             drawn);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.drawImage(target_rect, content);
+    painter.end();
+
+    // 临时截图由 cleanup_temp 在函数返回时统一删除
+    if (!QFile::exists(target) || QFileInfo(target).size() == 0)
+    {
+        result[QStringLiteral("message")] = QStringLiteral("写入 PDF 失败：%1").arg(target);
+        return result;
+    }
+
+    result[QStringLiteral("success")] = true;
+    result[QStringLiteral("path")] = target;
+    result[QStringLiteral("message")] = QStringLiteral("已导出报告：%1").arg(target);
+    audit_log::record(QStringLiteral("导出脑电检查报告 PDF：%1 → %2").arg(stem, target));
     return result;
 }

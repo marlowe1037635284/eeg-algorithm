@@ -701,12 +701,15 @@ Item {
             clip: true
 
             property real scroll: 0
-            // 卡片宽 235、间隔 11，左右各留 19 的边距：19 + N*235 + (N-1)*11 + 19
+            // 卡片宽度按标签文字撑开（见 delegate），所以整条内容宽直接取 Row
+            // 的隐式宽度，再加左右各 19 的边距。固定按 246/张算的话，
+            // 长标签卡片变宽后滚动条会提前到头，最后几张滑不出来
             readonly property real contentWidth:
-                root.events.length > 0 ? root.events.length * 246 + 27 : 0
+                root.events.length > 0 ? 19 + eventRow.implicitWidth + 19 : 0
             readonly property real maxScroll: Math.max(0, contentWidth - width)
 
             Row {
+                id: eventRow
                 x: 19 - eventStrip.scroll
                 y: 16
                 spacing: 11
@@ -720,8 +723,30 @@ Item {
                         required property var modelData
                         required property int index
 
-                        width: 235
+                        // 标签可能很长。卡片按「时刻 + 标签」的实际宽度撑开，
+                        // 只保底 235；否则固定宽度会把标签截成「啊手机...」，
+                        // 用户没法从事件带上认出标的是什么
+                        readonly property real labelX:
+                            61 + cardClockMetrics.advanceWidth + 14
+
+                        width: Math.max(235, labelX + cardLabelMetrics.advanceWidth + 12)
                         height: 42
+
+                        TextMetrics {
+                            id: cardClockMetrics
+                            font.family: Design.fontFamily
+                            font.styleName: Design.styleMedium
+                            font.pixelSize: 20
+                            text: modelData.wallClock
+                        }
+
+                        TextMetrics {
+                            id: cardLabelMetrics
+                            font.family: Design.fontFamily
+                            font.styleName: Design.styleRegular
+                            font.pixelSize: 16
+                            text: modelData.label
+                        }
 
                         // 定位到窗口正中的那张高亮。原来写死 index === 0，
                         // 点了别的卡片也一直亮第一张，看不出定位到哪儿了
@@ -760,12 +785,11 @@ Item {
                         }
 
                         Text {
-                            x: 150
+                            x: card.labelX
                             y: 10
-                            width: 78
+                            width: parent.width - x - 12
                             height: 22
                             horizontalAlignment: Text.AlignRight
-                            elide: Text.ElideRight
                             verticalAlignment: Text.AlignVCenter
                             text: modelData.label
                             color: "#3b3b3b"
@@ -824,6 +848,8 @@ Item {
         }
 
         Rectangle {
+            id: scrollThumb
+
             // 轨道 824 宽（31~855）。滑块长度按「一屏占内容的比例」定，
             // 起点必须对齐轨道左端 31，scroll = 0 时才不会凭空缩进去一截
             readonly property real thumbWidth:
@@ -838,6 +864,44 @@ Item {
             radius: 3
             color: Qt.rgba(0x66 / 255, 0x66 / 255, 0x66 / 255, 0.15)
             visible: eventStrip.maxScroll > 0
+        }
+
+        // 滑块可拖动。原来只有一条画出来的轨道，没有任何鼠标交互 ——
+        // 事件卡片多了以后，右边几张只能靠滚轮才滚得出来，滑动条本身怎么拖都不动。
+        // 热区比 6px 的轨道高一些，细条不好按
+        MouseArea {
+            x: 31
+            y: 929
+            width: 824
+            height: 18
+            visible: eventStrip.maxScroll > 0
+            enabled: eventStrip.maxScroll > 0
+
+            // 按下时鼠标相对滑块左端的位置；点在空白轨道上时取滑块中心，
+            // 让滑块中心跳到这里再跟着走
+            property real grabOffset: 0
+
+            function apply(mouseX) {
+                const travel = 824 - scrollThumb.width
+                if (travel <= 0)
+                    return
+                const ratio = Math.max(0, Math.min(1, (mouseX - grabOffset) / travel))
+                eventStrip.scroll = eventStrip.maxScroll * ratio
+            }
+
+            onPressed: (mouse) => {
+                const thumbLeft = scrollThumb.x - 31
+                grabOffset = (mouse.x >= thumbLeft
+                              && mouse.x <= thumbLeft + scrollThumb.width)
+                             ? mouse.x - thumbLeft
+                             : scrollThumb.width / 2
+                apply(mouse.x)
+            }
+
+            onPositionChanged: (mouse) => {
+                if (pressed)
+                    apply(mouse.x)
+            }
         }
     }
 

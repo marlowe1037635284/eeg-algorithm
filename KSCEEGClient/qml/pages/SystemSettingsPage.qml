@@ -55,7 +55,6 @@ Item {
     // 边改边写的话，改错了连反悔的机会都没有
     property string recordDir: Acq.defaultRecordDir
     property int saveIntervalIndex: 1
-    property int fileFormatIndex: 0
     property int sampleRateIndex: 0
     property int channelCountIndex: 2
     // 低阻抗提醒阈值（kΩ），整数 1–200
@@ -69,8 +68,6 @@ Item {
 
     readonly property var saveIntervalChoices: [qsTr("5分钟"), qsTr("10分钟"), qsTr("30分钟")]
     readonly property var saveIntervalValues: ["5", "10", "30"]
-    readonly property var fileFormatChoices: [qsTr("BDF（.bdf）"), qsTr("EDF（.edf）"), qsTr("EEG（.eeg）")]
-    readonly property var fileFormatValues: ["bdf", "edf", "eeg"]
     // 「默认采样率」选的是**落盘**采样率：设备固定按 1000 Hz 出帧，选 2000 时
     // 保存记录文件会做线性插值升采样（见 AcquisitionBridge.recordSampleRate）
     readonly property var sampleRateChoices: ["1000Hz", "2000Hz"]
@@ -84,8 +81,6 @@ Item {
         recordDir = database.recordDirectory()
         saveIntervalIndex = Math.max(0, saveIntervalValues.indexOf(
                                         database.setting("auto_save_minutes", "10")))
-        fileFormatIndex = Math.max(0, fileFormatValues.indexOf(
-                                      database.setting("record_format", "bdf")))
         sampleRateIndex = Math.max(0, sampleRateValues.indexOf(
                                       database.setting("default_sample_rate", "1000")))
         channelCountIndex = Math.max(0, channelCountValues.indexOf(
@@ -109,7 +104,6 @@ Item {
 
         database.setSetting("record_dir", recordDir)
         database.setSetting("auto_save_minutes", saveIntervalValues[saveIntervalIndex])
-        database.setSetting("record_format", fileFormatValues[fileFormatIndex])
         database.setSetting("default_sample_rate", sampleRateValues[sampleRateIndex])
         database.setSetting("default_channels", String(channelCountValues[channelCountIndex]))
         impedanceThreshold = Math.min(200, Math.max(1, impedanceThreshold))
@@ -149,7 +143,7 @@ Item {
 
     FolderDialog {
         id: folderDialog
-        title: qsTr("选择记录保存目录")
+        title: qsTr("选择文件保存目录")
         onAccepted: root.recordDir = root.pathFromUrl(selectedFolder)
     }
 
@@ -159,7 +153,7 @@ Item {
         currentNav: qsTr("系统设置")
         statusItems: {
             var items = [qsTr("标签：") + root.tags.length + qsTr(" 个")]
-            items.push(qsTr("记录目录：") + root.recordDir)
+            items.push(qsTr("文件目录：") + root.recordDir)
             return items
         }
         userName: root.userName
@@ -201,12 +195,15 @@ Item {
             }
         }
 
-        // ================= 左栏 · 数据存储（设计稿 @216,294 828×281）=================
+        // ================= 左栏 · 数据存储 =================
+        // 「记录文件格式」已去掉：这个设置从来没有被落盘链路读取过，实际统一
+        // 写 .eegbin（自定义二进制，由 RecordingPreview 回放）。面板高度
+        // 从 281 收到 223，下面两块整体上移，免得空出一大段
         Rectangle {
             x: 15
             y: 144
             width: 828
-            height: 281
+            height: 223
             radius: 7
             color: Design.panelFillSoft
 
@@ -239,7 +236,7 @@ Item {
             Text {
                 x: 10
                 y: 122
-                text: qsTr("记录保存目录")
+                text: qsTr("文件保存目录")
                 color: Design.textPrimary
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
@@ -319,23 +316,14 @@ Item {
                 choices: root.saveIntervalChoices
                 currentIndex: root.saveIntervalIndex
                 onActivated: (index) => root.saveIntervalIndex = index
-            }
-
-            SettingRow {
-                x: 0
-                y: 238
-                label: qsTr("记录文件格式")
-                choices: root.fileFormatChoices
-                currentIndex: root.fileFormatIndex
-                onActivated: (index) => root.fileFormatIndex = index
-                dividerBelow: false   // 末行的分隔线正好压在面板下边缘，设计稿没画
+                dividerBelow: false   // 现在是末行，底下不再画分隔线
             }
         }
 
-        // ================= 左栏 · 采集默认值（设计稿 @216,589 828×220）=================
+        // ================= 左栏 · 采集默认值 =================
         Rectangle {
             x: 15
-            y: 439
+            y: 381
             width: 828
             height: 220
             radius: 7
@@ -388,10 +376,10 @@ Item {
             }
         }
 
-        // ================= 左栏 · 系统信息（设计稿 @216,823 828×197）=================
+        // ================= 左栏 · 系统信息 =================
         Rectangle {
             x: 15
-            y: 673
+            y: 615
             width: 828
             height: 197
             radius: 7

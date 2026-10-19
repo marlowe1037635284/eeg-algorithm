@@ -118,8 +118,11 @@ Item {
                         height: parent.height
                         verticalAlignment: Text.AlignVCenter
                         text: cell === undefined ? "—" : cell
-                        // 「优势频带」那一列是「δ Delta」这种写法，需希腊字母兜底
-                            color: Design.textSecondary
+                        // 「峰值」一列按设计稿用主色（#7092ab）标出来，其余列保持
+                        // 次要文字色；「优势频带」那一列是「δ Delta」这种写法，
+                        // 需要希腊字母兜底
+                            color: modelData.key === "peak" ? Design.primary
+                                                            : Design.textSecondary
                         font.family: Design.fontFamily
                         font.styleName: Design.styleRegular
                         font.pixelSize: 15

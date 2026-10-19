@@ -55,7 +55,7 @@ QtObject {
     readonly property color textOnDark: "#ffffff"
 
     // ---------- 状态色 ----------
-    // 电极面板共四档，颜色与设计稿图例一致：良好=绿、一般=红、不良=橙、脱落=灰。
+    // 电极面板共四档，颜色与顶栏胶囊一致：良好=绿、一般=橙、不良=红、脱落=灰。
     readonly property color good: "#23af6e"
     readonly property color warning: "#fea85d"
     readonly property color bad: "#d65a5d"
@@ -68,9 +68,9 @@ QtObject {
         if (level === "良好")
             return good
         if (level === "一般")
-            return bad
-        if (level === "不良")
             return poor
+        if (level === "不良")
+            return bad
         return offline
     }
 
@@ -79,9 +79,9 @@ QtObject {
         if (level === "良好")
             return "#eaf2ee"
         if (level === "一般")
-            return "#f5f0ef"
-        if (level === "不良")
             return "#f7f1e6"
+        if (level === "不良")
+            return "#f5f0ef"
         return "#f4f4f4"
     }
 

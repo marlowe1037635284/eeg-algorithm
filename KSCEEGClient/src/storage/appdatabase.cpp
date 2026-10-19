@@ -420,7 +420,10 @@ bool AppDatabase::createTables()
                        "event_count INTEGER NOT NULL DEFAULT 0,"
                        "electrode_quality TEXT NOT NULL DEFAULT '',"
                        "file_path TEXT NOT NULL DEFAULT '',"
-                       "report_no TEXT NOT NULL DEFAULT '')"),
+                       "report_no TEXT NOT NULL DEFAULT '',"
+                       // 采集结束时的显示标尺。0 表示旧记录没存过，界面显示「—」
+                       "amplitude_uv INTEGER NOT NULL DEFAULT 0,"
+                       "window_s REAL NOT NULL DEFAULT 0)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_sessions_patient "
                        "ON recording_sessions(patient_no)"),
 
@@ -480,6 +483,12 @@ bool AppDatabase::createTables()
     // 才会生成并写回；没有它，每次预览 / 导出都得重新推算，两次可能给出不同编号
     ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("report_no"),
                   QStringLiteral("TEXT NOT NULL DEFAULT ''"));
+    // 采集时的幅值 / 时基。老库补出来的这两列是 0，预览按「—」显示，
+    // 不能拿预览自己的默认值冒充当时的设置
+    ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("amplitude_uv"),
+                  QStringLiteral("INTEGER NOT NULL DEFAULT 0"));
+    ensure_column(QStringLiteral("recording_sessions"), QStringLiteral("window_s"),
+                  QStringLiteral("REAL NOT NULL DEFAULT 0"));
 
     // 用户管理页要用到、而最初建表时没有的几列。老库上这几列不存在，
     // 查询会直接报错，所以必须补
@@ -1178,6 +1187,7 @@ int AppDatabase::recordCollection(const QString &patient_no, int channel_count, 
 void AppDatabase::finishCollection(const QString &patient_no, int duration_seconds,
                                    int event_count, const QString &file_path,
                                    const QString &electrode_quality,
+                                   int amplitude_uv, double window_seconds,
                                    const QVariantList &events,
                                    int session_id)
 {
@@ -1196,11 +1206,13 @@ void AppDatabase::finishCollection(const QString &patient_no, int duration_secon
         // 精确更新：用 recordCollection 返回的 id，避免子查询匹配错行
         query.prepare(QStringLiteral(
             "UPDATE recording_sessions SET duration_s = ?, event_count = ?, file_path = ?, "
-            " electrode_quality = ? WHERE id = ?"));
+            " electrode_quality = ?, amplitude_uv = ?, window_s = ? WHERE id = ?"));
         query.addBindValue(std::max(0, duration_seconds));
         query.addBindValue(std::max(0, event_count));
         query.addBindValue(file_path_value);
         query.addBindValue(quality_value);
+        query.addBindValue(std::max(0, amplitude_uv));
+        query.addBindValue(std::max(0.0, window_seconds));
         query.addBindValue(session_id);
     }
     else
@@ -1208,13 +1220,15 @@ void AppDatabase::finishCollection(const QString &patient_no, int duration_secon
         // 回退：子查询找该患者最近一条记录
         query.prepare(QStringLiteral(
             "UPDATE recording_sessions SET duration_s = ?, event_count = ?, file_path = ?, "
-            " electrode_quality = ? "
+            " electrode_quality = ?, amplitude_uv = ?, window_s = ? "
             " WHERE id = (SELECT id FROM recording_sessions WHERE patient_no = ? "
             "             ORDER BY id DESC LIMIT 1)"));
         query.addBindValue(std::max(0, duration_seconds));
         query.addBindValue(std::max(0, event_count));
         query.addBindValue(file_path_value);
         query.addBindValue(quality_value);
+        query.addBindValue(std::max(0, amplitude_uv));
+        query.addBindValue(std::max(0.0, window_seconds));
         query.addBindValue(patient_no.trimmed());
     }
     if (!query.exec())
@@ -1436,7 +1450,7 @@ QVariantMap AppDatabase::session(const QString &record_no)
     query.prepare(QStringLiteral(
         "SELECT s.id, s.patient_no, p.name, p.gender, p.age, p.department, s.started_at,"
         "       s.duration_s, s.channel_count, s.sample_rate, s.event_count, s.file_path,"
-        "       s.electrode_quality"
+        "       s.electrode_quality, s.amplitude_uv, s.window_s"
         "  FROM recording_sessions s"
         "  LEFT JOIN patients p ON p.patient_no = s.patient_no"
         " WHERE s.id = ? LIMIT 1"));
@@ -1472,6 +1486,10 @@ QVariantMap AppDatabase::session(const QString &record_no)
     // 空串原样返回，占位由各自的界面补 —— 后处理页要按「未扫描」显示（见
     // PostProcess::build_record_info），而它是靠空串认出「采集时没扫过阻抗」的
     row[QStringLiteral("quality")] = query.value(12).toString();
+    // 采集结束时的显示标尺：幅值（µV/div）与显示窗长（秒）。
+    // 0 表示旧记录没有这一项，界面显示「—」，不拿默认值冒充
+    row[QStringLiteral("amplitudeUV")] = query.value(13).toInt();
+    row[QStringLiteral("windowSeconds")] = query.value(14).toDouble();
     row[QStringLiteral("level")] = QString();
     return row;
 }

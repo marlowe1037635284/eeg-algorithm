@@ -112,9 +112,13 @@ ApplicationWindow {
                     ? Design.electrodeQualityText(Acq.electrodeQuality) : ""
             // 事件要跟着记录一起存：只存个数的话，「采集记录预览」里那条事件带
             // 就永远是空的 —— 个数拼不回时刻与标签
+            // 幅值 / 时基也要按采集结束那一刻的值落库：历史记录预览要还原
+            // 当时看到的标尺，而不是用预览自己的默认窗口顶替
             appDatabase.finishCollection(window.openSessionPatient, summary.durationSeconds,
                                          summary.eventCount, summary.filePath,
-                                         electrodeQuality, Acq.events, window.openSessionId)
+                                         electrodeQuality, summary.amplitudeUV,
+                                         summary.windowSeconds, Acq.events,
+                                         window.openSessionId)
             window.openSessionPatient = ""
             window.openSessionId = -1
         }
@@ -748,8 +752,9 @@ ApplicationWindow {
                     // 导致历史记录里时长一直是 00:00:00。这里补调一次，把刚插入的那条
                     // 记录用 0 时长收尾，至少让数据库状态一致
                     if (started === false && window.openSessionPatient.length > 0) {
-                        appDatabase.finishCollection(window.openSessionPatient, 0, 0, "", "", [],
-                                                     window.openSessionId)
+                        // 采集没真正开始，幅值 / 时基也按「未记录」收尾（0）
+                        appDatabase.finishCollection(window.openSessionPatient, 0, 0, "", "",
+                                                     0, 0, [], window.openSessionId)
                         window.openSessionPatient = ""
                         window.openSessionId = -1
                     }

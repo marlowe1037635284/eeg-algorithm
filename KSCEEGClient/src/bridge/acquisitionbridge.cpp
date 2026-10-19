@@ -2296,6 +2296,12 @@ QVariantMap AcquisitionBridge::collection_summary() const
     summary[QStringLiteral("eventCount")] = m_events.size();
     // 演示数据源不落盘，这里会是空串 —— 采集记录里那一列就留空
     summary[QStringLiteral("filePath")] = m_recording_path;
+    // 采集结束这一刻的显示标尺，随记录一起落库。历史记录预览要按当时的值
+    // 还原「幅值 / 时基」，而不是拿预览窗口自己的默认值顶替。
+    // 时基不在数据层换算成 s/div —— 窗长与格数是界面约定（4 格），
+    // 数据层只存「显示窗长（秒）」，由界面按同一约定换算
+    summary[QStringLiteral("amplitudeUV")] = m_y_range_uv;
+    summary[QStringLiteral("windowSeconds")] = m_time_window;
     return summary;
 }
 

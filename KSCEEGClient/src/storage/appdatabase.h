@@ -191,6 +191,10 @@ public:
     // Acq.electrodeQuality 算好传入）。不落盘的话，历史记录预览里「电极贴合」就只能
     // 显示写死的占位，而不是采集当时的真实值
     //
+    // amplitude_uv / window_seconds 是采集结束这一刻的显示标尺：幅值（µV/div）
+    // 与显示窗长（秒，时基 = 窗长/4）。历史记录预览据此还原采集时的
+    // 「幅值 / 时基」；不存的话，预览只能拿自己的默认值顶替
+    //
     // events 是 Acq.events 那一份（每项含 offsetSeconds/wallClock/label/dotColor），
     // 原样交给数据层拆列。事件不跟着记录存的话，「采集记录预览」里那条事件带
     // 就永远是空的 —— 记录里只存了事件**个数**，个数拼不回时刻与标签
@@ -199,6 +203,7 @@ public:
     Q_INVOKABLE void finishCollection(const QString &patient_no, int duration_seconds,
                                       int event_count, const QString &file_path,
                                       const QString &electrode_quality,
+                                      int amplitude_uv, double window_seconds,
                                       const QVariantList &events = QVariantList(),
                                       int session_id = -1);
 

@@ -65,14 +65,19 @@ Item {
           value: detail.quality !== undefined && detail.quality.length > 0 ? detail.quality : "—" }
     ]
 
-    // 「幅值 / 时基」= 这一屏波形现在的显示标尺。幅值取 Recording 那一栏
-    // （标尺默认 100 μV，见 recordingpreview.h；0 才是自动量程）；时基是当前
-    // 时间窗除以 4，工作台也是这么把时窗换算成 s/div 的
+    // 「幅值 / 时基」= **采集当时**的显示标尺，由数据层随记录一起存下来。
+    // 不能用 Recording 的当前值：那是预览弹窗自己的默认窗口（5 秒、100 µV），
+    // 与采集时用户实际选的那一档无关。时基按工作台同一约定换算：
+    // 一屏分 4 格，s/div = 显示窗长 / 4。
+    // 旧记录没有这两项（库里是 0），显示「—」，不拿默认值冒充
     readonly property string displayScaleText: {
-        const amplitude = Recording.yRangeUV > 0
-                          ? Recording.yRangeUV + qsTr(" μV") : qsTr("自动")
-        return amplitude + " · " + Number((Recording.windowSeconds / 4).toFixed(2))
-               + qsTr(" s/div")
+        const amplitude = detail.amplitudeUV !== undefined && detail.amplitudeUV > 0
+                          ? detail.amplitudeUV + qsTr(" μV") : "—"
+        const windowSeconds = detail.windowSeconds !== undefined
+                              ? Number(detail.windowSeconds) : 0
+        const timebase = windowSeconds > 0
+                         ? Number((windowSeconds / 4).toFixed(2)) + qsTr(" s/div") : "—"
+        return amplitude + " · " + timebase
     }
 
     // ---------- 波形几何（均为卡片内坐标）----------

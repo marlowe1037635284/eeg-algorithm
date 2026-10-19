@@ -145,8 +145,9 @@ build\package.cmd --no-build :: 复用已构建好的 exe，只重新组装
 build\package.cmd --zip      :: 额外生成 dist\EEG-KSC-portable.zip
 ```
 
-组装产物在 `KSCEEGClient/build/dist/EEG-KSC/`，共 6 步：
+组装产物在 `KSCEEGClient/build/dist/EEG-KSC/`，共 7 步：
 
+0. 由开发库 `eeg-ksc.db` 生成一份清空后的副本（各表数据删除、自增计数归零），**源库保持不变**；脚本 `build/clean-db.py`，每次打包都会执行；
 1. 拷贝 exe、`python311.dll`、设计字体（`assets/fonts`）、数据库模板 `eeg-ksc.db`、运行期配置 `client-config.json`；
 2. `windeployqt` 收集 Qt 运行期（DLL、平台插件、QML 模块）；
 3. 拷贝 Python 3.11 基础安装到 `python\`；

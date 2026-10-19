@@ -17,32 +17,6 @@ namespace
 const auto k_config_file_name = QStringLiteral("client-config.json");
 const auto k_auto_exit_key = QStringLiteral("unattended_auto_exit_minutes");
 
-// 配置文件路径：先看可执行文件同级（打包后的正式形态），再看源码目录
-//（开发期直接跑 build/ 里的 exe 时用）。
-//
-// 这里**刻意**与 defaultDatabasePath() 的优先序相反：数据库模板希望开发期
-// 用源码目录里那份，而配置文件希望打包后 exe 同级那份说了算 —— 现场要调
-// 阈值不该回源码目录改。
-QString config_file_path()
-{
-    const QString beside_exe =
-        QDir(QCoreApplication::applicationDirPath()).filePath(k_config_file_name);
-    if (QFile::exists(beside_exe))
-        return beside_exe;
-
-#ifdef KSCEEG_SOURCE_DIR
-    const QDir source_dir(QString(KSCEEG_SOURCE_DIR));
-    if (source_dir.exists())
-    {
-        const QString in_source = source_dir.filePath(k_config_file_name);
-        if (QFile::exists(in_source))
-            return in_source;
-    }
-#endif
-
-    return beside_exe;
-}
-
 // 这个事件算不算「有人在操作」。
 //
 // 只认真正的输入：鼠标动、点、滚轮，键盘按，触摸，手写笔。像 UpdateRequest、
@@ -69,9 +43,35 @@ bool is_user_input(const QEvent *event)
 
 } // namespace
 
+// 配置文件路径：先看可执行文件同级（打包后的正式形态），再看源码目录
+//（开发期直接跑 build/ 里的 exe 时用）。
+//
+// 这里**刻意**与 defaultDatabasePath() 的优先序相反：数据库模板希望开发期
+// 用源码目录里那份，而配置文件希望打包后 exe 同级那份说了算 —— 现场要调
+// 阈值不该回源码目录改。
+QString client_config_path()
+{
+    const QString beside_exe =
+        QDir(QCoreApplication::applicationDirPath()).filePath(k_config_file_name);
+    if (QFile::exists(beside_exe))
+        return beside_exe;
+
+#ifdef KSCEEG_SOURCE_DIR
+    const QDir source_dir(QString(KSCEEG_SOURCE_DIR));
+    if (source_dir.exists())
+    {
+        const QString in_source = source_dir.filePath(k_config_file_name);
+        if (QFile::exists(in_source))
+            return in_source;
+    }
+#endif
+
+    return beside_exe;
+}
+
 int unattended_auto_exit_minutes(int fallback)
 {
-    const QString path = config_file_path();
+    const QString path = client_config_path();
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly))
     {

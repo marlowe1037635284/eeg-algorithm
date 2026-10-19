@@ -201,7 +201,14 @@ QImage render_topography(const TopographyFrame &frame, int size)
 // 频段名 → (preset, 低, 高)。写错的话算法会直接拒绝，界面上则表现为「点了没反应」
 bool band_from_name(const QString &band, QString *preset, double *low_hz, double *high_hz)
 {
-    if (band == QLatin1String("delta"))
+    if (band == QLatin1String("full"))
+    {
+        // 算法侧 BandPreset 没有 "full"，全频对应 full_0_5_45（0.5–45 Hz）
+        *preset = QStringLiteral("full_0_5_45");
+        *low_hz = 0.5;
+        *high_hz = 45.0;
+    }
+    else if (band == QLatin1String("delta"))
     {
         *preset = QStringLiteral("delta");
         *low_hz = 0.5;
@@ -415,6 +422,9 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
     // 串口上永远是设备的 16 路；界面上的 4/8/16 只是显示与算法的通道子集
     config.channel_count = serial_protocol::kChannelCount;
     config.sample_rate = m_sample_rate;
+    // 新固件帧里带 CRC-16/MODBUS，由 client-config.json 的 serial_crc_enabled 控制，
+    // 默认关闭（按老固件的 51 字节无 CRC 帧解析）
+    config.crc_enabled = serial_crc_enabled(false);
 
     m_raw_buffer.reset(config.channel_count, m_sample_rate, kMaxWindowSeconds * 6);
     reset_channels(m_channel_count);
@@ -434,6 +444,8 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
                      &AcquisitionBridge::on_port_open_failed, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::port_closed, this,
                      &AcquisitionBridge::on_port_closed, Qt::QueuedConnection);
+    QObject::connect(m_collector, &SerialCollector::device_lost, this,
+                     &AcquisitionBridge::on_device_lost, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::stats_changed, this,
                      &AcquisitionBridge::on_stats_changed, Qt::QueuedConnection);
     QObject::connect(m_collector, &SerialCollector::status_message, this,
@@ -489,7 +501,8 @@ void AcquisitionBridge::close_port()
 //
 // 设计稿上**没有串口选择控件** —— 它的前提是「设备已连接」（顶栏那个
 // 「Neurolink-6016 已连接」的胶囊）。所以这里按这个前提办事：自动打开枚举到的
-// 那个口。参考实现的约定是取最后一个（真机通常枚举成编号最大的那个 COM 口）。
+// 那个口。选口规则是取 COM 编号最大的那个（真机上设备通常挂在编号更大的口上，
+// 直接取 last() 会被枚举顺序坑到）。
 //
 // 与 open_port 的差别在于「等结果」：open_port 只表示「已发起」，串口在采集线程里
 // 异步打开，结果经队列信号回来。而确认框里的「连接」一栏就绑在 portOpen 上，
@@ -510,13 +523,47 @@ bool AcquisitionBridge::connect_device()
     }
 
     refresh_ports();
+    // 扫描结果：扫到几个口、分别是哪些。自动连接是「盲选」（取枚举到的最后一个），
+    // 出问题时这几条日志是唯一能看出到底扫到了什么的地方。
+    // 逐个列出并带上描述名——多个口时只有 portName 分不出哪个才是脑电设备
+    const QList<QSerialPortInfo> scan_infos = QSerialPortInfo::availablePorts();
+    emit logMessage(tr("自动扫描到 %1 个串口").arg(scan_infos.size()));
+    for (const QSerialPortInfo &info : scan_infos)
+    {
+        const QString description = info.description().trimmed();
+        emit logMessage(description.isEmpty()
+                            ? tr("  串口：%1").arg(info.portName())
+                            : tr("  串口：%1（%2）").arg(info.portName(), description));
+    }
     if (m_available_ports.isEmpty())
     {
         set_error(tr("没有找到可用的串口，请检查设备连接与驱动"));
         return false;
     }
 
-    const QString port_name = m_available_ports.last();
+    // 选口：比 COM 后面的数字，取最大的那个。这里比的是数值而不是字符串，
+    // 否则 COM9 会被认为比 COM10 大
+    QString port_name;
+    int best_number = -1;
+    for (const QString &candidate : m_available_ports)
+    {
+        if (!candidate.startsWith(QLatin1String("COM"), Qt::CaseInsensitive))
+        {
+            continue;
+        }
+        bool ok = false;
+        const int number = candidate.mid(3).toInt(&ok);
+        if (ok && number > best_number)
+        {
+            best_number = number;
+            port_name = candidate;
+        }
+    }
+    if (port_name.isEmpty())
+    {
+        // 没有 COMx 形式的（例如非 Windows 平台），退回原来的枚举最后一个
+        port_name = m_available_ports.last();
+    }
     emit logMessage(tr("串口未打开，自动使用 %1").arg(port_name));
     // 先清掉上一轮的错误，好在等待时用它判断「失败已经回来了」
     clear_error();
@@ -534,6 +581,15 @@ bool AcquisitionBridge::connect_device()
     }
     // 收尾再转一次，把最后那个 portStateChanged 也送到 QML
     QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    // 结果说清楚连的是哪个口。失败原因已由 on_port_open_failed() 记过，这里不重复
+    if (m_port_open)
+    {
+        emit logMessage(tr("设备已连接：%1").arg(port_name));
+    }
+    else
+    {
+        emit logMessage(tr("连接设备失败：%1 未打开").arg(port_name));
+    }
     return m_port_open;
 }
 
@@ -1270,6 +1326,18 @@ void AcquisitionBridge::set_channel_count(int count)
     // 从零状态消掉重参考带进来的直流要四五秒 —— 每次切档位都会换来一段
     // 从十几万 µV 衰减下来的巨大瞬变，波形、地形图、频谱一起受影响
     reset_channels(clamped);
+
+    // 频谱默认通道跟着档位走：切换档位后，原来选中的那一路可能已经不在显示
+    // 集合里了，继续留着旧名字会让频谱画一条界面上看不到的通道。回到新档位的
+    // 第一路（16 档下就是 Fp1）
+    const QStringList names = channel_names();
+    const QString first = names.isEmpty() ? QString() : names.first();
+    if (!first.isEmpty() && first != m_spectrum_channel)
+    {
+        m_spectrum_channel = first;
+        emit spectrumChannelChanged();
+    }
+
     emit logMessage(tr("显示通道数改为 %1").arg(clamped));
 }
 
@@ -1674,10 +1742,11 @@ void AcquisitionBridge::tick_spectrum()
     SpectrumRequest request;
     request.request_id = ++m_spectrum_request_id;
     request.channel_name = m_spectrum_channel;
-    // 曲线要看到整个有意义的频段，所以查询用 0.5–30 Hz 而不是某个窄带
-    request.band_preset = QStringLiteral("full_0_5_30");
+    // 曲线要看到整个有意义的频段（γ 的上界就是 45 Hz），所以查询用
+    // 0.5–45 Hz 而不是某个窄带
+    request.band_preset = QStringLiteral("full_0_5_45");
     request.band_low_hz = 0.5;
-    request.band_high_hz = 30.0;
+    request.band_high_hz = 45.0;
     request.window_s = kWindowS;
     m_worker.post_spectrum_request(request);
 }
@@ -1755,9 +1824,8 @@ void AcquisitionBridge::on_spectrum_ready(const SpectrumFrame &frame)
 
     // 曲线归一化成 0~1，QML 只负责按画布高度缩放。
     //
-    // PSD 的频点是 3.9 Hz 一档（算法侧 nperseg 固定 256，见接口文档），
-    // 0.5–30 Hz 只有 7 个点，所以这条曲线天然是折线而不是平滑曲线 ——
-    // 这是算法侧分辨率决定的，不是显示做得粗糙
+    // PSD 的频点间隔由算法侧决定（nperseg = 采样率 × 2），1000 Hz 下是
+    // 0.5 Hz 一档，0.5–45 Hz 共 90 个点，画出来足够密
     const float peak = *std::max_element(frame.psd.begin(), frame.psd.end());
     const double denominator = peak > 0.0f ? static_cast<double>(peak) : 1.0;
 
@@ -1797,7 +1865,8 @@ void AcquisitionBridge::on_spectrum_ready(const SpectrumFrame &frame)
                 sum += frame.psd.at(i);
             }
         }
-        values.append(QStringLiteral("%1μV²").arg(sum, 0, 'f', 1));
+        // 只给裸数值：单位已由面板标题的 "(μV²/Hz)" 统一交代
+        values.append(QStringLiteral("%1").arg(sum, 0, 'f', 1));
     }
     m_spectrum_band_values = values;
     m_spectrum_status_text.clear();
@@ -1880,6 +1949,18 @@ void AcquisitionBridge::on_port_closed(const QString &message)
     emit logMessage(message);
 }
 
+void AcquisitionBridge::on_device_lost(const QString &message)
+{
+    // 只在采集进行中才提示。device_lost 排在 collecting_changed(false) 之前入队，
+    // 所以此刻 m_collecting 仍是断开前的真实状态 —— 只有「采集中被拔线 / 掉电」
+    // 会走到这里；单纯开着串口没采集时拔线不打扰用户（顶栏胶囊照样会变「未连接」）
+    Q_UNUSED(message);
+    if (m_collecting)
+    {
+        emit deviceDisconnected();
+    }
+}
+
 void AcquisitionBridge::on_stats_changed(qint64 received, qint64 saved, qint64 dropped,
                                          qint64 frame_skips)
 {
@@ -1905,12 +1986,15 @@ void AcquisitionBridge::on_collecting_changed(bool collecting)
 {
     if (collecting == m_collecting)
     {
+        // 停止采集时即使状态没变也要通知 QML：start_collection 失败时
+        // m_collecting 始终为 false，采集线程仍会发 collecting_changed(false)，
+        // 如果不补发信号，QML 的 finishCollection 就永远不会被调用，
+        // 历史记录里时长就一直是 00:00:00
+        if (!collecting)
+            emit collectingChanged();
         return;
     }
     m_collecting = collecting;
-    if (collecting)
-    {
-        }
     emit collectingChanged();
 }
 
@@ -2015,11 +2099,13 @@ bool AcquisitionBridge::scan_electrodes()
     }
 
     // 分档阈值（kΩ）。数值来自设备实测阻抗（B0…D0 帧每路一个 24 位值，
-    // 单位欧姆，经 serial_protocol::kKohmPerOhm 换算）；< 0 表示该路未连接
-    constexpr double kGoodBelow = 10.0;
-    constexpr double kPoorBelow = 18.0;
-    constexpr double kOffBelow = 30.0;
-    constexpr double kMaxBar = 60.0;
+    // 单位欧姆，经 serial_protocol::kKohmPerOhm 换算）；< 0 表示该路未连接。
+    // 四档：≤10 良好、10~40 一般、40~120 不良、>120（或未连接）脱落
+    constexpr double kGoodMax = 10.0;
+    constexpr double kFairMax = 40.0;
+    constexpr double kPoorMax = 120.0;
+    // 进度条满量程取「脱落」的下界，这样四档在条上的长度区分得开
+    constexpr double kMaxBar = 120.0;
 
     int good = 0;
     int fair = 0;
@@ -2035,17 +2121,17 @@ bool AcquisitionBridge::scan_electrodes()
         const bool disconnected = kohm < 0.0;
 
         QString level;
-        if (disconnected || kohm >= kOffBelow)
+        if (disconnected || kohm > kPoorMax)
         {
             level = QStringLiteral("脱落");
             ++off;
         }
-        else if (kohm < kGoodBelow)
+        else if (kohm <= kGoodMax)
         {
             level = QStringLiteral("良好");
             ++good;
         }
-        else if (kohm < kPoorBelow)
+        else if (kohm <= kFairMax)
         {
             level = QStringLiteral("一般");
             ++fair;

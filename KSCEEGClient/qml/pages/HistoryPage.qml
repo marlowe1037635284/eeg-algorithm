@@ -257,7 +257,10 @@ Item {
                 QualityPill {
                     x: 1169
                     y: rowY + 13
-                    text: modelData.quality
+                    // 库里没扫过阻抗时这一列是空串（数据层不再替界面写占位），
+                    // 列表里统一显示一个破折号
+                    text: modelData.quality !== undefined && modelData.quality.length > 0
+                          ? modelData.quality : "—"
                     accent: root.qualityColor(modelData.level)
                 }
 
@@ -308,9 +311,10 @@ Item {
         // 三种「空」的原因不同，提示语也要分开：一位记录都没有、这位患者没有、
         // 筛没的。一律说「去工作台采集一次」的话，正在筛选的人会以为数据丢了
         Text {
-            x: 71
+            x: -47
             y: 200
-            width: 1400
+            width: 1796
+            horizontalAlignment: Text.AlignHCenter
             visible: root.records.length === 0
             text: {
                 if (root.allRecords.length === 0)

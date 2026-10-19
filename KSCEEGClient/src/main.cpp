@@ -1,9 +1,14 @@
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
 #include <QFontDatabase>
 #include <QGuiApplication>
+#include <QLockFile>
+#include <QLocalServer>
+#include <QLocalSocket>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickWindow>
 #include <QQuickImageProvider>
 #include <QStringList>
 #include <QTimer>
@@ -73,6 +78,45 @@ int main(int argc, char *argv[])
     // **组织名刻意不设**：Qt 这个位置是「组织/应用」两级，两个都设成 EEG-KSC 的话
     // 会得到 %LOCALAPPDATA%\EEG-KSC\EEG-KSC\... 这种重复一层的路径
     QCoreApplication::setApplicationName(QStringLiteral("EEG-KSC"));
+
+    // 单实例检测：用锁文件判断是否已有实例在跑。
+    // 锁文件放在临时目录（QDir::tempPath()），文件名带应用名避免与其他程序冲突。
+    // 获取失败说明已有实例运行，通过本地套接字通知它激活窗口，然后退出。
+    const QString lock_name = QStringLiteral("EEG-KSC-single-instance");
+    QLockFile lock_file(QDir::tempPath() + QStringLiteral("/") + lock_name + QStringLiteral(".lock"));
+    lock_file.setStaleLockTime(0);  // 不自动清理「过期」锁，避免误判
+
+    if (!lock_file.tryLock(0))
+    {
+        // 锁获取失败，说明已有实例在跑。尝试通过本地套接字通知它激活窗口。
+        QLocalSocket socket;
+        socket.connectToServer(lock_name);
+        if (socket.waitForConnected(500))
+        {
+            // 发送激活信号，等待已运行实例确认后退出
+            socket.write("activate");
+            socket.waitForBytesWritten(500);
+            socket.disconnectFromServer();
+            qInfo() << "[single-instance] 已有实例运行，已发送激活信号";
+        }
+        else
+        {
+            qWarning() << "[single-instance] 已有实例运行，但无法连接本地服务器";
+        }
+        return 0;  // 退出新实例
+    }
+
+    // 锁获取成功，启动本地服务器监听后续实例的激活请求
+    QLocalServer::removeServer(lock_name);  // 清理可能残留的旧服务器
+    QLocalServer local_server;
+    if (!local_server.listen(lock_name))
+    {
+        qWarning() << "[single-instance] 本地服务器启动失败:" << local_server.errorString();
+    }
+    else
+    {
+        qInfo() << "[single-instance] 单实例模式已启用";
+    }
 
     // --selfcheck：不启界面，在控制台把两条最容易出错、又最难在界面上看出来的
     // 链路跑一遍 —— 串口协议的字节换算与切帧，以及 C++ 与算法包之间的接口。
@@ -225,6 +269,26 @@ int main(int argc, char *argv[])
             []() { QCoreApplication::exit(-1); },
             Qt::QueuedConnection);
         engine.loadFromModule("KSCEEGClient", "Main");
+
+        // 本地服务器收到激活请求时，找到主窗口并激活它（置顶 + 获得焦点）
+        QObject::connect(&local_server, &QLocalServer::newConnection, [&]() {
+            QLocalSocket *client = local_server.nextPendingConnection();
+            if (!client)
+                return;
+            client->deleteLater();
+
+            // 找到主窗口并激活
+            for (QWindow *window : QGuiApplication::allWindows())
+            {
+                if (window->isVisible())
+                {
+                    window->raise();
+                    window->requestActivate();
+                    qInfo() << "[single-instance] 已激活窗口:" << window->title();
+                    break;
+                }
+            }
+        });
 
         // --demo：切到进程内合成的演示数据源。没有设备时用它把整条链路
         //（算法会话 → 波形 → 地形图 → 频谱）跑起来看效果。

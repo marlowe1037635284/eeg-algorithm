@@ -135,7 +135,8 @@ class AcquisitionBridge : public QObject, public ChunkSink
                    NOTIFY spectrumChannelChanged)
     // PSD 曲线，已归一化成 0~1 的高度（从大到小排列的画布坐标由 QML 处理）
     Q_PROPERTY(QVariantList spectrumCurve READ spectrum_curve NOTIFY spectrumRevisionChanged)
-    // 五个频段（δ/θ/α/β/γ）的功率，固定五项，单位 µV²
+    // 五个频段（δ/θ/α/β/γ）的功率，固定五项，单位 µV²。
+    // 只给裸数值（如 "8.4"），单位由频谱面板标题的 "(μV²/Hz)" 统一交代
     Q_PROPERTY(QStringList spectrumBandValues READ spectrum_band_values
                    NOTIFY spectrumRevisionChanged)
     Q_PROPERTY(QString spectrumStatusText READ spectrum_status_text
@@ -149,7 +150,7 @@ class AcquisitionBridge : public QObject, public ChunkSink
     // 每一项：{ channel, name, level, ratio, kohm, text }
     Q_PROPERTY(QVariantList electrodeQuality READ electrode_quality NOTIFY electrodeQualityChanged)
     // 一句话小结：「良好 13 · 一般 2 · 不良 1 · 脱落 1」，扫描后给界面提示用
-    // 共四档：良好 / 一般 / 不良 / 脱落（接触电阻大到 kOffBelow 以上或检出伪迹都算脱落）
+    // 共四档：良好（≤10kΩ）/ 一般（10~40kΩ）/ 不良（40~120kΩ）/ 脱落（>120kΩ 或未连接）
     Q_PROPERTY(QString electrodeSummary READ electrode_summary NOTIFY electrodeQualityChanged)
     // 扫描还没做过时为 false，界面据此决定显示设计稿的静态样式还是真实结果
     Q_PROPERTY(bool electrodeScanValid READ electrode_scan_valid NOTIFY electrodeQualityChanged)
@@ -337,6 +338,9 @@ public slots:
 signals:
     void availablePortsChanged();
     void portStateChanged();
+    // 采集进行中设备失去连接（拔线 / 掉电）。界面据此在最上层弹警示框。
+    // 只在「当时正在采集」时发出 —— 单纯开着串口没采集时拔线不打扰用户
+    void deviceDisconnected();
     void collectingChanged();
     void recordingPathChanged();
     void statusTextChanged();
@@ -366,6 +370,7 @@ private:
     void on_port_opened(const QString &message);
     void on_port_open_failed(const QString &message);
     void on_port_closed(const QString &message);
+    void on_device_lost(const QString &message);
     void on_stats_changed(qint64 received, qint64 saved, qint64 dropped, qint64 frame_skips);
     void on_status_message(const QString &message);
     void on_failed(const QString &message);

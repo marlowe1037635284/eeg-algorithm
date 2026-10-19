@@ -1,4 +1,5 @@
 {
-  "_comment": "客户端运行期配置。改动后需重启程序生效。unattended_auto_exit_minutes：无人值守锁定设备的空闲阈值（分钟），超过该时长没有任何鼠标/键盘操作即锁定设备、回到「设备已锁定」登录页；设为 0 表示关闭该功能。",
-  "unattended_auto_exit_minutes": 60
+  "_comment": "客户端运行期配置。改动后需重启程序生效。unattended_auto_exit_minutes：无人值守锁定设备的空闲阈值（分钟），超过该时长没有任何鼠标/键盘操作即锁定设备、回到「设备已锁定」登录页；设为 0 表示关闭该功能。serial_crc_enabled：串口帧是否带 CRC-16/MODBUS 校验（新固件每帧在数据区后、帧尾前多 2 字节 CRC，帧长 51→53）。false 用旧协议（51 字节帧），true 用新协议并逐帧校验；默认关闭。",
+  "unattended_auto_exit_minutes": 60,
+  "serial_crc_enabled": false
 }

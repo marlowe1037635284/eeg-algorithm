@@ -21,6 +21,9 @@ Item {
     property int pixelSize: 16
     property color textColor: "#3b3b3b"
     property real fieldRadius: 12
+    // 箭头离右边缘的距离。默认按各处一直用的 16.5；后处理参数面板里的窄框
+    // 按那张设计稿贴到 8.5 —— 同一套控件在不同尺度的框里留白本来就不一样
+    property real arrowRightMargin: 16.5
 
     signal activated(int index)
 
@@ -55,7 +58,7 @@ Item {
     }
 
     Image {
-        x: parent.width - 24
+        x: parent.width - root.arrowRightMargin - width
         anchors.verticalCenter: parent.verticalCenter
         width: 7.47
         height: 7
@@ -89,39 +92,51 @@ Item {
             border.color: Design.panelBorder
         }
 
-        contentItem: Column {
-            Repeater {
-                model: root.choices
+        contentItem: ListView {
+            id: listView
 
-                delegate: Rectangle {
-                    required property string modelData
-                    required property int index
+            // 限高：超过 7 项（7×36=252）就内部滚动。不限高的话列表会一路往下铺，
+            // 顶出窗口底部 —— 标签建到七八个以后，后半截选项根本点不到
+            implicitHeight: Math.min(contentHeight, 252)
+            model: root.choices
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+            // 内容装得下时锁住滚动，避免整列被拖出空白
+            interactive: contentHeight > height
 
-                    width: popup.width
-                    height: 36
-                    radius: 6
-                    color: (index === root.currentIndex || itemMouse.containsMouse)
-                           ? Design.primarySoft : "transparent"
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
-                    Text {
-                        anchors.centerIn: parent
-                        text: modelData
-                        color: index === root.currentIndex ? Design.primary : "#3b3b3b"
-                        font.family: Design.fontFamily
-                        font.styleName: Design.styleRegular
-                        font.pixelSize: 14
-                    }
+            delegate: Rectangle {
+                required property string modelData
+                required property int index
 
-                    MouseArea {
-                        id: itemMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                            root.currentIndex = index
-                            root.activated(index)
-                            popup.close()
-                        }
+                width: popup.width
+                height: 36
+                radius: 6
+                color: (index === root.currentIndex || itemMouse.containsMouse)
+                       ? Design.primarySoft : "transparent"
+
+                Text {
+                    anchors.centerIn: parent
+                    width: parent.width - 16
+                    horizontalAlignment: Text.AlignHCenter
+                    elide: Text.ElideRight
+                    text: modelData
+                    color: index === root.currentIndex ? Design.primary : "#3b3b3b"
+                    font.family: Design.fontFamily
+                    font.styleName: Design.styleRegular
+                    font.pixelSize: 14
+                }
+
+                MouseArea {
+                    id: itemMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        root.currentIndex = index
+                        root.activated(index)
+                        popup.close()
                     }
                 }
             }

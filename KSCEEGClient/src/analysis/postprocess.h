@@ -14,6 +14,16 @@
 
 #include <memory>
 
+// 伪迹覆盖层的一段异常区间（只进波形图，定义在此以便出图函数与 Result 共用）。
+// channel 是 eeg_montage 的通道下标；时间相对**预处理后整段信号**，单位秒，
+// [start_seconds, end_seconds) 半开 —— 与 Result::segment_start 同口径
+struct ArtifactSpan
+{
+    int channel = 0;
+    double start_seconds = 0.0;
+    double end_seconds = 0.0;
+};
+
 // 「数据分析与后处理」页的全部计算与出图。
 //
 // ==================== 为什么offline 处理放在 C++ ====================
@@ -25,7 +35,7 @@
 // 打开就是一片「算法模块不可用」。
 //
 // 因此离线流水线按接口文档里那套**固定顺序**在本类里实现：
-//   高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正
+//   高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 线性插值修复
 // 与 eeg_algorithm.internal.offline.pipeline.run_preprocessing_pipeline 逐段对应，
 // 数值口径尽量取齐（Butterworth 4 阶、零相位、Welch 512 点 / 50% 重叠 / 密度谱）。
 // 将来 Python 通路可用时，把 compute_pipeline() 换成一次跨语言调用即可 ——
@@ -67,7 +77,9 @@ class PostProcess : public QObject
     Q_PROPERTY(double notchHz READ notch_hz WRITE set_notch_hz NOTIFY paramsChanged)
     // 重参考 / 降采样都用「选项下标」，与下拉框一一对应。取值表见 referenceChoices /
     // downsampleChoices —— 降采样那几个数是**按记录实际采样率算的**，
-    // 不能照设计稿写死 1000Hz（设计稿那张图是 256Hz 的记录，写了也没意义）
+    // 不能照设计稿写死 1000Hz（设计稿那张图是 256Hz 的记录，写了也没意义）。
+    // referenceChoices 还随通道数变（4/8 通道没有双侧乳突，选项表少一项），
+    // 所以它只在下拉框里有意义：传给算法前要换算成固定方法号，见 schedule_recompute
     Q_PROPERTY(int referenceIndex READ reference_index WRITE set_reference_index
                    NOTIFY paramsChanged)
     Q_PROPERTY(int downsampleIndex READ downsample_index WRITE set_downsample_index
@@ -134,6 +146,10 @@ class PostProcess : public QObject
                    NOTIFY viewChanged)
     Q_PROPERTY(double windowSeconds READ window_seconds WRITE set_window_seconds
                    NOTIFY viewChanged)
+    // 当前选中的事件标注（events 里的下标，-1 = 没选）。波形上那根事件竖线与顶端的
+    // 圆点选中后换成高亮色，弹窗里对应那一行也点亮 —— 两边共用这一份状态
+    Q_PROPERTY(int selectedEvent READ selected_event WRITE set_selected_event
+                   NOTIFY viewChanged)
     Q_PROPERTY(QStringList channelNames READ channel_names CONSTANT)
     Q_PROPERTY(QStringList channelColors READ channel_colors CONSTANT)
 
@@ -141,6 +157,8 @@ class PostProcess : public QObject
     Q_PROPERTY(QStringList bandKeys READ band_keys CONSTANT)
     Q_PROPERTY(QStringList bandNames READ band_names CONSTANT)
     Q_PROPERTY(QStringList bandColors READ band_colors CONSTANT)
+    // 每项 { key, letter, low, high }。频谱图按边界算各色带正中的位置写 δ θ α β γ
+    Q_PROPERTY(QVariantList bandRanges READ band_ranges CONSTANT)
 
     // ---------- 状态与结果 ----------
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
@@ -161,8 +179,10 @@ class PostProcess : public QObject
     Q_PROPERTY(QVariantList topoStats READ topo_stats NOTIFY resultChanged)
     // 报告页的分节内容：{ title, rows: [{label, value, kind}], chips: [...] , note }
     Q_PROPERTY(QVariantList reportSections READ report_sections NOTIFY resultChanged)
-    // 底栏那一行：处理链 / 片段 / 质检 / 窗口内幅值范围
-    Q_PROPERTY(QString statusLine READ status_line NOTIFY resultChanged)
+    // 底栏状态条：分组的分段文本。每组是若干段 { text, kind }，kind = "label" |
+    // "value"。分组只为排版上的间距（设计稿 info.png 里组间 20、组内紧贴），
+    // 上色交给 QML 按 kind 做 —— 标签走正文色、值走主色
+    Q_PROPERTY(QVariantList statusGroups READ status_groups NOTIFY resultChanged)
     // 有效片段（秒），报告页与底栏都要显示
     Q_PROPERTY(double segmentStartSeconds READ segment_start_seconds NOTIFY resultChanged)
     Q_PROPERTY(double segmentSeconds READ segment_seconds NOTIFY resultChanged)
@@ -191,8 +211,10 @@ public:
                           const QVariantMap &info);
     Q_INVOKABLE void close();
 
-    // 波形与频谱绘制区的像素尺寸，由 QML 在尺寸变化时报上来
-    Q_INVOKABLE void set_view_size(int width, int height);
+    // 波形与频谱绘制区的像素尺寸，由 QML 在尺寸变化时报上来。
+    // pixel_ratio 是绘制区的**物理像素倍率**（高 DPI 下 > 1）：波形按它把图出得
+    // 更大、贴回来时正好 1:1，1 像素宽的折线才不会在放大时糊掉或起台阶
+    Q_INVOKABLE void set_view_size(int width, int height, double pixel_ratio = 1.0);
 
     // ---------- 导出 ----------
     // 三个导出都返回 { success, message, path }。目录由调用方给（与历史记录页
@@ -250,12 +272,14 @@ public:
     int current_channel() const { return m_current_channel; }
     double window_start_seconds() const { return m_window_start; }
     double window_seconds() const { return m_window_seconds; }
+    int selected_event() const { return m_selected_event; }
     QStringList channel_names() const;
     QStringList channel_colors() const;
 
     static QStringList band_keys();
     static QStringList band_names();
     static QStringList band_colors();
+    static QVariantList band_ranges();
 
     bool busy() const { return m_busy; }
     QString status_text() const { return m_status_text; }
@@ -266,7 +290,7 @@ public:
     QVariantList channel_bands() const;
     QVariantList topo_stats() const;
     QVariantList report_sections() const;
-    QString status_line() const;
+    QVariantList status_groups() const;
     double segment_start_seconds() const { return m_segment_start; }
     double segment_seconds() const { return m_segment_seconds; }
     double topo_scale_max() const { return m_topo_scale_max; }
@@ -311,6 +335,7 @@ public slots:
     void set_current_channel(int value);
     void set_window_start_seconds(double value);
     void set_window_seconds(double value);
+    void set_selected_event(int value);
 
 signals:
     void recordChanged();
@@ -399,7 +424,7 @@ private:
         int downsample_index = 0;
         bool baseline_enabled = false;
         bool asr_enabled = false;
-        int asr_cutoff = 40;
+        int asr_cutoff = 20;
         // 伪迹检测开关与「窗口和缩放」里的幅度（0 = 自动），以及质检三个阈值与修复方式
         bool artifact_detection_enabled = false;
         double wave_amplitude_uv = 0.0;
@@ -420,12 +445,17 @@ private:
         // 波形绘制区（不含左边的通道名列）像素尺寸
         int wave_width = 1200;
         int wave_height = 600;
+        // 波形的物理像素倍率：图按 wave_width × (通道数 × 泳道高) 再乘上它出，
+        // 贴回逻辑尺寸时正好 1:1（见 set_view_size 注释）
+        double wave_scale = 1.0;
         // 频谱绘制区像素尺寸
         int spectrum_width = 1200;
         int spectrum_height = 600;
         // 事件标注（时刻 / 标签 / 颜色）。随任务一起拷进来，工作线程便不必
         // 反过来问 GUI 线程要数据 —— 那种反向依赖是死锁的经典配方
         QVariantList events;
+        // 当前选中的事件下标（-1 = 没选）。波形上那根竖线与顶端圆点据此换成高亮色
+        int selected_event = -1;
         // 基本信息那五行。报告页的「记录信息」一节直接用它，不再从 info 重新拼一遍
         QVariantList record_info;
         // 上一轮的结果快照。窗口类改动命中指纹时，compute 直接复用它、只重画波形、
@@ -453,12 +483,12 @@ private:
         QVariantList channel_bands;
         QVariantList topo_stats;
         QVariantList report_sections;
-        QString status_line;
+        QVariantList status_groups;
         double topo_scale_max = 0.0;
 
         double wave_range_uv = 100.0;
-        double spectrum_f_min = 0.0;
-        double spectrum_f_max = 60.0;
+        double spectrum_f_min = 0.5;
+        double spectrum_f_max = 45.0;
         double spectrum_db_min = -90.0;
         double spectrum_db_max = 10.0;
 
@@ -471,6 +501,10 @@ private:
         QImage correlation_image;
         // 六个频段各一张，顺序同 bandKeys()
         QVector<QImage> topo_images;
+
+        // 伪迹覆盖层（只进波形图）：按通道的异常区间。指纹命中做增量重算时，
+        // 波形图直接复用它，不必再跑一遍算法
+        QVector<ArtifactSpan> artifact_spans;
 
         // 预处理后的整段数据（帧优先交错，单位 µV），「导出数据」用它。
         // 一轮十分钟的记录约 10 MB —— 为了导出再算一遍要几百毫秒，
@@ -552,7 +586,7 @@ private:
         int downsample_index = 0;
         bool baseline_enabled = false;
         bool asr_enabled = false;
-        int asr_cutoff = 40;
+        int asr_cutoff = 20;
         bool artifact_detection_enabled = false;
         double wave_amplitude_uv = 0.0;   // 0 = 自动
         bool qc_signal_enabled = true;
@@ -575,7 +609,13 @@ private:
     int m_current_channel = 0;
     double m_window_start = 0.0;
     double m_window_seconds = 5.0;
+    // 当前选中的事件标注（events 里的下标，-1 = 没选）
+    int m_selected_event = -1;
     QSize m_view_size;
+    // 绘制区的物理像素倍率（见 set_view_size）。只对波形生效：波形的泳道高由
+    // C++ 内部决定（lane_height），不像频谱那样拿 QML 报来的高度，得靠这个倍率
+    // 才能跟着高 DPI 一起放大
+    double m_view_pixel_ratio = 1.0;
     // 最近一轮结果对应的片段（秒）与色标上限。单独存一份是为了让
     //「参数刚改、结果还没回来」的那一小段时间里界面拿到的仍是上一轮的值，
     // 而不是 0 —— 显示 0 会让报告页闪一下「片段 0.0-0.0 s」

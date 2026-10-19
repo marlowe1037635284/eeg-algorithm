@@ -12,8 +12,8 @@
 // EEG 采集设备的串口协议。帧格式与全部换算参数照搬 Python 参考实现
 // （tms-eeg-client 的 data_thread.py 与 config.py），改协议时两边必须一起改。
 //
-// 协议里有**两种帧**，结构完全一样（都是 frame_size(channel_count) 字节），
-// 只有首尾的魔术字节不同，用它们区分：
+// 协议里有**两种帧**，结构完全一样（老协议 frame_size(channel_count) 字节，
+// 新协议 frame_size(channel_count, true) 字节），只有首尾的魔术字节不同，用它们区分：
 //
 //   数据帧（常规采集）：
 //     [0]        帧头 0xA0
@@ -29,7 +29,19 @@
 //
 // 帧长 = 1 + 1 + N × 3 + 1，16 通道即 51 字节。
 //
-// 注意**没有校验和**：只有帧头与帧尾两道闸。所以配错波特率或通道数不会报错，
+// 新固件在数据区与帧尾之间多了 2 字节 CRC-16/MODBUS：
+//
+//     [0]        帧头 0xA0 / 0xB0
+//     [1]        帧号
+//     [2..]      N 通道 × 3 字节
+//     [..]       CRC 高字节、低字节（覆盖帧头到最后一个数据字节）
+//     [末]       帧尾 0xC0 / 0xD0
+//
+// 16 通道即 53 字节。校验是**开关式**的（client-config.json 的
+// serial_crc_enabled，默认关闭）：关闭时按 51 字节老协议解析，
+// 开启时按 53 字节解析并逐帧校验。
+//
+// 关闭 CRC 时只有帧头与帧尾两道闸：配错波特率或通道数不会报错，
 // 只会让波形变成噪声、丢字节计数一直涨 —— 排查时先看那个数字。
 namespace serial_protocol
 {
@@ -40,6 +52,9 @@ inline constexpr quint8 kEndByte = 0xC0;
 // 阻抗帧的首尾魔术字节
 inline constexpr quint8 kImpedanceStartByte = 0xB0;
 inline constexpr quint8 kImpedanceEndByte = 0xD0;
+
+// 数据区与帧尾之间的 CRC 字节数（开启校验时才有）
+inline constexpr int kCrcBytes = 2;
 
 // ADS1299 前端参数 → uV 换算系数
 inline constexpr double kVoltageRef = 4.5;                            // VREF，单位 V
@@ -72,7 +87,8 @@ inline constexpr int kChannelCount = 16;
 inline constexpr int kSampleRateHz = 1000;
 inline constexpr int kDefaultBaudRate = 921600;
 
-inline int frame_size(int channel_count)
+// with_crc 为真时帧里带 2 字节 CRC，16 通道帧长为 53；否则为 51
+inline int frame_size(int channel_count, bool with_crc = false)
 {
     // 只认设备实际使用的那一档。参考实现的 config.py 里还有 8→33、4→21 两条，
     // 但那两个值与帧结构（1 + 1 + N×3 + 1 应为 27 和 15）自相矛盾，
@@ -82,7 +98,33 @@ inline int frame_size(int channel_count)
     // 27 的帧 —— 帧尾永远对不上，逐字节丢字节、波形全无，或者侥幸错位切出
     // 「两帧拼一帧」的假数据（幅度离谱但不报错），是全链路最难查的一种坏法。
     // 返回 0 让调用方直接拒绝，比默默错下去好
-    return channel_count == 16 ? 51 : 0;
+    if (channel_count != 16)
+    {
+        return 0;
+    }
+    return 1 + 1 + channel_count * 3 + (with_crc ? kCrcBytes : 0) + 1;
+}
+
+// CRC-16/MODBUS：初值 0xFFFF、反射多项式 0xA001。
+// 设备算的是帧头到最后一个数据字节（含帧头与帧号），结果按**高字节在前**落帧。
+inline quint16 crc16_modbus(const char *data, int size)
+{
+    quint16 crc = 0xFFFF;
+    for (int i = 0; i < size; ++i)
+    {
+        crc ^= static_cast<quint8>(data[i]);
+        for (int bit = 0; bit < 8; ++bit)
+        {
+            crc = (crc & 0x0001) ? static_cast<quint16>((crc >> 1) ^ 0xA001)
+                                 : static_cast<quint16>(crc >> 1);
+        }
+    }
+    return crc;
+}
+
+inline quint16 crc16_modbus(const QByteArray &data)
+{
+    return crc16_modbus(data.constData(), static_cast<int>(data.size()));
 }
 
 // 从缓冲区头部切出一个完整帧。成功返回 true 并把它从缓冲区里移除；
@@ -93,7 +135,10 @@ inline int frame_size(int channel_count)
 // 不依赖串口。放在这里，自检就能拿合成字节流直接喂它。
 //
 // 两种帧（数据/阻抗）帧长相同，靠帧头区分；尾巴必须与帧头配对（A0↔C0、B0↔D0）。
-// 切出的是哪一种由可选出参 kind 带回（不需要时传 nullptr 即可）
+// 切出的是哪一种由可选出参 kind 带回（不需要时传 nullptr 即可）。
+//
+// verify_crc 为真时，帧尾之前必须有 2 字节 CRC-16/MODBUS（高字节在前），
+// 覆盖帧头到最后一个数据字节；对不上就按错位处理，丢一个字节继续找
 enum class FrameKind
 {
     Data,        // A0 … C0，常规脑电数据
@@ -104,7 +149,8 @@ enum class FrameKind
 // 波特率或通道数配错时每轮读入的几 KB 会被逐字节搬一遍，退化成 O(n²) 的 memmove。
 // 帧头对但帧尾不对时只丢一个字节继续找 —— 真帧头可能就藏在后面几个字节里
 inline bool take_frame(QByteArray *buffer, int frame_size, qint64 *dropped_bytes,
-                       QByteArray *frame, FrameKind *kind = nullptr)
+                       QByteArray *frame, FrameKind *kind = nullptr,
+                       bool verify_crc = false)
 {
     if (buffer == nullptr || dropped_bytes == nullptr || frame == nullptr || frame_size <= 0)
     {
@@ -147,6 +193,22 @@ inline bool take_frame(QByteArray *buffer, int frame_size, qint64 *dropped_bytes
             continue;
         }
 
+        // CRC 覆盖帧头到最后一个数据字节，即去掉末尾的 CRC 与帧尾
+        if (verify_crc)
+        {
+            const int crc_offset = frame_size - 1 - kCrcBytes;
+            const quint16 expected = crc16_modbus(buffer->constData(), crc_offset);
+            const quint16 actual =
+                static_cast<quint16>((static_cast<quint8>(buffer->at(crc_offset)) << 8)
+                                     | static_cast<quint8>(buffer->at(crc_offset + 1)));
+            if (actual != expected)
+            {
+                buffer->remove(0, 1);
+                ++(*dropped_bytes);
+                continue;
+            }
+        }
+
         *frame = buffer->left(frame_size);
         buffer->remove(0, frame_size);
         if (kind != nullptr)
@@ -187,7 +249,8 @@ inline double bytes3_to_microvolt(quint8 b1, quint8 b2, quint8 b3)
 inline QVector<double> parse_impedance_kohm(const QByteArray &frame)
 {
     QVector<double> values;
-    if (frame.size() < frame_size(kChannelCount))
+    // 只要求数据区完整（帧尾与可选 CRC 不影响解析），带不带 CRC 都能用
+    if (frame.size() < 2 + kChannelCount * 3)
     {
         return values;
     }

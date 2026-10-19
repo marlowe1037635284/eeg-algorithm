@@ -597,6 +597,8 @@ Item {
                         y: parent.rowY + 11
                         width: 59
                         text: qsTr("删除")
+                        // 已经用它标注过历史事件的标签不能删除，删除按钮置灰、不可点
+                        enabled: modelData.used !== true
                         onClicked: root.deleteTagRequested(modelData.id, modelData.name)
                     }
 
@@ -625,9 +627,10 @@ Item {
             }
 
             // 新建标签按钮（设计稿 807×43，加号 + 文字整体居中）
+            // y 随标签数下移（行高 51、行首 101），否则标签一多就会被行盖住点不到
             Rectangle {
                 x: 11
-                y: 212
+                y: 101 + 51 * root.tags.length
                 width: 807
                 height: 43
                 radius: 12
@@ -677,7 +680,7 @@ Item {
             Text {
                 x: 74
                 y: 791
-                text: qsTr("未使用过的标签,可修改名称,可删除;\n已使用过的标签,仅支持修改名称且修改后,历史数据及新数据全部修改,请情真操作!")
+                text: qsTr("未使用过的标签,可修改名称,可删除;\n已使用过的标签,仅支持修改名称且修改后历史数据及新数据将全部修改,请谨慎操作!")
                 color: Design.brand
                 font.family: Design.fontFamily
                 font.styleName: Design.styleRegular
@@ -792,6 +795,8 @@ Item {
         color: Design.primarySoft
         border.width: 1
         border.color: Design.panelBorder
+        // 不可用时压暗，和分页按钮到头时的处理保持一致
+        opacity: enabled ? 1.0 : 0.4
 
         Text {
             anchors.centerIn: parent
@@ -804,6 +809,7 @@ Item {
 
         MouseArea {
             anchors.fill: parent
+            enabled: tagAction.enabled
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             onClicked: tagAction.clicked()
@@ -912,7 +918,7 @@ Item {
                 clip: true
                 selectionColor: Design.primary
                 selectedTextColor: "#ffffff"
-                maximumLength: 64
+                maximumLength: 30
                 onTextEdited: fieldRow.edited(text)
             }
 

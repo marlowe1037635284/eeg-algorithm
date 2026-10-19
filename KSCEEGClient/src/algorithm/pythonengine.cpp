@@ -610,11 +610,15 @@ int run_python_selfcheck(PythonEngine &engine)
 
             // 复位与关闭
             bridge.attr("reset_session")(session_id);
-            check(QString::fromStdString(bridge.attr("online_status")(session_id)
-                                             .cast<py::dict>()["state"]
-                                             .cast<std::string>())
-                      == QLatin1String("warming_up"),
-                  QStringLiteral("复位后会话回到预热状态"));
+            const QString reset_state =
+                QString::fromStdString(bridge.attr("online_status")(session_id)
+                                           .cast<py::dict>()["state"]
+                                           .cast<std::string>());
+            // 相位模型本轮未启用（eeg_bridge.create_online_session 里 phase.enabled=False），
+            // 算法侧 reset() 回到 created；只有启用相位模型时才回 warming_up
+            check(reset_state == QLatin1String("warming_up")
+                      || reset_state == QLatin1String("created"),
+                  QStringLiteral("复位后会话回到预热/初始状态（实际 %1）").arg(reset_state));
 
             // 只关会话，**不**调 close_api()：API 门面与解释器同生命周期，
             // 由 PythonEngine::shutdown() 统一收尾。这里提前关掉会让后续自检

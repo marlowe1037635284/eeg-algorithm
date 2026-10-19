@@ -93,7 +93,9 @@ public:
     //（记录没存录入人，靠它所属患者的 patients.created_by 判定）。
     // 每一项的键与历史记录页表格的列一一对应：
     //   { no, patientNo, patient, time, duration, channels, rate, events, quality, level }
-    // 电极质量没有数据源（协议只给 4 路不带电极名的阻抗），固定返回「—」
+    // quality 是采集结束时落盘的真实电极贴合值（「16/16 良好」）；采集时没扫过阻抗
+    //（以及这个字段还没有列的老记录）是**空串**，不是占位符 —— 显示成「—」还是
+    //「未扫描」由各个界面自己定，数据层不替它挑
     Q_INVOKABLE QVariantList sessions(const QString &patient_no);
 
     // 单条采集记录的全部字段（「采集记录预览」弹窗用）。
@@ -171,19 +173,28 @@ public:
 
     // 开始采集时开一条记录。患者列表里的「采集次数 / 最近采集」和
     // 历史记录页都是从这张表来的，所以必须在真的开始采集时写
-    Q_INVOKABLE void recordCollection(const QString &patient_no, int channel_count,
-                                      int sample_rate);
+    // 返回新插入行的 id，供 finishCollection 精确更新（避免子查询匹配错行）
+    Q_INVOKABLE int recordCollection(const QString &patient_no, int channel_count,
+                                     int sample_rate);
 
-    // 停止采集时把这条记录补全（时长、事件数、落盘路径），并把这次的事件标注
-    // 一并存下来。分两次写而不是攒到停止时一次性写：中途崩了/掉电时，至少留下
-    //「什么时候采过」。
+    // 停止采集时把这条记录补全（时长、事件数、落盘路径、电极贴合结果），并把这次
+    // 的事件标注一并存下来。分两次写而不是攒到停止时一次性写：中途崩了/掉电时，
+    // 至少留下「什么时候采过」。
+    //
+    // electrode_quality 是采集当时实测的电极贴合结果（形如「16/16 良好」，由界面按
+    // Acq.electrodeQuality 算好传入）。不落盘的话，历史记录预览里「电极贴合」就只能
+    // 显示写死的占位，而不是采集当时的真实值
     //
     // events 是 Acq.events 那一份（每项含 offsetSeconds/wallClock/label/dotColor），
     // 原样交给数据层拆列。事件不跟着记录存的话，「采集记录预览」里那条事件带
     // 就永远是空的 —— 记录里只存了事件**个数**，个数拼不回时刻与标签
+    // session_id >= 0 时直接用该 id 更新（由 recordCollection 返回），否则回退到
+    // 子查询找该患者最近一条记录 —— 兼容旧调用方
     Q_INVOKABLE void finishCollection(const QString &patient_no, int duration_seconds,
                                       int event_count, const QString &file_path,
-                                      const QVariantList &events = QVariantList());
+                                      const QString &electrode_quality,
+                                      const QVariantList &events = QVariantList(),
+                                      int session_id = -1);
 
 private:
     bool ensureOpen();

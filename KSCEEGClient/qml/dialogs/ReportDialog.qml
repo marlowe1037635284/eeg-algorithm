@@ -41,10 +41,14 @@ Item {
     readonly property string reportNo:
         detail.no !== undefined && detail.no.length > 0 ? detail.no : "—"
 
-    // 医院名走系统设置；没配过时退回设计稿里的名字
+    // 医院名走系统设置；没配过就显示空
     readonly property string hospitalName: {
-        const name = database ? database.setting("hospital_name", "") : ""
-        return name !== undefined && name.length > 0 ? name : qsTr("北京安定医院")
+        if (!database)
+            return ""
+        const name = database.setting("hospital_name", "")
+        if (name === undefined || name === null)
+            return ""
+        return String(name)
     }
 
     readonly property string patientName:
@@ -70,7 +74,7 @@ Item {
     }
     readonly property string channelText:
         detail.channels !== undefined
-        ? qsTr("%1通道（国际10-20系统）").arg(detail.channels) : "—"
+        ? qsTr("%1通道(10-20系统)").arg(detail.channels) : "—"
     readonly property string rateText:
         detail.rate !== undefined ? String(detail.rate) + qsTr("HZ") : "—"
 
@@ -310,15 +314,6 @@ Item {
             font.pixelSize: 24
         }
 
-        // 标题下的主色下划线，宽度跟着标题走
-        Rectangle {
-            x: reportTitleText.x + (reportTitleText.width - width) / 2
-            y: 168
-            width: reportTitleText.contentWidth
-            height: 2
-            color: Design.primary
-        }
-
         DottedLine {
             x: 48
             y: 191
@@ -463,8 +458,9 @@ Item {
         }
 
         // 「编辑」：设计稿里是浅蓝灰的圆角胶囊。本轮只做样式与点击态
+        // 位置调整：放在标题右侧，与标题保持间距
         Rectangle {
-            x: 148
+            x: 170
             y: 383
             width: 67
             height: 28
@@ -981,6 +977,15 @@ Item {
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 10
+        }
+
+        // 报告底部下划线，与标题下方的下划线呼应
+        Rectangle {
+            x: 48
+            y: 925
+            width: 534
+            height: 2
+            color: Design.primary
         }
     }
 }

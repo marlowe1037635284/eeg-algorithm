@@ -52,9 +52,15 @@ Item {
             return
         }
 
-        var years = Number(age)
+        var ageText = String(age).trim()
+        var years = Number(ageText)
         if (isNaN(years))
             years = 0
+        // 年龄仅限数字，且不能为 0、不能大于 150（空值按未填处理）
+        if (ageText.length > 0 && (years < 1 || years > 150)) {
+            errorText = qsTr("年龄需为 1-150 之间的数字")
+            return
+        }
 
         var result = database.updatePatient(originalNo, recordNo, patientName, gender, years,
                                             department, diagnosis, remark)
@@ -104,7 +110,7 @@ Item {
             y: 79
             width: 204
             placeholder: qsTr("留空自动生成")
-            maxLength: 32
+            maxLength: 9
         }
 
         // 下拉：点开列表来选
@@ -132,7 +138,7 @@ Item {
             y: 274
             width: 487
             placeholder: qsTr("选填")
-            maxLength: 200
+            maxLength: 50
         }
 
         Field {
@@ -141,7 +147,7 @@ Item {
             y: 79
             width: 204
             placeholder: qsTr("患者姓名")
-            maxLength: 32
+            maxLength: 20
         }
 
         Field {
@@ -160,7 +166,7 @@ Item {
             y: 209
             width: 204
             placeholder: qsTr("如：癫痫")
-            maxLength: 64
+            maxLength: 50
         }
 
         // ---------- 底部按钮 ----------
@@ -242,7 +248,7 @@ Item {
             validator: field.numeric ? ageValidator : null
             maximumLength: field.maxLength
 
-            IntValidator { id: ageValidator; bottom: 0; top: 150 }
+            IntValidator { id: ageValidator; bottom: 1; top: 150 }
         }
 
         // 占位提示（设计稿里占位文字同样是 #3b3b3b，只是 30% 透明）

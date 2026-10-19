@@ -34,6 +34,10 @@ ApplicationWindow {
     // ---------- 路由 ----------
     property string currentPage: "workbench"
     property string activeDialog: ""
+    // 「设备断开连接」警示框。它不走 activeDialog 单值路由 —— 断连可能发生在
+    // 已经弹着别的框的时候，单值路由会被覆盖或覆盖掉别的框，盖不住，
+    // 所以用一个独立的开关盖在最上层（与 LicenseAlertDialog 同一范式）
+    property bool deviceDisconnectVisible: false
     // 弹「采集记录预览」时要点开的那条记录号
     property string pendingRecordNo: ""
 
@@ -55,8 +59,12 @@ ApplicationWindow {
     property string pendingTagName: ""
     // 弹「删除记录」确认框时针对的那条记录号
     property string pendingRecordNoToDelete: ""
+    // 弹「删除单条事件标注」确认框时针对的那一条下标（-1 表示无）
+    property int pendingEventIndex: -1
     // 本次采集属于哪位患者（用来在停止时把采集记录补全）。空串表示没有进行中的会话
     property string openSessionPatient: ""
+    // recordCollection 返回的会话 id，供 finishCollection 精确更新，避免子查询匹配错行
+    property int openSessionId: -1
     // 从患者管理页点「记录」进来时带的历史记录页过滤条件
     property string historyPatientFilter: ""
     // 「数据分析与后处理」要分析的那条记录号。它是**整屏替换**历史记录页的，
@@ -94,11 +102,18 @@ ApplicationWindow {
             if (Acq.collecting || window.openSessionPatient.length === 0)
                 return
             var summary = Acq.collection_summary()
+            // 电极贴合值也要跟着记录落盘：不存的话，历史记录预览里就只剩写死的占位。
+            // 没扫过阻抗（electrodeScanValid 为 false）传空串，显示什么由各处界面自己定
+            //（后处理页是「未扫描」，列表与预览是「—」）
+            var electrodeQuality = Acq.electrodeScanValid
+                    ? Design.electrodeQualityText(Acq.electrodeQuality) : ""
             // 事件要跟着记录一起存：只存个数的话，「采集记录预览」里那条事件带
             // 就永远是空的 —— 个数拼不回时刻与标签
             appDatabase.finishCollection(window.openSessionPatient, summary.durationSeconds,
-                                         summary.eventCount, summary.filePath, Acq.events)
+                                         summary.eventCount, summary.filePath,
+                                         electrodeQuality, Acq.events, window.openSessionId)
             window.openSessionPatient = ""
+            window.openSessionId = -1
         }
     }
 
@@ -107,6 +122,16 @@ ApplicationWindow {
         target: IdleGuard
         function onIdleTimedOut() {
             window.handleIdleLockout()
+        }
+    }
+
+    // 采集中设备失去连接（拔线 / 掉电）→ 在页面最上层弹警示框。
+    // 信号只在「当时正在采集」时从 AcquisitionBridge 发出，单纯开着串口没采集
+    // 时拔线不会打扰用户（顶栏的连接胶囊照样会自己变成「未连接」）
+    Connections {
+        target: Acq
+        function onDeviceDisconnected() {
+            window.deviceDisconnectVisible = true
         }
     }
 
@@ -174,6 +199,15 @@ ApplicationWindow {
         // 放在 Toast 之前，让「轻提示」仍然压在最上层（与下面的说明一致）
         LicenseAlertDialog {
             visible: License.checked && !License.valid
+        }
+
+        // 采集中设备断开连接的警示框：盖在业务页与所有业务弹窗之上，
+        // 但不挡 Toast（它只占顶栏中间一小条）。两个按钮都只关掉这个框 ——
+        // 不额外跳页，用户自己决定接下来怎么做
+        DeviceDisconnectDialog {
+            visible: window.deviceDisconnectVisible
+            onDismissed: window.deviceDisconnectVisible = false
+            onConfirmed: window.deviceDisconnectVisible = false
         }
 
         // 轻提示。放在弹窗层**之后**，所以即使弹着框也能看见
@@ -259,6 +293,8 @@ ApplicationWindow {
         case "changePassword": return changePasswordComponent
         case "confirmDeleteRecord": return confirmDeleteRecordComponent
         case "confirmDeleteTag":    return confirmDeleteTagComponent
+        case "confirmClearEvents":  return confirmClearEventsComponent
+        case "confirmDeleteEvent":  return confirmDeleteEventComponent
         case "confirmLogout":       return confirmLogoutComponent
         case "deviceInfo":          return deviceInfoComponent
         default:              return null
@@ -399,6 +435,7 @@ ApplicationWindow {
         historyPatientFilter = ""
         analysisRecordNo = ""
         openSessionPatient = ""
+        openSessionId = -1
         pendingPatientRow = null
         // 后处理页可能开着一条记录：退出登录时把它放掉，别把文件留在手里
         Analysis.close()
@@ -459,6 +496,12 @@ ApplicationWindow {
             onSelectPatientRequested: window.activeDialog = "selectPatient"
             onFilterRequested: window.activeDialog = "filter"
             onDeviceInfoRequested: window.activeDialog = "deviceInfo"
+            // 事件标注的清空 / 删除：弹二次确认，确认后才真正执行
+            onClearEventsRequested: window.activeDialog = "confirmClearEvents"
+            onDeleteEventRequested: (index) => {
+                window.pendingEventIndex = index
+                window.activeDialog = "confirmDeleteEvent"
+            }
         }
     }
 
@@ -661,13 +704,25 @@ ApplicationWindow {
                     // 采样率用**实际落盘**的速率：设备固定 1000Hz，系统设置选 2000 时
                     // 文件会升采样成 2000Hz，记录行要与文件头一致（否则历史列表和
                     // 分析页会对同一次采集显示出两个采样率）
-                    appDatabase.recordCollection(page.patientNo, Acq.acquired_channel_count(),
-                                                 Acq.effective_record_sample_rate())
+                    var sid = appDatabase.recordCollection(page.patientNo, Acq.acquired_channel_count(),
+                                                           Acq.effective_record_sample_rate())
                     // 记下这次会话属于谁，停止时用它补全记录
                     window.openSessionPatient = page.patientNo
+                    window.openSessionId = sid
                 }
-                if (page.startCollection)
-                    page.startCollection()
+                if (page.startCollection) {
+                    var started = page.startCollection()
+                    // start_collection 失败时（设备未连接等），采集从未真正开始，
+                    // collectingChanged 信号不会发出，finishCollection 永远不会被调用，
+                    // 导致历史记录里时长一直是 00:00:00。这里补调一次，把刚插入的那条
+                    // 记录用 0 时长收尾，至少让数据库状态一致
+                    if (started === false && window.openSessionPatient.length > 0) {
+                        appDatabase.finishCollection(window.openSessionPatient, 0, 0, "", "", [],
+                                                     window.openSessionId)
+                        window.openSessionPatient = ""
+                        window.openSessionId = -1
+                    }
+                }
             }
         }
     }
@@ -889,6 +944,47 @@ ApplicationWindow {
     }
 
     Component {
+        id: confirmClearEventsComponent
+
+        ConfirmDialog {
+            title: qsTr("清空事件标注")
+            confirmText: qsTr("清空")
+            danger: true
+            message: qsTr("确定要清空全部 %1 条事件标注吗？清空后无法恢复。").arg(Acq.eventCount)
+            onDismissed: window.closeDialog()
+            onAccepted: {
+                window.closeDialog()
+                Acq.clear_events()
+                window.showToast(qsTr("已清空事件标注"), "success")
+            }
+        }
+    }
+
+    Component {
+        id: confirmDeleteEventComponent
+
+        ConfirmDialog {
+            title: qsTr("删除事件标注")
+            confirmText: qsTr("删除")
+            danger: true
+            message: qsTr("确定要删除这条事件标注吗？删除后无法恢复。")
+            onDismissed: {
+                window.closeDialog()
+                window.pendingEventIndex = -1
+            }
+            onAccepted: {
+                var index = window.pendingEventIndex
+                window.closeDialog()
+                window.pendingEventIndex = -1
+                if (index >= 0) {
+                    Acq.remove_event(index)
+                    window.showToast(qsTr("已删除事件标注"), "success")
+                }
+            }
+        }
+    }
+
+    Component {
         id: userEditComponent
 
         UserDialog {
@@ -1011,6 +1107,13 @@ ApplicationWindow {
         // 脱敏开关先同步一次：它存在库里，与登录与否无关，
         // 早于任何页面出现，避免首帧闪一下未脱敏的数据
         window.syncPrivacy()
+
+        // 「默认通道数」在启动时就应用到工作台：这个设置存在库里，
+        // 只在「保存设置」时同步给 Acq 的话，重启后工作台又回到默认的 16 通道，
+        // 等于设置没生效。启动时读一次，让档位与设置保持一致
+        const defaultChannels = Number(appDatabase.setting("default_channels", "16"))
+        if (defaultChannels > 0)
+            Acq.channelCount = defaultChannels
 
         // 账号库在 AppDatabase 构造时就建好了表，这里只负责回填输入框。
         //

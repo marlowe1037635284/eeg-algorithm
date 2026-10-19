@@ -139,6 +139,12 @@ AlgorithmErrorInfo describe_error(const py::object &bridge, const py::error_alre
     return info;
 }
 
+// 实时地形图的固定配色上限（µV²/Hz）：色标条固定 0~50。
+//
+// 不跟着每帧峰值自适应：自适应时同一个颜色在不同帧代表的功率不一样，
+// 前后两帧没法直接比大小，看图的人也没有稳定的参照。超过上限的值在色标顶端饱和
+constexpr double kTopographyScaleMax = 50.0;
+
 // 从每电极的频段功率里算出面板上的四项统计。
 //
 // 放在算法线程里算而不是丢给界面：一份统计两处实现（C++ 一份、QML 一份）
@@ -148,7 +154,7 @@ void fill_electrode_stats(TopographyFrame *frame)
     frame->peak_power = 0.0;
     frame->mean_power = 0.0;
     frame->frontal_occipital_ratio = 0.0;
-    frame->scale_max = 0.0;
+    frame->scale_max = kTopographyScaleMax;
     frame->peak_electrode.clear();
 
     if (frame->electrode_values.isEmpty() || frame->electrode_names.isEmpty())
@@ -183,8 +189,6 @@ void fill_electrode_stats(TopographyFrame *frame)
     }
 
     frame->mean_power = sum / count;
-    // 图是按每帧峰值归一化配色的，色标条的右端刻度必须跟着它走
-    frame->scale_max = frame->peak_power;
 
     // 枕/额比取两侧的峰值而不是均值：额区 6 个、枕区 6 个电极，数量上虽然对称，
     // 但均值会被两侧各自的低值电极拉平，峰值比更能体现「枕区 α 占优」这个特征
@@ -438,10 +442,14 @@ void PythonWorker::run()
                         try
                         {
                             const qint64 missing_last = item.chunk.first_sequence_id - 1;
+                            // 缺口结束时间戳必须严格早于下一块的首时间戳：算法侧用
+                            // `timestamps_ns[0] <= _last_timestamp_ns` 判「时间戳重复或倒退」，
+                            // 若把结束时间戳传成下一块的首时间戳，缺口后的第一块会被直接拒掉
+                            const qint64 gap_end_timestamp_ns = item.chunk.first_timestamp_ns - 1;
                             session->bridge.attr("notify_gap")(
                                 session->session_id, session->next_expected_sequence_id,
                                 missing_last, item.chunk.first_timestamp_ns,
-                                item.chunk.first_timestamp_ns, std::string("sequence_align"));
+                                gap_end_timestamp_ns, std::string("sequence_align"));
                             session->gap_count += 1;
                         }
                         catch (const py::error_already_set &exc)

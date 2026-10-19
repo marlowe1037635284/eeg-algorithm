@@ -12,6 +12,7 @@
 #include <QSet>
 #include <QTextStream>
 #include <QTimer>
+#include <QUrl>
 #include <QtConcurrent/QtConcurrentRun>
 #include <QtMath>
 
@@ -28,6 +29,32 @@
 
 namespace
 {
+
+// ==================== 重参考选项 ====================
+// 4/8 通道蒙太奇里没有 T3/T4 电极，「双侧乳突」重参考只能退化成减 0.5*(T3+T4)，
+// 而 T3/T4 恰恰是这两套蒙太奇里噪声最大的两路 —— 减它等于把噪声摊到每一路。
+// 所以这两种通道数不给这个选项；16 通道含 T3/T4，选项表保持不动。
+
+bool reference_mastoid_available(int channels)
+{
+    return channels != 4 && channels != 8;
+}
+
+// 选项表下标 → 算法约定的方法号（0 双侧乳突 / 1 平均参考 / 2 不重参考）。
+// 有双侧乳突时两者一一对应；没有时选项表少了首项，整体后移一位。
+int reference_method_of_choice(int channels, int choice_index)
+{
+    return reference_mastoid_available(channels) ? choice_index : choice_index + 1;
+}
+
+// 反向：给定方法号，求它在当前通道数下选项表里的下标。没有双侧乳突而方法号
+// 又是 0 时退回「不重参考」——这是删掉首项后唯一安全的下标。
+int reference_choice_of_method(int channels, int method)
+{
+    if (reference_mastoid_available(channels))
+        return method;
+    return method == 0 ? 1 : method - 1;
+}
 
 // ==================== 字节读取 ====================
 // .eegbin 是小端裸格式，用 QDataStream 反而要配 setByteOrder 且对 float32
@@ -71,14 +98,19 @@ struct BandDef
     double low_hz;
     double high_hz;
     const char *color;
+    // 频谱图里这一段色带的填充色。**不透明**、且是单独写死的一组浅色，
+    // 不是 color 加 alpha 叠出来的：设计稿里五条带子各自是一整块很淡的底，
+    // 由 color 调 alpha 得到的是「灰底 + 一点色调」，叠在面板灰上偏暗偏脏
+    const char *fill;
 };
 
 const BandDef kBands[5] = {
-    {"delta", "δ", "Delta", 0.5, 4.0, "#1f4e79"},
-    {"theta", "θ", "Theta", 4.0, 8.0, "#4a90c2"},
-    {"alpha", "α", "Alpha", 8.0, 13.0, "#7ec850"},
-    {"beta", "β", "Beta", 13.0, 30.0, "#f2a03d"},
-    {"gamma", "γ", "Gamma", 30.0, 45.0, "#f2d024"},
+    {"delta", "δ", "Delta", 0.5, 4.0, "#1f4e79", "#e2eff7"},
+    {"theta", "θ", "Theta", 4.0, 8.0, "#4a90c2", "#e5f3f0"},
+    {"alpha", "α", "Alpha", 8.0, 13.0, "#7ec850", "#e0f1f6"},
+    {"beta", "β", "Beta", 13.0, 30.0, "#f2a03d", "#f6f0e9"},
+    // γ 原来用亮黄 #f2d024，在浅色底上几乎看不清；换成紫色，与其他频带同等的可读性
+    {"gamma", "γ", "Gamma", 30.0, 45.0, "#8e5bd0", "#f5ebee"},
 };
 
 constexpr int kBandCount = 5;
@@ -94,6 +126,12 @@ constexpr int kTopoImageSize = 256;
 
 // 一次 Welch 最多平均多少段。上限不是精度需要，是耗时需要（见 welch_psd）
 constexpr int kMaxPsdSegments = 64;
+
+// 被选中的事件标注（波形上那根竖线与顶端圆点）的高亮色
+const QColor kSelectedEventColor(218, 168, 42);
+
+// 伪迹覆盖层的淡红色（半透明，铺在波形折线之下）
+const QColor kArtifactOverlayColor(244, 67, 54, 46);
 
 // ==================== 双二阶与滤波器设计 ====================
 
@@ -766,11 +804,16 @@ double stable_channel_range_uv(const QVector<double> &row, int chunk)
 // 所以整张图比视口高，由 QML 那边滚动着看 —— 这样滚动不必重算一遍分析
 QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rate,
                          double window_start, double window_seconds, int current_channel,
-                         const QVector<double> &channel_range_uv, int width,
-                         const QVariantList &events)
+                         const QVector<double> &channel_range_uv, int width, double pixel_ratio,
+                         const QVariantList &events, int selected_event,
+                         const QVector<ArtifactSpan> &artifact_spans)
 {
     const int channels = data.size();
-    const int height = channels * PostProcess::lane_height();
+    // 泳道高按物理像素倍率放大（QML 那边报来的宽度同样已乘过它）。贴回逻辑尺寸时
+    // 正好 1:1，1 像素宽的折线既不糊也不起台阶 —— 与实时波形、预览弹窗同一套做法
+    const double dpr = pixel_ratio > 0.0 ? pixel_ratio : 1.0;
+    const double lane = PostProcess::lane_height() * dpr;
+    const int height = static_cast<int>(std::lround(channels * lane));
     QImage image(std::max(2, width), std::max(2, height), QImage::Format_ARGB32_Premultiplied);
     image.fill(Qt::transparent);
     if (channels <= 0 || width < 2)
@@ -787,15 +830,33 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
     painter.setPen(QPen(QColor(0, 0, 0, 26), 1.0));
     for (int i = 0; i < channels; ++i)
     {
-        const double centre = i * PostProcess::lane_height() + PostProcess::lane_height() / 2.0;
+        const double centre = i * lane + lane / 2.0;
         painter.drawLine(QPointF(0.0, centre), QPointF(width, centre));
     }
 
-    // 事件竖线（画在波形之下）。与预览弹窗同一套：划出窗口的事件跟着消失，
-    // 不钉在窗口边上
-    for (const QVariant &item : events)
+    // 伪迹覆盖层：把每个伪迹段的时域区间在对应通道泳道上铺一层淡红。画在波形折线
+    // 之下，折线压在上面仍看得清；超出窗口的段裁到窗口边界，跨窗口也能画对。
+    // 关掉伪迹检测时 artifact_spans 为空，这里自然什么都不画
+    for (const ArtifactSpan &span : artifact_spans)
     {
-        const QVariantMap event = item.toMap();
+        if (span.channel < 0 || span.channel >= channels
+            || span.end_seconds <= span.start_seconds)
+            continue;
+        const double start = std::max(span.start_seconds, window_start);
+        const double end = std::min(span.end_seconds, window_start + window_seconds);
+        if (end <= start)
+            continue;
+        const double x0 = (start - window_start) / window_seconds * width;
+        const double x1 = (end - window_start) / window_seconds * width;
+        painter.fillRect(QRectF(x0, span.channel * lane, std::max(1.0, x1 - x0), lane),
+                         kArtifactOverlayColor);
+    }
+
+    // 事件竖线（画在波形之下）。与预览弹窗同一套：划出窗口的事件跟着消失，
+    // 不钉在窗口边上。被选中的那根换成高亮色
+    for (int i = 0; i < events.size(); ++i)
+    {
+        const QVariantMap event = events.at(i).toMap();
         const double offset = event.value(QStringLiteral("offsetSeconds")).toDouble();
         if (offset < window_start || offset > window_start + window_seconds)
             continue;
@@ -803,6 +864,8 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         QColor color(event.value(QStringLiteral("color")).toString());
         if (!color.isValid())
             color = QColor(QStringLiteral("#7c3aed"));
+        if (i == selected_event)
+            color = kSelectedEventColor;
         color.setAlpha(150);
         QPen pen(color, 1.0, Qt::DashLine);
         painter.setPen(pen);
@@ -820,7 +883,12 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         painter.drawLine(QPointF(x, 0.0), QPointF(x, height));
     }
 
-    const double half_lane = PostProcess::lane_height() * 0.5;
+    const double half_lane = lane * 0.5;
+
+    // 波形折线开抗锯齿。上面为让网格线保持 1 像素的锐利把它关了，但折线不能跟着关：
+    // 每列 min/max 连成的竖线与相邻列的斜接在关掉 AA 时是一段段台阶，密起来看就是
+    // 一圈「毛刺」。实时波形（AcquisitionBridge）同样只为折线开 AA，实测几乎不花时间
+    painter.setRenderHint(QPainter::Antialiasing, true);
 
     for (int channel = 0; channel < channels; ++channel)
     {
@@ -834,7 +902,7 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
                                     ? channel_range_uv.at(channel) : 25.0;
         const double scale = half_lane / std::max(1.0, range_uv);
 
-        const double centre = channel * PostProcess::lane_height() + half_lane;
+        const double centre = channel * lane + half_lane;
         const bool active = channel == current_channel;
         // 当前导联用设计稿的红色（与 QML 侧的 Design.waveCurrent 同值），
         // 其余压成灰 —— 设计稿图例写的就是「当前通道 / 其余通道」
@@ -883,15 +951,15 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
             polyline.append(QPointF(x, y_high));
         }
 
-        painter.setPen(QPen(color, active ? 1.4 : 1.0));
+        // 线宽 1.5 像素，同样乘物理像素倍率：不乘的话高 DPI 下这条线又细回逻辑像素了
+        painter.setPen(QPen(color, 1.5 * dpr));
         painter.drawPolyline(polyline);
     }
 
-    // 事件顶端的小圆点
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    for (const QVariant &item : events)
+    // 事件顶端的小圆点（AA 已在波形之前打开，这里跟着一起用）
+    for (int i = 0; i < events.size(); ++i)
     {
-        const QVariantMap event = item.toMap();
+        const QVariantMap event = events.at(i).toMap();
         const double offset = event.value(QStringLiteral("offsetSeconds")).toDouble();
         if (offset < window_start || offset > window_start + window_seconds)
             continue;
@@ -899,9 +967,11 @@ QImage render_wave_image(const QVector<QVector<double>> &data, double sample_rat
         QColor color(event.value(QStringLiteral("color")).toString());
         if (!color.isValid())
             color = QColor(QStringLiteral("#7c3aed"));
+        if (i == selected_event)
+            color = kSelectedEventColor;
         painter.setPen(Qt::NoPen);
         painter.setBrush(color);
-        painter.drawEllipse(QPointF(x, 5.0), 4.0, 4.0);
+        painter.drawEllipse(QPointF(x, 5.0 * dpr), 4.0 * dpr, 4.0 * dpr);
     }
 
     return image;
@@ -926,16 +996,17 @@ QImage render_spectrum_image(const Psd &psd, double f_min, double f_max,
     const auto to_x = [&](double hz) { return (hz - f_min) / f_span * width; };
     const auto to_y = [&](double db) { return (db_max - db) / db_span * height; };
 
-    // 频带底色。δ 与 θ 偏冷、β 与 γ 偏暖，与统计页那根图例是同一套颜色
+    // 频带底色。每段铺满自己的横跨范围、不透明 —— f_min 落在 δ 的下界（0.5Hz）上，
+    // 于是第一条带子从 x=0 起，曲线起点也就压在带子上（原来是 0-0.5Hz 留一段透明底，
+    // 曲线在最左边悬空）。f_max 落在 γ 的上界（45Hz），右边缘同样铺满，没有尾巴要补
     for (int i = 0; i < kBandCount; ++i)
     {
         const double low = std::max(kBands[i].low_hz, f_min);
         const double high = std::min(kBands[i].high_hz, f_max);
         if (high <= low)
             continue;
-        QColor tint(kBands[i].color);
-        tint.setAlpha(38);
-        painter.fillRect(QRectF(to_x(low), 0.0, to_x(high) - to_x(low), height), tint);
+        painter.fillRect(QRectF(to_x(low), 0.0, to_x(high) - to_x(low), height),
+                         QColor(QString::fromLatin1(kBands[i].fill)));
     }
 
     // 曲线。dB 下限以下夹到边界上（画到图外会变成一条穿出画布的斜线）
@@ -1121,6 +1192,15 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
     for (int i = 0; i < raw->samples.size(); ++i)
         raw->samples[i] = read_f32_le(samples + static_cast<qint64>(i) * eegbin::kBytesPerSample);
 
+    // 换记录前后通道数可能不同，重参考选项表跟着变（4/8 通道没有双侧乳突），
+    // 下标不能原样沿用。这里按「方法」守恒地搬：平均参考仍是平均参考、不重参考
+    // 仍是不重参考；原来若选的双侧乳突而新记录没这一项，退回不重参考
+    const int previous_method =
+        reference_method_of_choice(m_channels, m_params.reference_index);
+    const int remapped_choice = reference_choice_of_method(raw->channels, previous_method);
+    const bool reference_remapped = remapped_choice != m_params.reference_index;
+    m_params.reference_index = remapped_choice;
+
     m_raw = raw;
     m_channels = raw->channels;
     m_sample_rate = raw->sample_rate;
@@ -1132,6 +1212,7 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
     m_window_seconds = std::min(5.0, std::max(0.5, m_duration_seconds));
     m_window_start = 0.0;
     m_current_channel = 0;
+    m_selected_event = -1;
 
     // 事件随 info 一起进来（页面从库里取好）。**不在这里查库**：本类不持有
     // AppDatabase，也不该知道记录是怎么存的 —— 它只管把一段数据算成一屏图
@@ -1154,6 +1235,10 @@ bool PostProcess::open(const QString &record_no, const QString &file_path,
 
     build_record_info();
     emit recordChanged();
+    // referenceChoices 挂的是 recordChanged，上面的 emit 已经让界面刷新选项表；
+    // 下标若因通道数变化被搬动，这里再补一次参数通知，让下拉框同步到搬动后的值
+    if (reference_remapped)
+        emit paramsChanged();
     schedule_recompute();
     audit_log::record(QStringLiteral("打开记录进行后处理：%1").arg(record_no));
     return true;
@@ -1175,6 +1260,7 @@ void PostProcess::close()
     m_channels = 0;
     m_record_info.clear();
     m_events.clear();
+    m_selected_event = -1;
     m_info.clear();
     {
         // 与 on_recompute_finished 同一个理由：结果里有 QImage / 容器，
@@ -1220,17 +1306,23 @@ void PostProcess::build_record_info()
         QVariantMap{{QStringLiteral("label"), tr("采样率 / 幅值")},
                     {QStringLiteral("value"),
                      QStringLiteral("%1 Hz · 100 μV").arg(m_sample_rate)}},
+        // 电极贴合取的是**采集时实测的阻抗结果**（由界面在停止采集时落盘，
+        // 形如「16/16 良好」）。没有值就是那次采集没扫过阻抗 —— 写「未扫描」而不是
+        // 「—」：占位符看着像扫了却没出结果，与采集前确认弹窗同一口径
         QVariantMap{{QStringLiteral("label"), tr("电极贴合 / 事件")},
                     {QStringLiteral("value"),
                      QStringLiteral("%1 · %2 个")
-                         .arg(text("quality", QStringLiteral("—")),
+                         .arg(text("quality", tr("未扫描")),
                               text("eventCount", QStringLiteral("0")))}},
     };
 }
 
 QStringList PostProcess::reference_choices() const
 {
-    return {tr("双侧乳突"), tr("平均参考"), tr("不重参考")};
+    if (reference_mastoid_available(m_channels))
+        return {tr("双侧乳突"), tr("平均参考"), tr("不重参考")};
+    // 4/8 通道没有双侧乳突电极，只留平均参考与不重参考
+    return {tr("平均参考"), tr("不重参考")};
 }
 
 QStringList PostProcess::downsample_choices() const
@@ -1328,6 +1420,25 @@ QStringList PostProcess::band_colors()
     for (const BandDef &band : kBands)
         colors.append(QString::fromLatin1(band.color));
     return colors;
+}
+
+// 每个频段的 { key, letter, low, high }。频谱图要在各色带的正中写 δ θ α β γ，
+// 位置得由边界算 —— QML 里再抄一套边界就成了第四处副本（见文件头那段警告），
+// 所以边界统一从这里出去
+QVariantList PostProcess::band_ranges()
+{
+    QVariantList ranges;
+    for (const BandDef &band : kBands)
+    {
+        QVariantMap item;
+        item.insert(QStringLiteral("key"), QString::fromLatin1(band.key));
+        // 同 band_names()：希腊字母必须 fromUtf8
+        item.insert(QStringLiteral("letter"), QString::fromUtf8(band.letter));
+        item.insert(QStringLiteral("low"), band.low_hz);
+        item.insert(QStringLiteral("high"), band.high_hz);
+        ranges.append(item);
+    }
+    return ranges;
 }
 
 // ---------- 参数 ----------
@@ -1432,7 +1543,7 @@ void PostProcess::set_asr_enabled(bool value)
 
 void PostProcess::set_asr_cutoff(int value)
 {
-    const int clamped = std::clamp(value, 5, 100);
+    const int clamped = std::clamp(value, 0, 40);
     if (m_params.asr_cutoff == clamped)
         return;
     m_params.asr_cutoff = clamped;
@@ -1604,14 +1715,28 @@ void PostProcess::set_window_seconds(double value)
     schedule_recompute();
 }
 
-void PostProcess::set_view_size(int width, int height)
+// 把某个事件标成选中的那条。越界的下标一律当「没选」处理 —— 界面拿的是
+// events 里的下标，事件列表换过之后旧下标可能已经指到界外
+void PostProcess::set_selected_event(int value)
+{
+    const int clamped = (value >= 0 && value < m_events.size()) ? value : -1;
+    if (clamped == m_selected_event)
+        return;
+    m_selected_event = clamped;
+    emit viewChanged();
+    schedule_recompute();
+}
+
+void PostProcess::set_view_size(int width, int height, double pixel_ratio)
 {
     if (width <= 0 || height <= 0)
         return;
     const QSize size(width, height);
-    if (size == m_view_size)
+    const double ratio = pixel_ratio > 0.0 ? pixel_ratio : 1.0;
+    if (size == m_view_size && qFuzzyCompare(ratio, m_view_pixel_ratio))
         return;
     m_view_size = size;
+    m_view_pixel_ratio = ratio;
     schedule_recompute();
 }
 
@@ -1652,7 +1777,9 @@ void PostProcess::run_recompute()
     job.low_pass_hz = m_params.low_pass_hz;
     job.notch_enabled = m_params.notch_enabled;
     job.notch_hz = m_params.notch_hz;
-    job.reference_index = m_params.reference_index;
+    // 界面给的是选项表下标；算法要的是固定方法号（0 双侧乳突 / 1 平均参考 /
+    // 2 不重参考）。4/8 通道的选项表少了首项，这里必须翻译，不能直接透传
+    job.reference_index = reference_method_of_choice(m_channels, m_params.reference_index);
     job.downsample_index = m_params.downsample_index;
     job.baseline_enabled = m_params.baseline_enabled;
     job.asr_enabled = m_params.asr_enabled;
@@ -1703,9 +1830,11 @@ void PostProcess::run_recompute()
     // Image.Stretch 会把波形横向拉伸约 5%
     job.wave_width = std::max(64, m_view_size.width());
     job.wave_height = m_view_size.height();
+    job.wave_scale = m_view_pixel_ratio;
     job.spectrum_width = std::max(64, m_view_size.width());
     job.spectrum_height = std::max(64, m_view_size.height());
     job.events = m_events;
+    job.selected_event = m_selected_event;
     job.record_info = m_record_info;
     // 把最近一份结果一并交给工作线程：窗口类改动命中指纹时，它只重画波形
     job.previous = m_previous;
@@ -1928,8 +2057,6 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         chain.append(tr("ASR 限幅 ×%1").arg(job.asr_cutoff));
     if (divisor > 1)
         chain.append(tr("降采样 %1 Hz").arg(static_cast<double>(source_rate) / divisor, 0, 'g', 4));
-    if (job.baseline_enabled)
-        chain.prepend(tr("基线校正"));
     if (job.qc_repair_index > 0)
         chain.append(tr("线性插值修复"));
 
@@ -2147,6 +2274,22 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
                 artifact_samples += length;
         }
 
+        // 覆盖层要的是**全部**伪迹段（与所选片段无关）：波形窗口可能只落在片段一角，
+        // 预先把整段区间折算成秒，出图时再按窗口裁剪
+        if (sample_rate > 0.0)
+        {
+            for (const offlinealgorithm::Segment &segment : output.artifact_segments)
+            {
+                const int index = eeg_montage::index_of(segment.channel_name);
+                if (index < 0)
+                    continue;
+                result.artifact_spans.append(
+                    ArtifactSpan{index,
+                                 static_cast<double>(segment.start_sample) / sample_rate,
+                                 static_cast<double>(segment.end_sample) / sample_rate});
+            }
+        }
+
         for (int channel = 0; channel < channels; ++channel)
         {
             if (weak_set.contains(channel))
@@ -2208,7 +2351,7 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         sections.append(QVariantMap{
             {QStringLiteral("title"), tr("处理链")},
             {QStringLiteral("chips"), chain_chips},
-            {QStringLiteral("note"), tr("顺序：高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 基线校正")},
+            {QStringLiteral("note"), tr("顺序：高通 → 低通 → 陷波 → 重参考 → ASR → 降采样 → 线性插值修复")},
         });
 
         double rms_sum = 0.0;
@@ -2373,7 +2516,10 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
         result.report_sections = sections;
     }
 
-    // ---------- 17. 底栏那一行 ----------
+    // ---------- 17. 底栏状态条 ----------
+    // 一条里「标签：值」两段颜色不同（设计稿 info.png：标签 #212121、值 #7092ab），
+    // 组与组之间还有 20 的间距。颜色和间距都是排版的事，这里只把内容切好成
+    // 「组 → 段」，上色与间距交给 QML
     {
         const QVector<double> &row = data.at(std::clamp(job.current_channel, 0, channels - 1));
         double lowest = row.at(first);
@@ -2384,22 +2530,50 @@ PostProcess::Result PostProcess::compute(std::shared_ptr<const RawData> raw, Job
             highest = std::max(highest, row.at(i));
         }
 
-        result.status_line =
-            tr("%1(第%2/%3)通道   片段内范围: %4 ~ %5 μV   片段: %6 - %7 s   %8   处理链: %9   质检: 弱信号 %10 · 异常值 %11 点 · 低相关 %12 通道")
-                .arg(eeg_montage::channel_name(job.current_channel))
-                .arg(job.current_channel + 1)
-                .arg(channels)
-                .arg(lowest, 0, 'f', 1)
-                .arg(highest, 0, 'f', 1)
-                .arg(result.segment_start, 0, 'f', 1)
-                .arg(result.segment_start + result.segment_seconds, 0, 'f', 1)
-                .arg(job.artifact_detection_enabled
-                         ? (artifact_samples == 0 ? tr("无伪差") : tr("有伪差"))
-                         : tr("伪差检测: 关"))
-                .arg(chain.isEmpty() ? tr("未启用") : chain.join(QStringLiteral(" → ")))
-                .arg(job.qc_signal_enabled ? QString::number(weak_channels) : tr("关"))
-                .arg(job.qc_range_enabled ? QString::number(outlier_samples) : tr("关"))
-                .arg(job.qc_correlation_enabled ? QString::number(low_correlation.size()) : tr("关"));
+        const auto label = [](const QString &text)
+        {
+            return QVariantMap{{QStringLiteral("text"), text},
+                               {QStringLiteral("kind"), QStringLiteral("label")}};
+        };
+        const auto value = [](const QString &text)
+        {
+            return QVariantMap{{QStringLiteral("text"), text},
+                               {QStringLiteral("kind"), QStringLiteral("value")}};
+        };
+
+        // 质检三项：关掉的整段不出现。设计稿里三项都是数，拿「关」当值占位只会
+        // 让这一组又长又难读
+        QStringList quality;
+        if (job.qc_signal_enabled)
+            quality.append(tr("弱信号 %1 点").arg(weak_channels));
+        if (job.qc_range_enabled)
+            quality.append(tr("异常值 %1 点").arg(outlier_samples));
+        if (job.qc_correlation_enabled)
+            quality.append(tr("低相关 %1 通道").arg(low_correlation.size()));
+
+        result.status_groups = QVariantList{
+            QVariantList{label(tr("%1(第%2/%3)通道")
+                                  .arg(eeg_montage::channel_name(job.current_channel))
+                                  .arg(job.current_channel + 1)
+                                  .arg(channels))},
+            QVariantList{label(tr("窗口内范围：")),
+                         value(QStringLiteral("%1~%2μV")
+                                   .arg(lowest, 0, 'f', 1)
+                                   .arg(highest, 0, 'f', 1))},
+            QVariantList{label(tr("片段：")),
+                         value(QStringLiteral("%1-%2 s")
+                                   .arg(result.segment_start, 0, 'f', 1)
+                                   .arg(result.segment_start + result.segment_seconds, 0, 'f', 1))},
+            QVariantList{label(job.artifact_detection_enabled
+                                   ? (artifact_samples == 0 ? tr("无伪差") : tr("有伪差"))
+                                   : tr("伪差检测：关"))},
+            QVariantList{label(tr("处理链：")),
+                         value(chain.isEmpty() ? tr("未启用")
+                                               : chain.join(QStringLiteral(" → ")))},
+            QVariantList{label(tr("质检：")),
+                         value(quality.isEmpty() ? tr("未启用")
+                                                 : quality.join(QStringLiteral("；")))},
+        };
     }
 
     result.ok = true;
@@ -2442,7 +2616,9 @@ void PostProcess::compute_wave(Result &result, const QVector<QVector<double>> &d
 
     result.wave_image = render_wave_image(data, sample_rate, job.window_start,
                                           job.window_seconds, job.current_channel,
-                                          channel_range_uv, job.wave_width, job.events);
+                                          channel_range_uv, job.wave_width, job.wave_scale,
+                                          job.events, job.selected_event,
+                                          result.artifact_spans);
 }
 
 // 频谱图那一张的出图。原来曲线取自 Python 对**分析片段**（整段）算的 Welch，窗口动
@@ -2472,15 +2648,23 @@ void PostProcess::compute_spectrum(Result &result, const QVector<QVector<double>
     const Psd psd = welch_psd(row.constData() + window_first, window_last - window_first,
                               sample_rate);
 
-    double f_max = std::min(60.0, std::floor(sample_rate / 2.0));
-    if (f_max <= 1.0)
-        f_max = std::max(1.0, sample_rate / 2.0);
+    // 横轴固定 0.5-45 Hz：下界取 δ 的下界（去掉直流与极低频漂移那一段），
+    // 上界取 γ 的上界（49Hz 低通之后 45 以上基本只剩噪声），与地形图那张「全频段」
+    // 用的是同一对数（kFullBandLowHz / kFullBandHighHz）。采样率不足 90Hz 时
+    // 奈奎斯特更低，按奈奎斯特收窄，免得在无数据的频段上画一条假曲线
+    const double f_min = kFullBandLowHz;
+    double f_max = std::min(kFullBandHighHz, std::floor(sample_rate / 2.0));
+    if (f_max <= f_min)
+        f_max = std::max(f_min + 1.0, sample_rate / 2.0);
 
     double db_max = -1.0e9;
     double db_min = 1.0e9;
     for (int i = 0; i < psd.frequencies.size(); ++i)
     {
-        if (psd.frequencies.at(i) > f_max)
+        const double hz = psd.frequencies.at(i);
+        if (hz < f_min)
+            continue;
+        if (hz > f_max)
             break;
         const double value = psd.values.at(i);
         const double db = value > 0.0 ? 10.0 * std::log10(value) : -120.0;
@@ -2493,11 +2677,11 @@ void PostProcess::compute_spectrum(Result &result, const QVector<QVector<double>
         db_min = -90.0;
     }
     // 上下各留一档，曲线不贴边框；下界封在 -120（再低只是噪声地板）
-    result.spectrum_f_min = 0.0;
+    result.spectrum_f_min = f_min;
     result.spectrum_f_max = f_max;
     result.spectrum_db_max = std::ceil(db_max / 10.0) * 10.0;
     result.spectrum_db_min = std::max(-120.0, std::floor(db_min / 10.0) * 10.0);
-    result.spectrum_image = render_spectrum_image(psd, 0.0, f_max, result.spectrum_db_min,
+    result.spectrum_image = render_spectrum_image(psd, f_min, f_max, result.spectrum_db_min,
                                                   result.spectrum_db_max,
                                                   job.spectrum_width, job.spectrum_height);
 }
@@ -2626,9 +2810,9 @@ QVariantList PostProcess::report_sections() const
     return m_result.report_sections;
 }
 
-QString PostProcess::status_line() const
+QVariantList PostProcess::status_groups() const
 {
-    return m_result.status_line;
+    return m_result.status_groups;
 }
 
 // ==================== 出图 ====================
@@ -2702,15 +2886,26 @@ QVariantMap export_result(bool success, const QString &message, const QString &p
 
 bool prepare_directory(const QString &directory, QString *error)
 {
-    QDir dir(directory);
     if (directory.trimmed().isEmpty())
     {
         *error = QObject::tr("没有可用的导出目录");
         return false;
     }
+    // 目录可能来自 QML 的 FolderDialog，是 "file:///C:/..." 形式的 URL；
+    // 直接交给 QDir 会被当成字面量路径，mkpath 失败。这里统一转成本地路径。
+    QString path = directory;
+    if (path.startsWith(QStringLiteral("file:"), Qt::CaseInsensitive))
+    {
+        const QString local = QUrl(path).toLocalFile();
+        if (!local.isEmpty())
+            path = local;
+    }
+    path = QDir::fromNativeSeparators(path);
+
+    QDir dir(path);
     if (!dir.exists() && !dir.mkpath(QStringLiteral(".")))
     {
-        *error = QObject::tr("无法创建导出目录：%1").arg(directory);
+        *error = QObject::tr("无法创建导出目录：%1").arg(path);
         return false;
     }
     return true;

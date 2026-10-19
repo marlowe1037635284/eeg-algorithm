@@ -3,7 +3,7 @@ import QtQuick.Controls.Basic
 import KSCEEGClient
 
 // 「频谱分析」面板。
-// 设计稿里位于画板 (1572,754)，尺寸 331×280；本文件坐标 = 设计坐标 - (1572,754)。
+// 设计稿里位于画板 (1572,689)，尺寸 331×345；本文件坐标 = 设计坐标 - (1572,689)。
 Item {
     id: root
 
@@ -55,6 +55,17 @@ Item {
         font.pixelSize: 18
     }
 
+    // 单位跟着标题走：数值单位由这里统一交代，卡片里就不再重复写
+    Text {
+        x: 90
+        y: 13
+        text: qsTr("(μV²/Hz)")
+        color: Design.textSecondary
+        font.family: Design.fontFamily
+        font.styleName: Design.styleRegular
+        font.pixelSize: 14
+    }
+
     Text {
         x: 211
         y: 8
@@ -88,13 +99,27 @@ Item {
             font.pixelSize: 14
         }
 
-        Image {
-            x: 62
+        // 主色实心三角（右指），表示可展开。原来那个箭头图标是白色的，
+        // 在浅色胶囊上几乎看不见，所以这里直接画
+        Canvas {
+            x: 54
+            width: 8
+            height: 8
             anchors.verticalCenter: parent.verticalCenter
-            width: 7.47
-            height: 7
-            rotation: 90
-            source: Design.assetRoot + "icons/icon-arrow-down.svg"
+
+            Component.onCompleted: requestPaint()
+
+            onPaint: {
+                var ctx = getContext("2d")
+                ctx.reset()
+                ctx.beginPath()
+                ctx.moveTo(0, 0)
+                ctx.lineTo(width, height / 2)
+                ctx.lineTo(0, height)
+                ctx.closePath()
+                ctx.fillStyle = Design.primary
+                ctx.fill()
+            }
         }
 
         MouseArea {
@@ -111,7 +136,7 @@ Item {
 
     // 通道下拉列表（盖在面板内容之上）
     //
-    // 面板总共就 280 高、列表从 y=40 起，而 16 个通道按每项 26 撑开要 424px，
+    // 面板总共就 345 高、列表从 y=40 起，而 16 个通道按每项 26 撑开要 424px，
     // 会一路画到窗口外，尾部通道根本点不到。所以这里限高（最多到面板底边
     // 留 8px）并在内部滚动：内容没超时和以前完全一样，超了就能滚。
     Rectangle {
@@ -120,7 +145,7 @@ Item {
         x: 248
         y: 40
         width: 71
-        height: Math.min(contentHeight, 232)
+        height: Math.min(contentHeight, 297)
         radius: 8
         color: "#ffffff"
         border.width: 1
@@ -227,7 +252,7 @@ Item {
         x: 14
         y: 52
         width: 305
-        height: 141
+        height: 205
         radius: 7
         color: Design.panelFillSoft
         border.width: 1
@@ -239,7 +264,7 @@ Item {
         x: 14
         y: 56
         width: 305
-        height: 133
+        height: 197
 
         onWidthChanged: requestPaint()
         onHeightChanged: requestPaint()
@@ -268,9 +293,8 @@ Item {
 
             // 曲线已由 C++ 归一化成 0~1（按本帧峰值），这里按画布高度缩放。
             //
-            // 注意点数很少：算法侧的 nperseg 固定为 256，1000 Hz 下频率分辨率
-            // 是 3.9 Hz，0.5–30 Hz 只有 7 个点 —— 所以这条线本来就是折线，
-            // 不是显示做得粗糙，而是分辨率决定的
+            // 横轴就是查询用的 0.5–45 Hz，频点间隔 0.5 Hz（算法侧 nperseg
+            // = 采样率 × 2），所以点数足够，曲线是平滑的
             var top = 8
             var span = base - top
 
@@ -318,7 +342,7 @@ Item {
 
     Text {
         x: 21
-        y: 166
+        y: 234
         text: "0.5"
         color: "#898989"
         font.family: Design.fontFamily
@@ -328,8 +352,8 @@ Item {
 
     Text {
         x: 287
-        y: 166
-        text: "30Hz"
+        y: 234
+        text: "45Hz"
         color: "#898989"
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
@@ -348,7 +372,7 @@ Item {
 
             Rectangle {
                 x: parent.blockX
-                y: 206
+                y: 271
                 width: 54
                 height: 60
                 radius: 7
@@ -357,7 +381,7 @@ Item {
 
             Text {
                 x: parent.blockX
-                y: 215
+                y: 277
                 width: 54
                 height: 22
                 horizontalAlignment: Text.AlignHCenter
@@ -371,7 +395,7 @@ Item {
 
             Text {
                 x: parent.blockX
-                y: 236
+                y: 304
                 width: 54
                 height: 22
                 horizontalAlignment: Text.AlignHCenter
@@ -381,7 +405,7 @@ Item {
                 font.family: Design.fontFamily
                 font.styleName: Design.styleMedium
                 font.pixelSize: 13
-                // 值形如 "368.8μV²"，块宽固定 54，缩到放得下为止，免得溢出
+                // 值形如 "8.4"（单位见标题），块宽固定 54，缩到放得下为止，免得溢出
                 fontSizeMode: Text.HorizontalFit
                 minimumPixelSize: 8
             }

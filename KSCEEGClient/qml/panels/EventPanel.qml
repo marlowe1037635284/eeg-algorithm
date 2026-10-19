@@ -7,6 +7,12 @@ import KSCEEGClient
 Item {
     id: root
 
+    // 清空与删除都是**不可撤销**的操作，清空按钮还就挨在「标记事件」旁边，
+    // 很容易误点。面板自身不画确认框 —— 弹窗统一由 Main.qml 路由（与删除标签、
+    // 删除记录同一范式），这里只把意图交上去，由外层决定弹什么
+    signal clearRequested()
+    signal deleteRequested(int index)
+
     // 事件源在 C++ 侧（Acq.events）。原来这里有一份写死的 ListModel，
     // 六条事件的时间全是 16:13:05、偏移全是 +3s；而波形面板上那两条事件竖线
     // 又完全是另一套硬编码坐标 —— 两处互不相干。现在两边共用 Acq.events，
@@ -41,10 +47,6 @@ Item {
     readonly property int eventRowHeight: 44
     readonly property int eventViewHeight: 176
     readonly property real eventMaxScroll: Math.max(0, eventCount * eventRowHeight - eventViewHeight)
-
-    function clearEvents() {
-        Acq.clear_events()
-    }
 
     // 时间戳交给 C++ 取（它才有采集计时与墙钟），这里只传标签与颜色
     function addEvent() {
@@ -125,7 +127,8 @@ Item {
             id: clearMouse
             anchors.fill: parent
             cursorShape: Qt.PointingHandCursor
-            onClicked: root.clearEvents()
+            // 只上报意图，确认框由 Main.qml 弹（清空不可撤销）
+            onClicked: root.clearRequested()
         }
     }
 
@@ -289,7 +292,8 @@ Item {
                         id: deleteMouse
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: Acq.remove_event(index)
+                        // 与清空同理：删除也不可撤销，交外层弹确认框
+                        onClicked: root.deleteRequested(index)
                     }
                 }
             }

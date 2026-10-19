@@ -268,9 +268,10 @@ Item {
         // 「一个人都没有」和「筛完没有了」提示语分开：筛没的时候让人去「新增用户」，
         // 他会以为库里的人丢了
         Text {
-            x: 71
+            x: -47
             y: 200
-            width: 1400
+            width: 1796
+            horizontalAlignment: Text.AlignHCenter
             visible: root.users.length === 0
             text: root.allUsers.length === 0
                   ? qsTr("暂无用户，点右上角「新增用户」开通一个账号")

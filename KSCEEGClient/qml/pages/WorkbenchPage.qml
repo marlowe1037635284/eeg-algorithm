@@ -26,6 +26,10 @@ Item {
     signal deviceInfoRequested()
     // 需要在界面上说一句话（阻抗扫描完成、导出结果之类），由外层弹轻提示
     signal notifyRequested(string message, string kind)
+    // 事件标注的「清空 / 删除」都是不可撤销操作，需要二次确认。
+    // 面板不自己弹框，把意图交上来，由 Main.qml 统一路由确认框
+    signal clearEventsRequested()
+    signal deleteEventRequested(int index)
 
     property string userName: "管理员"
     property string userRole: "管理员"
@@ -67,15 +71,6 @@ Item {
     property int elapsedSeconds: 0
     property string selectedNav: qsTr("采集工作台")
 
-    readonly property string elapsedText: {
-        var hours = Math.floor(elapsedSeconds / 3600)
-        var minutes = Math.floor((elapsedSeconds % 3600) / 60)
-        var seconds = elapsedSeconds % 60
-        return String(hours).padStart(2, "0") + ":" +
-               String(minutes).padStart(2, "0") + ":" +
-               String(seconds).padStart(2, "0")
-    }
-
     // ---------- 时基 / 走纸速度的换算 ----------
     // 波形区横向分 4 格（见 WaveformPanel：5 个刻度、4 段间隔），所以每格秒数 = 时窗 / 4。
     // 默认时窗 2 秒 → 0.5 s/div，正是工具栏和底栏要显示的值
@@ -96,6 +91,12 @@ Item {
     // 去掉多余的零：0.50 → "0.5"、15.0 → "15"
     readonly property string timeBaseText: Number(secondsPerDiv.toFixed(2)) + " s/div"
     readonly property string paperSpeedText: Number(paperSpeed.toFixed(1)) + "mm/s"
+
+    // 底栏「数据点」。按原型用千分位（1,024）显示本次采集累计收到的采样点数。
+    // 帧与采样点一一对应 —— 一帧就是 16 个通道各一个点（见 serialprotocol.h 的帧结构），
+    // 所以直接用收到的帧数，不必再乘通道数
+    readonly property string dataPointText: Number(Acq.receivedFrames)
+                                           .toLocaleString(Qt.locale("zh_CN"), 'f', 0)
 
 
     function resetSession() {
@@ -127,7 +128,7 @@ Item {
         // 再由 C++ 侧的 start_collection() 发 's' 让设备停发阻抗帧、切回脑电数据流
         electrodePanel.cancelScan()
         // 带上病历号：C++ 会按患者建子目录落盘（目录名用病历号，不用姓名）
-        Acq.start_collection(recordDir, patientNo)
+        return Acq.start_collection(recordDir, patientNo)
     }
 
     // 「截图」：只抓当前显示的波形 + 波形左边的通道名，
@@ -351,7 +352,7 @@ Item {
     // 点用户区弹出的账号菜单（与 AppShell 里那一份同款，见 UserMenu.qml）
     UserMenu {
         id: userMenu
-        x: 1750
+        x: 1660
         y: 50
         onChangePasswordRequested: root.changePasswordRequested()
         onLogoutRequested: root.logoutRequested()
@@ -538,7 +539,14 @@ Item {
                     // 波形/阻抗/落盘的通道数对不上
                     enabled: !root.collecting
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: Acq.channelCount = modelData.value
+                    onClicked: {
+                        // 切档位会重建泳道与频谱默认通道，界面变化不小，
+                        // 给一条提示让用户确知「刚才那下生效了」（点当前档位不提示）
+                        if (Acq.channelCount === modelData.value)
+                            return
+                        Acq.channelCount = modelData.value
+                        root.notifyRequested(qsTr("已切换到 %1 通道").arg(modelData.value), "success")
+                    }
                 }
             }
         }
@@ -817,20 +825,22 @@ Item {
         height: 296
         collecting: root.collecting
         tags: root.tags
+        onClearRequested: root.clearEventsRequested()
+        onDeleteRequested: (index) => root.deleteEventRequested(index)
     }
 
     TopographyPanel {
         x: 1572
         y: 150
         width: 331
-        height: 590
+        height: 525
     }
 
     SpectrumPanel {
         x: 1572
-        y: 754
+        y: 689
         width: 331
-        height: 280
+        height: 345
         collecting: root.collecting
         frozen: root.frozen
     }
@@ -948,48 +958,25 @@ Item {
         color: root.collecting ? Design.good : Design.offline
     }
 
-    // 状态栏第一段：采集状态 + 串口/算法给的状态文本。
-    // 原来的「采集进行中/已停止」只有两种状态，看不出「串口开着但没采」
-    // 和「算法在预热」这些中间态
-    // 放在「记录时长」之后、右侧那排指标之前的那段空白里（设计稿这里是空的），
-    // 不和任何已有元素重叠
+    // 状态栏第一段：绿点右侧的采集状态文字。与原型一致（原型的「● 采集进行中」），
+    // 停止时给待机态 —— 原来这里只有一个孤零零的圆点，状态文字被挪到了右边，
+    // 底栏左半边空着，与原型对不上
     Text {
-        x: 430
+        x: 140
         y: 1052
-        width: 690
-        elide: Text.ElideRight
-        text: {
-            if (Acq.errorText.length > 0)
-                return qsTr("异常：") + Acq.errorText
-            if (Acq.warmupText.length > 0)
-                return Acq.warmupText
-            return Acq.statusText
-        }
+        text: root.collecting ? qsTr("采集进行中") : qsTr("采集待机")
         color: "#3b3b3b"
         font.family: Design.fontFamily
         font.styleName: Design.styleRegular
         font.pixelSize: 14
     }
 
-    // 设计稿这一行没有「记录时长」，但原来实现里有计时，放在这处空白
-    Text {
-        x: 250
-        y: 1052
-        text: qsTr("记录时长  ") + root.elapsedText
-        color: "#3b3b3b"
-        font.family: Design.fontFamily
-        font.styleName: Design.styleRegular
-        font.pixelSize: 14
-    }
-
-    // 底栏这几项原来全是写死的（采样率 256Hz、数据点 1,024、电极 10/16 良好…），
-    // 与面板上的实际值互相矛盾。全部换成真实值；「电极良好数」没有数据源
-    // （协议只有 4 路无名字的阻抗，见 serialprotocol.h），所以整条去掉。
+    // 底栏右侧那排指标，项与顺序都按原型来：采样率 / 时基 / 幅值 / 数据点 / 电极 / 患者。
+    // 原型那几个值是示意值（256Hz、1,024、10/16 良好、张文涛），这里全部换成真实值：
+    // 写死的假数据会与面板上的实际值互相矛盾。
     //
-    // 排布改成**从右往左依次排列**，不再是设计稿里那套写死的 x 坐标：
-    // 那些坐标是按「采样率：256Hz」这类固定短文本量的，而真实数值长度会变
-    // （「已收 12514 帧 · 已存 12514 帧 · 丢弃 0 字节」比它长一倍多），
-    // 按固定 x 排就会和后一项叠在一起、糊成一片
+    // 排布**从右往左依次排列**，不是原型里那套写死的 x 坐标：那些坐标是按固定短文本量
+    // 的，而真实数值长度会变，按固定 x 排就会和后一项叠在一起、糊成一片
     Row {
         anchors.right: parent.right
         anchors.rightMargin: 27
@@ -1001,7 +988,12 @@ Item {
                 qsTr("采样率：") + Acq.sample_rate() + "Hz",
                 qsTr("时基：") + root.timeBaseText + qsTr("(走纸速度：") + root.paperSpeedText + ")",
                 Acq.yRangeUV > 0 ? qsTr("幅值：") + Acq.yRangeUV + "μV/div" : qsTr("幅值：自动"),
-                Acq.statsText,
+                qsTr("数据点：") + root.dataPointText,
+                // 电极良好数取最近一次阻抗扫描的结果。没扫过时不能顶着设计稿那个
+                // 「10/16」示意值 —— 用户会以为已经检过了（与顶栏那枚胶囊口径一致）
+                qsTr("电极：") + (Acq.electrodeScanValid
+                                  ? Design.electrodeQualityText(Acq.electrodeQuality)
+                                  : qsTr("未扫描")),
                 // 未选患者时不能还挂着一个人名 —— 与左上角那张卡片保持一致
                 qsTr("患者：") + (root.hasPatient ? Privacy.masked(root.patientName) : qsTr("未选择"))
             ]

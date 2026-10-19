@@ -1,12 +1,17 @@
 #pragma once
 
 #include <QObject>
+#include <QString>
 
 class QEvent;
 class QTimer;
 
 // 无人值守自动锁屏的默认阈值（分钟）。配置文件里没写 / 写坏时用它。
 inline constexpr int kDefaultUnattendedAutoExitMinutes = 60;
+
+// client-config.json 的路径：先看可执行文件同级（打包后的正式形态），
+// 再看源码目录（开发期直接跑 build/ 里的 exe 时用）。
+QString client_config_path();
 
 // 从配置文件 client-config.json 读「无人值守自动退出」的分钟数。
 //

@@ -535,4 +535,27 @@ Item {
         color: Qt.rgba(0.4, 0.4, 0.4, 0.15)
         visible: root.maxScroll > 0
     }
+
+    // 滚动条的鼠标交互层。覆盖整条轨道（比 7px 的滑块宽出一截，好点中），
+    // 按下 / 拖动都按鼠标位置换算滚动量 —— 滑块自身的 y 是跟着 root.scroll
+    // 绑定的，不去改它，避免绑定被拖动赋值破坏后滚轮失效
+    MouseArea {
+        x: 315
+        y: 370
+        width: 15
+        height: 114
+        visible: root.maxScroll > 0
+        enabled: root.maxScroll > 0
+        cursorShape: Qt.PointingHandCursor
+
+        function scrollTo(my) {
+            // 轨道顶 370、行程 90、滑块半高 12：鼠标 y（相对本 MouseArea）
+            // 减去半高再归一化，让滑块中心跟着鼠标走并夹在轨道内
+            var f = Math.max(0, Math.min(1, (my - 12) / 90))
+            root.scroll = f * root.maxScroll
+        }
+
+        onPressed: (mouse) => scrollTo(mouse.y)
+        onPositionChanged: (mouse) => { if (pressed) scrollTo(mouse.y) }
+    }
 }

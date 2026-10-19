@@ -156,6 +156,7 @@ qt_add_qml_module(appKSCEEGClient
         qml/components/UserMenu.qml
         qml/dialogs/ChangePasswordDialog.qml
         qml/dialogs/ConfirmDialog.qml
+        qml/dialogs/DeviceDisconnectDialog.qml
         qml/dialogs/DeviceInfoDialog.qml
         qml/dialogs/EditPatientDialog.qml
         qml/dialogs/FilterDialog.qml
@@ -210,14 +211,26 @@ qt_add_qml_module(appKSCEEGClient
         assets/icons/icon-close.svg
         assets/icons/icon-check-bold.svg
         assets/icons/icon-arrow-down.svg
+        assets/icons/icon-export.svg
         assets/icons/icon-check.svg
         assets/icons/icon-check-login.svg
         assets/icons/icon-lock.svg
+        assets/icons/icon-change-password.svg
+        assets/icons/icon-logout.svg
         assets/icons/head-panel.svg
         assets/icons/head-outline.svg
         assets/icons/topo-circle.svg
         assets/icons/peak-badge.svg
         assets/icons/slider-thumb.svg
+        assets/icons/icon-pin.svg
+        assets/icons/icon-pin-active.svg
+        assets/icons/divider-section.svg
+        assets/icons/tab-wave.svg
+        assets/icons/tab-spectrum.svg
+        assets/icons/tab-channel.svg
+        assets/icons/tab-stats.svg
+        assets/icons/tab-topography.svg
+        assets/icons/tab-report.svg
 )
 
 # 字体文件又大（4 个字重共 26MB），塞进 Qt 资源会让 rcc 生成的 .cpp 膨胀到 130MB 以上，

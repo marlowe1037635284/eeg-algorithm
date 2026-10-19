@@ -91,12 +91,14 @@ Item {
         PanelDivider { x: 7; y: 66; width: 592 }
 
         // ---------- 用户名 ----------
+        // 标签列统一 26 起、输入框统一 150 起：输入框列宽固定，
+        //「部门 / 科室」这类较长的标签才不会和输入框贴在一起（见 bug#332）
         FormLabel { x: 26; y: 89; text: root.editMode ? qsTr("用户名") : qsTr("用户名*") }
 
         Rectangle {
-            x: 113
+            x: 150
             y: 80
-            width: 463
+            width: 426
             height: 43
             radius: 12
             // 编辑模式压暗：账号是登录凭据，改掉它等于换个人，不该在「编辑资料」里顺手做
@@ -105,9 +107,9 @@ Item {
 
         TextInput {
             id: accountField
-            x: 133
+            x: 170
             y: 91
-            width: 423
+            width: 386
             height: 22
             color: "#3b3b3b"
             font.family: Design.fontFamily
@@ -118,11 +120,11 @@ Item {
             selectByMouse: true
             readOnly: root.editMode
             clip: true
-            maximumLength: 32
+            maximumLength: 30
         }
 
         Text {
-            x: 133
+            x: 170
             y: 91
             height: 22
             verticalAlignment: Text.AlignVCenter
@@ -139,19 +141,19 @@ Item {
 
         EditField {
             id: nameField
-            x: 113
+            x: 150
             y: 130
             placeholder: qsTr("真实姓名")
-            maxLength: 32
+            maxLength: 20
         }
 
         // ---------- 角色 ----------
         FormLabel { x: 26; y: 189; text: qsTr("角色") }
 
         ChoiceField {
-            x: 113
+            x: 150
             y: 180
-            width: 463
+            width: 426
             height: 43
             choices: root.roleChoices
             currentIndex: root.roleIndex
@@ -163,7 +165,7 @@ Item {
 
         EditField {
             id: deptField
-            x: 113
+            x: 150
             y: 230
             placeholder: qsTr("如：神经内科")
             maxLength: 32
@@ -177,9 +179,9 @@ Item {
         }
 
         ChoiceField {
-            x: 113
+            x: 150
             y: 280
-            width: 463
+            width: 426
             height: 43
             visible: root.editMode
             choices: root.statusChoices
@@ -189,7 +191,7 @@ Item {
 
         EditField {
             id: passwordField
-            x: 113
+            x: 150
             y: 280
             visible: !root.editMode
             placeholder: qsTr("8-16 位，含数字与字母")
@@ -199,9 +201,9 @@ Item {
 
         // 保存失败的原因。设计稿没有错误栏，放在分隔线上方的空处
         Text {
-            x: 113
+            x: 150
             y: 331
-            width: 463
+            width: 426
             height: 20
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
@@ -271,7 +273,7 @@ Item {
         property int echoMode: TextInput.Normal
         property int maxLength: 64
 
-        width: 463
+        width: 426
         height: 43
         radius: 12
         color: Design.primarySoft

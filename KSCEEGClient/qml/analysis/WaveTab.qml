@@ -1,4 +1,6 @@
 import QtQuick
+import QtQuick.Controls.Basic
+import QtQuick.Window
 import KSCEEGClient
 
 // 「数据分析与后处理」· 波形页。
@@ -21,10 +23,28 @@ Item {
     readonly property int lanes: Math.max(1, Analysis.channelCount)
     readonly property int traceWidth: Math.max(64, width - nameWidth - rangeWidth)
 
-    // 绘制区（不含时间轴）作为波形图的像素尺寸报给 C++
+    // 左上角图钉：直径、距两边的偏移，以及它占出的顶部间隙。波形整块下移一个
+    // 间隙，图钉就不会压住最上面那一路波形
+    readonly property int pinSize: 36
+    readonly property int pinInset: 4
+    readonly property int pinGap: pinInset + pinSize
+
+    // 图钉点开后那块「标注放大器」：卡片宽、每行事件的高与行距
+    readonly property int pinPopupWidth: 240
+    readonly property int pinRowHeight: 38
+    readonly property int pinRowSpacing: 10
+
+    // 物理像素倍率。波形是 1 像素宽的折线，若按逻辑像素画再被系统放大，斜线会发虚、
+    // 起台阶 —— 与实时波形面板（WaveformPanel）同一套做法，200% 缩放时封顶 1.5 倍
+    readonly property real pixelRatio: Math.min(Screen.devicePixelRatio, 1.5)
+
+    // 绘制区（不含时间轴）作为波形图的像素尺寸报给 C++。宽按物理像素报，倍率也一并
+    // 报过去：C++ 的泳道高（它自己定的）会跟着乘这份倍率，贴回来正好 1:1
     function report_size() {
         if (traceWidth > 0 && height > axisHeight)
-            Analysis.set_view_size(traceWidth, Math.round(height - axisHeight))
+            Analysis.set_view_size(Math.round(traceWidth * pixelRatio),
+                                   Math.round((height - axisHeight) * pixelRatio),
+                                   pixelRatio)
     }
     onTraceWidthChanged: report_size()
     onHeightChanged: report_size()
@@ -43,6 +63,17 @@ Item {
         view.contentY = target
     }
 
+    // 点「标注放大器」里的某一行 = 跳到这条标注：先选中它（波形上那根竖线与顶端
+    // 圆点随即换成高亮色、该行也点亮），再把时间窗挪到以它为中心的位置 ——
+    // 窗头窗尾都夹在记录范围内
+    function jumpToEvent(index) {
+        Analysis.selectedEvent = index
+        const offset = Analysis.events[index].offsetSeconds
+        Analysis.windowStartSeconds = Math.max(0, Math.min(
+            Analysis.durationSeconds - Analysis.windowSeconds,
+            offset - Analysis.windowSeconds / 2))
+    }
+
     // 绘图区底板（设计稿 003：1272×682、圆角 12、#D9D9D9 35%）。波形图由 C++
     // 画成透明底，没有这层底板波形就浮在舞台底色上；它同时兜住左侧通道名列与
     // 底部秒数刻度，是整个波形页的范围
@@ -56,9 +87,9 @@ Item {
         id: view
 
         x: root.nameWidth
-        y: 0
+        y: root.pinGap
         width: root.traceWidth
-        height: parent.height - root.axisHeight
+        height: parent.height - root.axisHeight - root.pinGap
         contentWidth: width
         contentHeight: root.lanes * root.laneHeight
         clip: true
@@ -81,6 +112,177 @@ Item {
                     ? "image://analysis/wave/" + Analysis.revision
                     : ""
         }
+
+        // 事件标记的点击热区：C++ 画的那根竖线本身不是控件，这里按同一套
+        // x 公式（(时刻 - 窗口起点) / 窗口长 × 绘制区宽）叠一条窄条上去，
+        // 点中就把这条标注选上 —— 波形侧的高亮由 Analysis.selectedEvent 驱动
+        Repeater {
+            model: Analysis.events
+
+            delegate: Item {
+                required property var modelData
+                required property int index
+
+                readonly property real offset: modelData.offsetSeconds
+
+                x: (offset - Analysis.windowStartSeconds)
+                   / Math.max(0.001, Analysis.windowSeconds) * view.width - width / 2
+                y: 0
+                width: 12
+                height: view.contentHeight
+                visible: offset >= Analysis.windowStartSeconds
+                         && offset <= Analysis.windowStartSeconds + Analysis.windowSeconds
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: Analysis.selectedEvent = index
+                }
+            }
+        }
+    }
+
+    // ---------- 图钉 ----------
+    // 卡片左上角的标记：浅灰圆底 + 图钉。波形已按 pinGap 整体下移，图钉落在
+    // 顶部那段空出来的绘制区里。声明在 Flickable 之后，压在波形图上层。
+    // 点它开合「标注放大器」，开着时圆底转浅蓝、描边与图钉字形转主色
+    Rectangle {
+        id: pin
+
+        x: root.pinInset
+        y: root.pinInset
+        width: root.pinSize
+        height: root.pinSize
+        radius: root.pinSize / 2
+        color: pinPopup.visible ? "#e5e9eb" : "#d9d9d9"
+        border.width: 1
+        border.color: pinPopup.visible ? Design.primary : "transparent"
+
+        Image {
+            anchors.centerIn: parent
+            width: 19
+            height: 19
+            source: Design.assetRoot
+                    + (pinPopup.visible ? "icons/icon-pin-active.svg"
+                                        : "icons/icon-pin.svg")
+            sourceSize: Qt.size(19, 19)
+            fillMode: Image.PreserveAspectFit
+        }
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.PointingHandCursor
+            onClicked: pinPopup.visible ? pinPopup.close() : pinPopup.open()
+        }
+    }
+
+    // ---------- 标注放大器 ----------
+    // 图钉展开的那块：这一路记录里标过的事件，圆点色号与波形上的事件竖线同源
+    //（都用 Analysis.events 里的 color），时间写墙钟、标签写当时选的那一个
+    Popup {
+        id: pinPopup
+
+        // 贴在图钉右侧、与图钉顶大致齐平
+        x: root.pinInset + root.pinSize + 10
+        y: root.pinInset + 4
+        width: root.pinPopupWidth
+        padding: 0
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+
+        background: Rectangle {
+            radius: 12
+            color: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.92)
+        }
+
+        contentItem: Item {
+            implicitWidth: root.pinPopupWidth
+            implicitHeight: 50 + eventList.height + 10
+
+            Text {
+                x: 16
+                y: 13
+                text: qsTr("标注放大器")
+                color: Design.textPrimary
+                font.family: Design.fontFamily
+                font.styleName: Design.styleMedium
+                font.pixelSize: 16
+            }
+
+            Rectangle {
+                x: 14
+                y: 40
+                width: parent.width - 28
+                height: 1
+                color: Design.divider
+            }
+
+            ListView {
+                id: eventList
+
+                x: 14
+                y: 50
+                width: parent.width - 28
+                // 限高：事件标多了会一路往下铺，顶出窗口底部就没法看了
+                height: Math.min(contentHeight, 264)
+                spacing: root.pinRowSpacing
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                interactive: contentHeight > height
+                model: Analysis.events
+
+                delegate: Rectangle {
+                    required property var modelData
+                    required property int index
+
+                    width: eventList.width
+                    height: root.pinRowHeight
+                    radius: 6
+                    // 选中的那一行点亮成高亮色（与波形标记同色，透明度淡一档），
+                    // 与波形上的选中状态共享 Analysis.selectedEvent
+                    color: index === Analysis.selectedEvent
+                           ? Qt.rgba(218 / 255, 168 / 255, 42 / 255, 0.20)
+                           : Qt.rgba(0, 0, 0, 0.06)
+
+                    Rectangle {
+                        x: 12
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 12
+                        height: 12
+                        radius: 6
+                        // 颜色缺失时退回波形侧画竖线用的那个紫
+                        color: modelData.color && modelData.color.length > 0
+                               ? modelData.color : "#7c3aed"
+                    }
+
+                    Text {
+                        x: 58
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.wallClock
+                        color: "#333333"
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleMedium
+                        font.pixelSize: 16
+                    }
+
+                    Text {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 14
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: modelData.label
+                        color: Design.textSecondary
+                        font.family: Design.fontFamily
+                        font.styleName: Design.styleRegular
+                        font.pixelSize: 14
+                    }
+
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.jumpToEvent(index)
+                    }
+                }
+            }
+        }
     }
 
     // ---------- 通道名 ----------
@@ -93,10 +295,11 @@ Item {
             required property int index
 
             x: 0
-            y: index * root.laneHeight - view.contentY
+            y: root.pinGap + index * root.laneHeight - view.contentY
             width: root.nameWidth
             height: root.laneHeight
-            visible: y > -root.laneHeight && y < view.height
+            visible: y > root.pinGap - root.laneHeight
+                     && y < root.height - root.axisHeight
             clip: true
 
             Text {
@@ -128,10 +331,11 @@ Item {
             required property int index
 
             x: 0
-            y: index * root.laneHeight - view.contentY
+            y: root.pinGap + index * root.laneHeight - view.contentY
             width: root.width
             height: root.laneHeight
-            visible: y > -root.laneHeight && y < view.height
+            visible: y > root.pinGap - root.laneHeight
+                     && y < root.height - root.axisHeight
 
             Rectangle {
                 x: root.nameWidth

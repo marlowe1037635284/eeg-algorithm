@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls.Basic
+import QtQuick.Effects
 import KSCEEGClient
 
 // 「数据分析与后处理」页。从历史记录页的「分析」进来，整屏替换掉历史记录。
@@ -64,11 +65,10 @@ Item {
     readonly property int contentWidth: 1323
     // 有通道条时内容压在通道条（y=692）上沿；其余有图页的内容压到时间轴
     // （y=754）上沿，否则正文会盖住时间轴。通道页 / 统计页 / 报告页没有时间轴，
-    // 内容一路铺到状态行（y=848）上方的留白处；地形图页最低到 674，在 683
-    // 之内，不会被裁
+    // 内容压到状态条（y=824）上沿；地形图页最低到 674，在 683 之内，不会被裁
     readonly property int contentHeight:
         tabHasChannelStrip ? 608
-                           : (tabHasTimeline ? 683 : 767)
+                           : (tabHasTimeline ? 683 : 753)
 
     // ---------- 打开记录 ----------
     // 记录号进来之后，从库里取这条记录的字段与事件标注，一并交给 Analysis。
@@ -269,47 +269,16 @@ Item {
                     font.pixelSize: 16
                 }
 
-                // 下载图标：一个向下的箭头 + 底下的托盘，用两个矩形拼出来，
-                // 不值得为此单拉一个 SVG 资源
-                Item {
+                // 导出图标：方框 + 指向右上的箭头，直接使用设计给的 SVG。
+                // 之前是用几个矩形手拼的，与原型线条对不齐；SVG 自带 17×17 视框与白色填充
+                Image {
                     x: 16
                     anchors.verticalCenter: parent.verticalCenter
-                    width: 16
-                    height: 16
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 1
-                        width: 2
-                        height: 9
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 6
-                        width: 7
-                        height: 2
-                        rotation: 45
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        y: 6
-                        width: 7
-                        height: 2
-                        rotation: -45
-                        color: "#ffffff"
-                    }
-
-                    Rectangle {
-                        x: 1
-                        y: 13
-                        width: 14
-                        height: 2
-                        color: "#ffffff"
-                    }
+                    width: 17
+                    height: 17
+                    source: Design.assetRoot + "icons/icon-export.svg"
+                    sourceSize: Qt.size(17, 17)
+                    fillMode: Image.PreserveAspectFit
                 }
 
                 MouseArea {
@@ -557,44 +526,85 @@ Item {
                 }
             }
 
-            // ---------- 状态行 ----------
-            // 文案很长（导联 / 片段内范围 / 处理链 / 质检一长串），窄窗口放不下。
+            // ---------- 状态条 ----------
+            // 设计稿 info.png：1315×54 的胶囊条（圆角 9、panelFill 底 + panelBorder
+            // 1px 描边），一行 14px 的「标签：值」——标签走正文色、值走主色，
+            // 组与组之间留 20、组内紧贴（冒号后面不带空格）
+            //
+            // 文案很长（导联 / 窗口内范围 / 处理链 / 质检一长串），窄窗口放不下。
             // 不再直接省略号截断，而是横向可滚动：内容溢出时底部才浮出一条细滑块，
-            // 提示「还能往右拖」。放得下时滑块不出现、文字照旧左对齐，视觉与原来一致
+            // 提示「还能往右拖」。放得下时滑块不出现、文字照旧左对齐
             Rectangle {
                 x: root.contentX
-                y: 848
+                y: 824
                 width: root.contentWidth
-                height: 30
-                radius: 6
+                height: 54
+                radius: 9
                 clip: true
-                color: Qt.rgba(0xd9 / 255, 0xd9 / 255, 0xd9 / 255, 0.28)
+                color: Design.panelFill
+                border.width: 1
+                border.color: Design.panelBorder
 
                 Flickable {
                     id: statusFlick
                     anchors.fill: parent
-                    contentWidth: Math.max(width, statusText.implicitWidth + 28)
+                    // 左右各留 23 的内边距（设计稿里文字压在离框 23 处）
+                    contentWidth: Math.max(width, statusRow.implicitWidth + 46)
                     contentHeight: height
                     boundsBehavior: Flickable.StopAtBounds
                     flickableDirection: Flickable.HorizontalFlick
                     // 放得下就别让它有可拖动的余量，免得跟点击/滚轮抢事件
                     interactive: contentWidth > width + 1
 
+                    // 外层 Row 的 spacing 是「组间距」，内层 Row 的 0 让标签与值紧贴
+                    Row {
+                        id: statusRow
+                        x: 23
+                        y: Math.round((statusFlick.height - height) / 2)
+                        spacing: 20
+
+                        Repeater {
+                            model: Analysis.statusGroups
+
+                            delegate: Row {
+                                required property var modelData
+                                spacing: 0
+
+                                Repeater {
+                                    model: modelData
+
+                                    // 声明了 required 的 delegate 不再从上下文取
+                                    // modelData，这里显式拿内层 Repeater 的那一项
+                                    delegate: Text {
+                                        required property var modelData
+
+                                        text: modelData.text
+                                        color: modelData.kind === "value" ? Design.primary
+                                                                          : Design.textPrimary
+                                        font.family: Design.fontFamily
+                                        font.styleName: Design.styleRegular
+                                        font.pixelSize: 14
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 还没结果 / 正在算 / 出错时的兜底。字号与配色跟上面那行对齐，
+                    // 免得刚进页面时这条突然换个样
                     Text {
-                        id: statusText
-                        x: 14
+                        x: 23
                         height: statusFlick.height
                         verticalAlignment: Text.AlignVCenter
-                        text: Analysis.statusLine.length > 0
-                              ? Analysis.statusLine
-                              : (Analysis.busy ? qsTr("正在计算…")
-                                               : (Analysis.errorText.length > 0
-                                                  ? Analysis.errorText
-                                                  : qsTr("正在等待分析结果")))
-                        color: Design.textSecondary
+                        visible: Analysis.statusGroups.length === 0
+                        text: Analysis.busy ? qsTr("正在计算…")
+                                            : (Analysis.errorText.length > 0
+                                               ? Analysis.errorText
+                                               : qsTr("正在等待分析结果"))
+                        color: Design.textPrimary
                         font.family: Design.fontFamily
                         font.styleName: Design.styleRegular
-                        font.pixelSize: 13
+                        font.pixelSize: 14
                     }
 
                     // 细滑块。只在内容溢出时出现（AsNeeded），不画底槽、只留滑块，
@@ -653,11 +663,12 @@ Item {
         font.pixelSize: 13
     }
 
+    // 高度按原型比例：按钮高约为标题条(75)的 0.58 → 43，并在标题条内垂直居中
     Rectangle {
         x: 1739
-        y: 64
+        y: 79
         width: 147
-        height: 73
+        height: 43
         radius: 12
         color: backMouse.pressed ? Qt.rgba(0.44, 0.57, 0.67, 0.22) : Design.primarySoft
         border.width: 1
@@ -666,7 +677,7 @@ Item {
         Text {
             anchors.centerIn: parent
             text: qsTr("返回历史记录")
-            color: Design.primary
+            color: Design.textPrimary
             font.family: Design.fontFamily
             font.styleName: Design.styleMedium
             font.pixelSize: 16
@@ -713,103 +724,35 @@ Item {
     }
 
     // ---------- 标签页图标 ----------
-    // 设计稿里每个标签前有个小图标。导出的素材里只有背景与外框矢量、没有这六个
-    // （它们在 Figma 里是 foreignObject 包着的图标帧），所以按同一套线条语汇
-    // 用 Canvas 现画：线宽 1.6、圆头圆角，尺寸与设计稿的 18×18 一致
-    component TabIcon: Canvas {
+    // 六个图标用设计给的 SVG（assets/icons/tab-*.svg：波形 / 频谱 / 通道 / 统计 /
+    // 地形图 / 报告，kind 与文件名一一对应）。它们是单色填充，用 MultiEffect 把填充
+    // 重染成当前态的颜色：选中 = 主色、未选中 = 次级灰 —— 与原来手绘 Canvas 的
+    // tint 行为一致。Image 要先 layer.enabled 取到纹理，才能喂给 MultiEffect
+    // 当 source（用法同 TopographyTab 里那张头型遮罩）
+    component TabIcon: Item {
         id: icon
 
         property string kind: "wave"
         property color tint: Design.textSecondary
 
-        onKindChanged: requestPaint()
-        onTintChanged: requestPaint()
-        onWidthChanged: requestPaint()
-        onHeightChanged: requestPaint()
+        Image {
+            id: glyph
 
-        onPaint: {
-            var ctx = getContext("2d")
-            ctx.reset()
-            ctx.strokeStyle = icon.tint
-            ctx.lineWidth = 1.6
-            ctx.lineCap = "round"
-            ctx.lineJoin = "round"
+            anchors.fill: parent
+            source: Design.assetRoot + "icons/tab-" + icon.kind + ".svg"
+            sourceSize: Qt.size(Math.max(1, Math.round(icon.width)),
+                                Math.max(1, Math.round(icon.height)))
+            fillMode: Image.PreserveAspectFit
+            visible: false
+            layer.enabled: true
+        }
 
-            var w = width
-            var h = height
-
-            if (kind === "wave") {
-                ctx.beginPath()
-                ctx.moveTo(w * 0.05, h * 0.55)
-                ctx.lineTo(w * 0.25, h * 0.55)
-                ctx.lineTo(w * 0.38, h * 0.15)
-                ctx.lineTo(w * 0.55, h * 0.85)
-                ctx.lineTo(w * 0.70, h * 0.35)
-                ctx.lineTo(w * 0.82, h * 0.55)
-                ctx.lineTo(w * 0.95, h * 0.55)
-                ctx.stroke()
-            } else if (kind === "spectrum") {
-                ctx.beginPath()
-                ctx.moveTo(w * 0.08, h * 0.08)
-                ctx.lineTo(w * 0.08, h * 0.92)
-                ctx.lineTo(w * 0.94, h * 0.92)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.18, h * 0.80)
-                ctx.lineTo(w * 0.36, h * 0.45)
-                ctx.lineTo(w * 0.55, h * 0.65)
-                ctx.lineTo(w * 0.88, h * 0.18)
-                ctx.stroke()
-            } else if (kind === "channel") {
-                ctx.beginPath()
-                for (var i = 0; i < 4; ++i) {
-                    var x = w * (0.18 + i * 0.22)
-                    var top = h * (0.55 - i * 0.09)
-                    ctx.moveTo(x, h * 0.92)
-                    ctx.lineTo(x, top)
-                }
-                ctx.stroke()
-            } else if (kind === "stats") {
-                ctx.beginPath()
-                ctx.moveTo(w * 0.08, h * 0.92)
-                ctx.lineTo(w * 0.94, h * 0.92)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.24, h * 0.92)
-                ctx.lineTo(w * 0.24, h * 0.58)
-                ctx.moveTo(w * 0.50, h * 0.92)
-                ctx.lineTo(w * 0.50, h * 0.30)
-                ctx.moveTo(w * 0.76, h * 0.92)
-                ctx.lineTo(w * 0.76, h * 0.46)
-                ctx.stroke()
-            } else if (kind === "topography") {
-                ctx.beginPath()
-                ctx.arc(w / 2, h / 2, w * 0.42, 0, Math.PI * 2)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.08, h * 0.5)
-                ctx.lineTo(w * 0.92, h * 0.5)
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.ellipse(w * 0.30, h * 0.12, w * 0.20, h * 0.38, 0, 0, Math.PI * 2)
-                ctx.stroke()
-            } else {
-                // 报告：一页纸 + 两条正文线
-                ctx.beginPath()
-                ctx.moveTo(w * 0.22, h * 0.08)
-                ctx.lineTo(w * 0.62, h * 0.08)
-                ctx.lineTo(w * 0.82, h * 0.30)
-                ctx.lineTo(w * 0.82, h * 0.92)
-                ctx.lineTo(w * 0.22, h * 0.92)
-                ctx.closePath()
-                ctx.stroke()
-                ctx.beginPath()
-                ctx.moveTo(w * 0.36, h * 0.54)
-                ctx.lineTo(w * 0.68, h * 0.54)
-                ctx.moveTo(w * 0.36, h * 0.72)
-                ctx.lineTo(w * 0.68, h * 0.72)
-                ctx.stroke()
-            }
+        MultiEffect {
+            anchors.fill: parent
+            source: glyph
+            // 1.0 = 完全按 colorizationColor 着色，只保留源图的 alpha
+            colorization: 1.0
+            colorizationColor: icon.tint
         }
     }
 }

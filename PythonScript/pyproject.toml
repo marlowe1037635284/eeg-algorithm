@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.12",
+    # 离线 ASR（后处理去伪迹）依赖，见 internal/offline/asr.py
+    "mne>=1.6",
+    "asrpy>=0.0.8",
 ]
 
 [project.optional-dependencies]

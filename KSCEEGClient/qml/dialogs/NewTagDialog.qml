@@ -29,8 +29,8 @@ Item {
     // 8 个可选标签色（取自施工图）
     readonly property var tagColors: ["#e5494d", "#f76b14", "#e6a014", "#31a46d",
                                       "#12a593", "#3f63dd", "#8e4ec6", "#6e7788"]
-    // 标签名最长 20 个字符，右下角的计数提示跟着走
-    readonly property int maxNameLength: 20
+    // 标签名最长 10 个字符，右下角的计数提示跟着走
+    readonly property int maxNameLength: 10
 
     property alias tagName: tagNameInput.text
     property alias tagCode: tagCodeInput.text
@@ -54,10 +54,28 @@ Item {
         selectedColorIndex = at >= 0 ? at : 7
     }
 
+    // 校验编码：只用数字，多个用逗号分隔，单个不超过 10 位。
+    // 空值表示不填，放行。返回空串表示通过，否则返回错误文案
+    function tagCodeError(value) {
+        if (value.length === 0)
+            return ""
+        var parts = value.split(",")
+        for (var i = 0; i < parts.length; ++i) {
+            if (parts[i].length === 0 || !/^[0-9]{1,10}$/.test(parts[i]))
+                return qsTr("编码只能为数字，多个用逗号分隔，且每个不超过 10 位")
+        }
+        return ""
+    }
+
     function save() {
         errorText = ""
         if (!database) {
             errorText = qsTr("数据库不可用，无法保存")
+            return
+        }
+        var codeError = tagCodeError(tagCode)
+        if (codeError.length > 0) {
+            errorText = codeError
             return
         }
         var result = editMode
@@ -191,7 +209,10 @@ Item {
                 selectedTextColor: "#ffffff"
                 selectByMouse: true
                 clip: true
-                maximumLength: 32
+                // 编码只用数字、逗号分隔，单个不超过 10 位；总长不限制
+                validator: RegularExpressionValidator {
+                    regularExpression: /^[0-9]{0,10}(?:,[0-9]{0,10})*$/
+                }
             }
 
             Text {

@@ -371,8 +371,9 @@ Item {
         }
     }
 
-    // 频率滑杆。截止频率是按对数分的 —— 0.1 到 45 Hz 用线性的话，
-    // 0.1 到 1 这段（最常调的漂移区）会被挤在最左边几个像素里
+    // 频率滑杆。**按线性比例**摆放刻度与填充宽度 —— 需求是「进度比例要对得上
+    // 读数」：0.5Hz 在 0.1~45Hz 量程上就该占约 1%（(0.5-0.1)/(45-0.1)），
+    // 之前按对数摆放会把它推到 26% 左右，看着和读数完全不符（#308）
     component FreqSlider: Item {
         id: slider
 
@@ -389,7 +390,7 @@ Item {
         readonly property real safeTo: Math.max(slider.safeFrom * 1.0001, slider.to)
         readonly property real fraction: {
             var v = Math.max(slider.safeFrom, Math.min(slider.safeTo, slider.value))
-            return Math.log(v / slider.safeFrom) / Math.log(slider.safeTo / slider.safeFrom)
+            return (v - slider.safeFrom) / (slider.safeTo - slider.safeFrom)
         }
 
         function commit(px) {
@@ -397,7 +398,7 @@ Item {
             if (usable <= 0)
                 return
             var f = Math.max(0, Math.min(1, (px - 12) / usable))
-            slider.edited(slider.safeFrom * Math.pow(slider.safeTo / slider.safeFrom, f))
+            slider.edited(slider.safeFrom + f * (slider.safeTo - slider.safeFrom))
         }
 
         Rectangle {

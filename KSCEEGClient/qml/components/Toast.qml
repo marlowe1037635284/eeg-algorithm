@@ -12,6 +12,10 @@ Item {
 
     // 空串表示不显示
     property string message: ""
+    // 屏显文本：message 被清空时**先不跟着清**，等淡出结束（opacity 归零）
+    // 再清。否则 label 一瞬间变空、pill 立刻缩回 60px 的底座，在 160ms 的淡出里
+    // 会看到一条空提示条闪一下（#320）
+    property string displayText: ""
     // info / success / warn / error，决定底色
     property string kind: "info"
     // 每次调用都自增，用来在「连续弹同一条提示」时也能重新播一次动画
@@ -34,6 +38,7 @@ Item {
         if (!text || text.length === 0)
             return
         message = text
+        displayText = text
         kind = style === undefined || style === null ? "info" : style
         serial += 1
         hideTimer.restart()
@@ -54,6 +59,13 @@ Item {
     z: 1000
 
     Behavior on opacity { NumberAnimation { duration: 160 } }
+
+    // 淡出到不可见之后，才把屏显文本清掉 —— 这正是「空提示条屏闪」的消除点：
+    // 清空动作发生时 opacity 已经归零、visible 已为 false，用户看不到那一瞬
+    onOpacityChanged: {
+        if (opacity <= 0.01 && root.message.length === 0)
+            root.displayText = ""
+    }
 
     Timer {
         id: hideTimer
@@ -84,7 +96,9 @@ Item {
             id: label
             x: 34
             anchors.verticalCenter: parent.verticalCenter
-            text: root.message
+            // 用 displayText 而不是 message：淡出期间 message 已空，文本与宽度
+            // 要保持到真正不可见为止
+            text: root.displayText
             color: "#ffffff"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular

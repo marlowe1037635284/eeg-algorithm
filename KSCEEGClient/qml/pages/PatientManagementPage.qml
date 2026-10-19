@@ -298,9 +298,10 @@ Item {
         // 「一位都没有」和「筛完没有了」是两回事，提示语也要分开 ——
         // 筛没的时候让用户去「新增患者」，他会以为自己的数据丢了
         Text {
-            x: 71
+            x: -47
             y: 200
-            width: 1400
+            width: 1796
+            horizontalAlignment: Text.AlignHCenter
             visible: root.patients.length === 0
             text: root.allPatients.length === 0
                   ? qsTr("暂无患者，点右上角「新增患者」登记一位")

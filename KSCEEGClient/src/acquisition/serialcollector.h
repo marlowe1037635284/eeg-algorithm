@@ -62,6 +62,9 @@ public:
         int baud_rate = 921600;
         int channel_count = 16;
         int sample_rate = 1000;
+        // 帧里是否带 CRC-16/MODBUS。由 client-config.json 的 serial_crc_enabled 决定，
+        // 默认关闭（老固件 51 字节帧）；开启后按 53 字节帧解析并逐帧校验
+        bool crc_enabled = false;
     };
 
     struct StartRequest
@@ -111,14 +114,21 @@ signals:
     // 也会走到这里，界面必须靠它把「已打开/采集中」复位，否则会卡在
     // 线程已死、界面还显示在采的状态里
     void port_closed(const QString &message);
-    // frame_number_skips 是设备帧号的跳变次数。协议里没有校验和，帧号也不参与
-    // 任何运算，所以它只当观察值：与 dropped_bytes 一起看，能区分「设备漏发」
+    // frame_number_skips 是设备帧号的跳变次数。帧号不参与任何运算，
+    // 所以它只当观察值：与 dropped_bytes 一起看，能区分「设备漏发」
     // 与「我们配错了波特率」。不据此丢帧，也不据此声明数据缺口 ——
     // 帧号语义未经确认，误判会白清一次算法的滤波状态
     void stats_changed(qint64 received_frames, qint64 saved_frames, qint64 dropped_bytes,
                        qint64 frame_number_skips);
     void status_message(const QString &message);
     void failed(const QString &message);
+    // 「设备失去连接」：拔线 / 掉电 / 驱动把设备移除时才发。两条判据：
+    //   1) 串口报 ResourceError（驱动明确说设备没了）
+    //   2) 采集中连续 kDataStallTimeoutMs 收不到任何字节（串口还好、只是不再来数据 ——
+    //      设备侧那条连接线被拔就属于这种，驱动不会报错）
+    // 必须与 failed() 分开 —— failed 还会用于落盘失败、命令发送失败这些
+    // 「采集仍在继续」的情形，界面不该为它们弹断连警示框
+    void device_lost(const QString &message);
     // 「正在采集」。它**只**由 Start / Stop 命令决定，与落盘成败无关。
     //
     // 必须与 recording_changed 分开：落盘失败（目录只读、网络盘掉线）时采集是
@@ -164,12 +174,16 @@ private:
 
 // 采集链路的自检：协议换算、帧长、切帧与重新同步。
 //
-// 为什么必须做：协议**没有校验和**，换算系数抄错一位、帧长算错一个字节，
-// 都不会报任何错 —— 表现只是「波形幅度整体偏了」或「波形是噪声」，
-// 而这种错在界面上看很难与「设备没接好」区分开。这里用合成字节流把
-// 每一处换算钉死，接真机之前先保证这一段是对的。
+// 为什么必须做：换算系数抄错一位、帧长算错一个字节，都不会报任何错 ——
+// 表现只是「波形幅度整体偏了」或「波形是噪声」，而这种错在界面上看很难与
+// 「设备没接好」区分开。这里用合成字节流与真实样例帧把每一处换算钉死，
+// 接真机之前先保证这一段是对的。CRC 开关两种模式都覆盖。
 //
 // 返回 0 表示全部通过
 int run_serial_selfcheck();
+
+// 从 client-config.json 读串口帧是否启用 CRC-16/MODBUS 校验。
+// 字段缺失、类型不对或文件读不到时返回 fallback（调用方传 false 即默认关闭）
+bool serial_crc_enabled(bool fallback = false);
 
 #endif // SERIALCOLLECTOR_H

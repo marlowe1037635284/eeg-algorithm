@@ -499,6 +499,11 @@ def query_topography(
     }
 
 
+def _peak_psd_or_nan(value: float | None) -> float:
+    """频段峰值 PSD 允许为空（频段内没有频点），统一用 NaN 表示缺值。"""
+    return float(value) if value is not None else float("nan")
+
+
 def query_spectrum(
     session_id: int,
     request_id: int,
@@ -528,6 +533,13 @@ def query_spectrum(
         "channel_name": str(result.channel_name),
         "frequencies_hz": result.frequencies_hz,
         "psd": result.psd,
+        # 五个频段的峰值 PSD，顺序固定 δ θ α β γ。频段内没有频点时接口给
+        # None，这里统一转成 NaN，由 C++ 侧显示成「—」
+        "delta_peak_psd": _peak_psd_or_nan(result.delta_peak_psd),
+        "theta_peak_psd": _peak_psd_or_nan(result.theta_peak_psd),
+        "alpha_peak_psd": _peak_psd_or_nan(result.alpha_peak_psd),
+        "beta_peak_psd": _peak_psd_or_nan(result.beta_peak_psd),
+        "gamma_peak_psd": _peak_psd_or_nan(result.gamma_peak_psd),
     }
 
 

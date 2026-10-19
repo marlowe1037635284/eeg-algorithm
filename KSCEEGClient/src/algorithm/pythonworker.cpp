@@ -22,6 +22,7 @@
 
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <string>
 
 namespace py = pybind11;
@@ -791,6 +792,20 @@ void PythonWorker::run()
                         pytypes::copy_py_float_array(result["frequencies_hz"],
                                                      &frame.frequencies_hz);
                         pytypes::copy_py_float_array(result["psd"], &frame.psd);
+
+                        // 五个频段的峰值 PSD，接口按 δ θ α β γ 顺序给出；
+                        // 频段内没有频点时是 None，用 NaN 表示以便界面显示「—」
+                        const auto read_peak_psd = [&result](const char *key) -> double {
+                            const py::object value = result[key];
+                            return value.is_none()
+                                       ? std::numeric_limits<double>::quiet_NaN()
+                                       : value.cast<double>();
+                        };
+                        frame.delta_peak_psd = read_peak_psd("delta_peak_psd");
+                        frame.theta_peak_psd = read_peak_psd("theta_peak_psd");
+                        frame.alpha_peak_psd = read_peak_psd("alpha_peak_psd");
+                        frame.beta_peak_psd = read_peak_psd("beta_peak_psd");
+                        frame.gamma_peak_psd = read_peak_psd("gamma_peak_psd");
                     }
                     catch (const py::error_already_set &exc)
                     {

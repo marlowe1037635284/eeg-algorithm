@@ -7,6 +7,8 @@
 #include <QVector>
 #include <QtGlobal>
 
+#include <limits>
+
 // 跨线程传递的纯数据结构。这个头文件**不含任何 pybind11 头**，也不需要前置声明 ——
 // 所有 py::object 都只活在 pythonengine.cpp / pythonworker.cpp 的翻译单元里。
 // 原因见 pythonengine.cpp 顶部的包含顺序说明（pybind11 必须先于 Qt 头）。
@@ -184,6 +186,13 @@ struct SpectrumFrame
     QString channel_name;
     QVector<float> frequencies_hz;
     QVector<float> psd;
+    // 算法接口给出的五个频段峰值 PSD，顺序 δ θ α β γ。
+    // 频段内没有频点时为 NaN，界面显示「—」。
+    double delta_peak_psd = std::numeric_limits<double>::quiet_NaN();
+    double theta_peak_psd = std::numeric_limits<double>::quiet_NaN();
+    double alpha_peak_psd = std::numeric_limits<double>::quiet_NaN();
+    double beta_peak_psd = std::numeric_limits<double>::quiet_NaN();
+    double gamma_peak_psd = std::numeric_limits<double>::quiet_NaN();
 };
 Q_DECLARE_METATYPE(SpectrumFrame)
 

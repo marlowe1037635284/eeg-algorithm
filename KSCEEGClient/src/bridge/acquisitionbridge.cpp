@@ -1837,36 +1837,19 @@ void AcquisitionBridge::on_spectrum_ready(const SpectrumFrame &frame)
     }
     m_spectrum_curve = curve;
 
-    // 五个频段各自的功率。频点太稀，各频段内的点数差异很大（α 只有 1 个点），
-    // 所以这里显示的是「频段内 PSD 之和」，不除以点数 —— 除完会出现 0 或极大值
-    struct BandRange
-    {
-        const char *letter;
-        double low_hz;
-        double high_hz;
-    };
-    static const BandRange bands[] = {
-        {"δ", 0.5, 4.0}, {"θ", 4.0, 8.0}, {"α", 8.0, 13.0}, {"β", 13.0, 30.0},
-        {"γ", 30.0, 45.0},
+    // 五个频段的峰值 PSD，顺序 δ θ α β γ，直接取算法接口的结果。
+    // 频段内没有频点时接口为空值，桥接层用 NaN 传上来，这里显示「—」
+    const double band_peaks[] = {
+        frame.delta_peak_psd, frame.theta_peak_psd, frame.alpha_peak_psd,
+        frame.beta_peak_psd, frame.gamma_peak_psd,
     };
 
     QStringList values;
-    // 按两个数组里较短的那个遍历：copy_py_float_array 只校验一维与长度，
-    // 不保证两者等长，而 QVector::at 越界在 Debug 下是断言崩溃
-    const int point_count = std::min(frame.psd.size(), frame.frequencies_hz.size());
-    for (const BandRange &band : bands)
+    for (const double peak : band_peaks)
     {
-        double sum = 0.0;
-        for (int i = 0; i < point_count; ++i)
-        {
-            const double frequency = frame.frequencies_hz.at(i);
-            if (frequency >= band.low_hz && frequency <= band.high_hz)
-            {
-                sum += frame.psd.at(i);
-            }
-        }
         // 只给裸数值：单位已由面板标题的 "(μV²/Hz)" 统一交代
-        values.append(QStringLiteral("%1").arg(sum, 0, 'f', 1));
+        values.append(std::isfinite(peak) ? QStringLiteral("%1").arg(peak, 0, 'f', 1)
+                                          : QStringLiteral("—"));
     }
     m_spectrum_band_values = values;
     m_spectrum_status_text.clear();

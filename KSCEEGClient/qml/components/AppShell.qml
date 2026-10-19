@@ -76,7 +76,7 @@ Item {
     }
 
     Rectangle {
-        x: 1412
+        x: 1396
         y: 12
         width: 188
         height: 27
@@ -119,9 +119,12 @@ Item {
     }
 
     Rectangle {
-        x: 1612
+        id: electrodePill
+        readonly property var state: Design.electrodePillState(Acq.electrodeScanValid ? Acq.electrodeQuality : [])
+
+        x: 1596
         y: 12
-        width: 153
+        width: 173
         height: 27
         radius: 12
         color: "transparent"
@@ -133,12 +136,22 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            // 工作台上扫过阻抗之后，这几处显示的都是同一份结果
-            text: Design.electrodePillText(Acq.electrodeScanValid ? Acq.electrodeQuality : [])
+            // 工作台上扫过阻抗之后，这几处显示的都是同一份结果。
+            // 状态灯按截图：良好=绿、一般=橙、不良=红、脱落=灰
+            text: electrodePill.state.text
             color: "#4f4f4f"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 14
+        }
+
+        Rectangle {
+            x: parent.width - 18
+            anchors.verticalCenter: parent.verticalCenter
+            width: 8
+            height: 8
+            radius: 4
+            color: electrodePill.state.color
         }
     }
 

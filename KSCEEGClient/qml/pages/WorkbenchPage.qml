@@ -223,7 +223,7 @@ Item {
 
     // 设备状态胶囊
     Rectangle {
-        x: 1412
+        x: 1396
         y: 12
         width: 188
         height: 27
@@ -265,11 +265,16 @@ Item {
     // 电极贴合胶囊。**没有设备直读的电极级阻抗**（协议只给 4 路不带电极名的值，
     // 见 serialprotocol.h 的 parse_impedance_kohm），所以扫过阻抗之后这里显示的是
     // 由信号估计出来的接触质量；没扫过时按设计稿写 16/16。
-    // 与左侧面板、采集前确认弹窗共用同一份结果，三处不会再各说各话
+    // 与左侧面板、采集前确认弹窗共用同一份结果，三处不会再各说各话。
+    // 文字与状态灯按产品截图：全部连接且良好=绿、存在一般=橙、存在不良=红、
+    // 存在脱落=灰（数量也随之只算已连接的电极）
     Rectangle {
-        x: 1612
+        id: electrodePill
+        readonly property var state: Design.electrodePillState(Acq.electrodeScanValid ? Acq.electrodeQuality : [])
+
+        x: 1596
         y: 12
-        width: 153
+        width: 173
         height: 27
         radius: 12
         color: "transparent"
@@ -281,11 +286,21 @@ Item {
             y: 0
             height: parent.height
             verticalAlignment: Text.AlignVCenter
-            text: Design.electrodePillText(Acq.electrodeScanValid ? Acq.electrodeQuality : [])
+            text: electrodePill.state.text
             color: "#4f4f4f"
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 14
+        }
+
+        // 贴合状态灯（靠胶囊右端）
+        Rectangle {
+            x: parent.width - 18
+            anchors.verticalCenter: parent.verticalCenter
+            width: 8
+            height: 8
+            radius: 4
+            color: electrodePill.state.color
         }
     }
 

@@ -124,19 +124,58 @@ QtObject {
         return name && name.length > 0 ? name.substring(0, 1) : "?"
     }
 
-    // 顶栏那枚「电极贴合 N/16 良好」胶囊的文字。
+    // 顶栏那枚「电极贴合 N/16 状态」胶囊的文字与状态灯颜色。
     //
     // 扫描结果由调用方传进来而不是自己去读 Acq：Design 是纯数据单例，
     // 拿不到 main.cpp 注入的上下文属性。
     //
+    // 规则按产品截图：
+    //   全部连接且全部良好            → 16/16 良好，绿灯
+    //   全部连接、但只要有一个「一般」  → 16/16 一般，橙灯
+    //   全部连接、但只要有一个「不良」  → 16/16 不良，红灯
+    //   只要有一个「脱落」            → 已连接数/16，灰灯
+    //
+    // 注意第一段是**已连接电极数**（良好/一般/不良都算连接），不是良好数；
+    // 第二段是最差的那一档。所以「有一个一般」仍然是 16/16，只是灯变橙。
+    //
     // 没扫过时**不能**再写设计稿那个 16/16 —— 那是示意值。一打开软件、
     // 一次阻抗都没扫，就顶着「16/16 良好」，用户会以为已经检过了；等真扫出
-    // 14/16 反而像是变差了。没结果时统一显示「未扫描」，与左侧电极贴合面板
-    // 的默认态一致。扫过之后必须跟着真实结果走
-    function electrodePillText(quality) {
+    // 14/16 反而像是变差了。没结果时统一显示「未扫描」+ 灰灯，与左侧电极
+    // 贴合面板的默认态一致。扫过之后必须跟着真实结果走
+    function electrodePillState(quality) {
         if (!quality || quality.length === 0)
-            return qsTr("电极贴合  未扫描")
-        return qsTr("电极贴合  ") + electrodeQualityText(quality)
+            return { "text": qsTr("电极贴合  未扫描"), "color": offline }
+
+        var fairCount = 0
+        var poorCount = 0
+        var detachedCount = 0
+        for (var i = 0; i < quality.length; ++i) {
+            var level = quality[i].level
+            if (level === "脱落")
+                ++detachedCount
+            else if (level === "不良")
+                ++poorCount
+            else if (level === "一般")
+                ++fairCount
+        }
+
+        var total = quality.length
+        var connected = total - detachedCount
+        var label = "良好"
+        var tone = good
+        // 取最差档位：脱落优先于不良，不良优先于一般
+        if (detachedCount > 0) {
+            label = "脱落"
+            tone = offline
+        } else if (poorCount > 0) {
+            label = "不良"
+            tone = bad
+        } else if (fairCount > 0) {
+            label = "一般"
+            tone = poor
+        }
+        return { "text": qsTr("电极贴合  %1/%2 %3").arg(connected).arg(total).arg(label),
+                 "color": tone }
     }
 
     // 只要「N/16 良好」那一段（采集前确认弹窗里那一格用）。

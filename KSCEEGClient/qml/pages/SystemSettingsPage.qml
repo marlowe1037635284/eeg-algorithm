@@ -58,7 +58,8 @@ Item {
     property int fileFormatIndex: 0
     property int sampleRateIndex: 0
     property int channelCountIndex: 2
-    property int impedanceThresholdIndex: 1
+    // 低阻抗提醒阈值（kΩ），整数 1–200
+    property int impedanceThreshold: 40
 
     // 医院 / 科室名称：非管理员只读展示，输入框禁用
     property string hospitalName: ""
@@ -76,8 +77,6 @@ Item {
     readonly property var sampleRateValues: ["1000", "2000"]
     readonly property var channelCountChoices: [qsTr("4通道"), qsTr("8通道"), qsTr("16通道")]
     readonly property var channelCountValues: [4, 8, 16]
-    readonly property var impedanceChoices: [qsTr("5kΩ"), qsTr("10kΩ"), qsTr("20kΩ")]
-    readonly property var impedanceValues: ["5", "10", "20"]
 
     function loadSettings() {
         if (!database)
@@ -91,8 +90,9 @@ Item {
                                       database.setting("default_sample_rate", "1000")))
         channelCountIndex = Math.max(0, channelCountValues.indexOf(
                                         Number(database.setting("default_channels", "16"))))
-        impedanceThresholdIndex = Math.max(0, impedanceValues.indexOf(
-                                              database.setting("low_impedance_kohm", "10")))
+        // 旧版本存的是 5/10/20 这类合法值，原样兼容；脏数据一律收敛到 1–200
+        var threshold = parseInt(database.setting("low_impedance_kohm", "40"))
+        impedanceThreshold = isNaN(threshold) ? 40 : Math.min(200, Math.max(1, threshold))
 
         hospitalName = database.setting("hospital_name", "")
         departmentName = database.setting("department_name", "")
@@ -112,7 +112,8 @@ Item {
         database.setSetting("record_format", fileFormatValues[fileFormatIndex])
         database.setSetting("default_sample_rate", sampleRateValues[sampleRateIndex])
         database.setSetting("default_channels", String(channelCountValues[channelCountIndex]))
-        database.setSetting("low_impedance_kohm", impedanceValues[impedanceThresholdIndex])
+        impedanceThreshold = Math.min(200, Math.max(1, impedanceThreshold))
+        database.setSetting("low_impedance_kohm", String(impedanceThreshold))
 
         // 医院 / 科室名称只有管理员能改；非管理员的输入框是禁用的，值不会变，
         // 但仍显式挡一层 —— 免得以后把输入框放开时忘了这里的角色校验
@@ -376,14 +377,13 @@ Item {
                 onActivated: (index) => root.channelCountIndex = index
             }
 
-            SettingRow {
+            NumberRow {
                 x: 0
                 y: 180
                 label: qsTr("低阻抗自动提醒")
                 hint: qsTr("阈值")
-                choices: root.impedanceChoices
-                currentIndex: root.impedanceThresholdIndex
-                onActivated: (index) => root.impedanceThresholdIndex = index
+                value: root.impedanceThreshold
+                onEdited: (value) => root.impedanceThreshold = value
                 dividerBelow: false   // 末行的分隔线正好压在面板下边缘，设计稿没画
             }
         }
@@ -720,14 +720,12 @@ Item {
         }
     }
 
-    // 设置行：左标签 + 右侧下拉框。设计稿里「数据存储」「采集默认值」两块共 5 行同构。
+    // 设置行：左标签 + 右侧下拉框。设计稿里「数据存储」「采集默认值」两块同构。
     // 自身原点 = 面板左边缘 / 本行标签文字顶边；行距 58（设计稿 286 → 345 → ...）。
     component SettingRow: Item {
         id: settingRow
 
         property string label: ""
-        // 「阈值」这类夹在标签和下拉框之间的灰字提示，只有低阻抗那一行有
-        property string hint: ""
         property bool dividerBelow: true
 
         property var choices: []
@@ -742,20 +740,6 @@ Item {
             y: 0
             text: settingRow.label
             color: Design.textPrimary
-            font.family: Design.fontFamily
-            font.styleName: Design.styleRegular
-            font.pixelSize: 16
-        }
-
-        // 右对齐贴着下拉框左侧：从固定 x 左对齐会和右边的数值框叠在一起
-        Text {
-            x: 480
-            y: 0
-            width: 169
-            horizontalAlignment: Text.AlignRight
-            visible: settingRow.hint.length > 0
-            text: settingRow.hint
-            color: Design.textSecondary
             font.family: Design.fontFamily
             font.styleName: Design.styleRegular
             font.pixelSize: 16
@@ -941,6 +925,112 @@ Item {
             height: 1
             color: Qt.rgba(0, 0, 0, 0.10)
             visible: fieldRow.dividerBelow
+        }
+    }
+
+    // 「左标签 + 灰字提示 + 右整数输入框」的行，供低阻抗提醒阈值使用。
+    // 输入框样式与右侧下拉框一致；IntValidator 挡掉非整数和越界值
+    component NumberRow: Item {
+        id: numberRow
+
+        property string label: ""
+        property string hint: ""
+        property int value: 1
+        property int from: 1
+        property int to: 200
+        property bool dividerBelow: true
+        signal edited(int value)
+
+        width: 828
+        height: 58
+
+        Text {
+            x: 10
+            y: 0
+            text: numberRow.label
+            color: Design.textPrimary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
+        }
+
+        // 右对齐贴着输入框左侧
+        Text {
+            x: 480
+            y: 0
+            width: 169
+            horizontalAlignment: Text.AlignRight
+            visible: numberRow.hint.length > 0
+            text: numberRow.hint
+            color: Design.textSecondary
+            font.family: Design.fontFamily
+            font.styleName: Design.styleRegular
+            font.pixelSize: 16
+        }
+
+        Rectangle {
+            x: 668
+            y: -4
+            width: 142
+            height: 29
+            radius: 10
+            color: Design.primarySoft
+            border.width: 1
+            border.color: numberInput.activeFocus ? Design.primary : Design.panelBorder
+
+            TextInput {
+                id: numberInput
+                anchors.fill: parent
+                leftPadding: 13
+                // 右侧留出单位的位置
+                rightPadding: 40
+                verticalAlignment: TextInput.AlignVCenter
+                text: numberRow.value
+                color: "#3b3b3b"
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+                selectByMouse: true
+                clip: true
+                selectionColor: Design.primary
+                selectedTextColor: "#ffffff"
+                maximumLength: 3
+                inputMethodHints: Qt.ImhDigitsOnly
+                validator: IntValidator {
+                    bottom: numberRow.from
+                    top: numberRow.to
+                }
+                onTextEdited: {
+                    var n = parseInt(text)
+                    if (!isNaN(n))
+                        numberRow.edited(n)
+                }
+                // 清空后离开输入框时回填最近一次有效值
+                onEditingFinished: {
+                    if (text.length === 0)
+                        text = numberRow.value
+                }
+            }
+
+            Text {
+                anchors.right: parent.right
+                anchors.rightMargin: 13
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("kΩ")
+                color: Design.textSecondary
+                font.family: Design.fontFamily
+                font.styleName: Design.styleRegular
+                font.pixelSize: 14
+            }
+        }
+
+        Rectangle {
+            x: 10
+            y: 40
+            width: 818
+            height: 1
+            color: Qt.rgba(0, 0, 0, 0.10)
+            visible: numberRow.dividerBelow
         }
     }
 

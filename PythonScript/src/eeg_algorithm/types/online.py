@@ -143,6 +143,7 @@ class TopographyResult:
     mean_rms: float
 
 @dataclass(frozen=True)
+
 class SpectrumResult:
     request_id: int
     config_version: int
@@ -151,7 +152,12 @@ class SpectrumResult:
     actual_time_range: AbsoluteTimeRange
     frequencies_hz: NDArray[np.float32]
     psd: NDArray[np.float32]
-    peak_frequencies_hz: dict[str, float | None]
+
+    delta_peak_psd: float | None
+    theta_peak_psd: float | None
+    alpha_peak_psd: float | None
+    beta_peak_psd: float | None
+    gamma_peak_psd: float | None
 
 @dataclass(frozen=True)
 class SessionStatus:

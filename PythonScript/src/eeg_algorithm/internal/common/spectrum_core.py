@@ -39,30 +39,35 @@ def select_frequency_range(
     mask = (frequencies >= low_hz) & (frequencies <= high_hz)
     return np.ascontiguousarray(frequencies[mask]), np.ascontiguousarray(psd[..., mask])
 
-def band_peak_frequencies(
+def band_peak_psd(
     frequencies: NDArray[np.float32],
     psd: NDArray[np.float32],
-) -> dict[str, float | None]:
-    """输入单通道PSD，返回五个频段的峰值频率，单位Hz。"""
+) -> tuple[
+    float | None,
+    float | None,
+    float | None,
+    float | None,
+    float | None,
+]:
+    """返回Delta、Theta、Alpha、Beta、Gamma的最大PSD。"""
     bands = (
-        ("delta", 0.5, 4.0),
-        ("theta", 4.0, 8.0),
-        ("alpha", 8.0, 13.0),
-        ("beta", 13.0, 30.0),
-        ("gamma", 30.0, 45.0),
+        (0.5, 4.0),
+        (4.0, 8.0),
+        (8.0, 13.0),
+        (13.0, 30.0),
+        (30.0, 45.0),
     )
 
-    peaks = {}
-    for name, low, high in bands:
-        # 左闭右开，避免边界点同时属于两个频段。
-        mask = (frequencies >= low) & (frequencies < high)
-        band_f = frequencies[mask]
+    peaks = []
+    for index, (low, high) in enumerate(bands):
+        # 左闭右开；最后一个频段包含45 Hz。
+        upper = frequencies <= high if index == 4 else frequencies < high
+        mask = (frequencies >= low) & upper
         band_psd = psd[mask]
 
-        if band_psd.size == 0:
-            peaks[name] = None
-        else:
-            index = int(np.argmax(band_psd))
-            peaks[name] = float(band_f[index])
+        peaks.append(
+            float(np.max(band_psd))
+            if band_psd.size else None
+        )
 
-    return peaks
+    return peaks[0], peaks[1], peaks[2], peaks[3], peaks[4]

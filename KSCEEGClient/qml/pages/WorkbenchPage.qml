@@ -26,6 +26,8 @@ Item {
     signal deviceInfoRequested()
     // 需要在界面上说一句话（阻抗扫描完成、导出结果之类），由外层弹轻提示
     signal notifyRequested(string message, string kind)
+    // 阻抗扫描完成后发现电极脱落 → 由外层弹错误提示框
+    signal electrodeAlertRequested()
     // 事件标注的「清空 / 删除」都是不可撤销操作，需要二次确认。
     // 面板不自己弹框，把意图交上来，由 Main.qml 统一路由确认框
     signal clearEventsRequested()
@@ -812,8 +814,13 @@ Item {
         // 扫描结果由面板自己算，这里只负责把小结交给外层弹提示 ——
         // 16 行列表在 331 宽的格子里只能露出 4 行，不看提示就不知道整体如何
         onScanFinished: (summary) => {
-            if (summary.length > 0)
+            if (summary.length > 0) {
                 root.notifyRequested(qsTr("阻抗扫描完成：") + summary, "info")
+                // 有电极脱落就弹框拦截：列表只能露出 4 行，脱落的电极很可能不在
+                // 可见范围内，只靠轻提示容易被忽略
+                if (electrodePanel.hasDetachedElectrode)
+                    root.electrodeAlertRequested()
+            }
         }
     }
 

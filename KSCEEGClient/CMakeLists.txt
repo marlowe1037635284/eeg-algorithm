@@ -159,6 +159,7 @@ qt_add_qml_module(appKSCEEGClient
         qml/dialogs/DeviceDisconnectDialog.qml
         qml/dialogs/DeviceInfoDialog.qml
         qml/dialogs/EditPatientDialog.qml
+        qml/dialogs/ElectrodeDetachDialog.qml
         qml/dialogs/FilterDialog.qml
         qml/dialogs/LicenseAlertDialog.qml
         qml/dialogs/NewPatientDialog.qml

@@ -38,6 +38,9 @@ ApplicationWindow {
     // 已经弹着别的框的时候，单值路由会被覆盖或覆盖掉别的框，盖不住，
     // 所以用一个独立的开关盖在最上层（与 LicenseAlertDialog 同一范式）
     property bool deviceDisconnectVisible: false
+    // 阻抗扫描发现脱落电极时的错误提示框。同样用独立开关盖在最上层 ——
+    // 扫描可能在别的弹窗开着时完成，不能让单值路由把它顶掉
+    property bool electrodeAlertVisible: false
     // 弹「采集记录预览」时要点开的那条记录号
     property string pendingRecordNo: ""
 
@@ -208,6 +211,14 @@ ApplicationWindow {
             visible: window.deviceDisconnectVisible
             onDismissed: window.deviceDisconnectVisible = false
             onConfirmed: window.deviceDisconnectVisible = false
+        }
+
+        // 阻抗扫描完成后发现电极脱落：提示电极贴合程度较差，需要检查后重扫。
+        // 与上面的断连警告互不依赖，各自独立开关
+        ElectrodeDetachDialog {
+            visible: window.electrodeAlertVisible
+            onDismissed: window.electrodeAlertVisible = false
+            onConfirmed: window.electrodeAlertVisible = false
         }
 
         // 轻提示。放在弹窗层**之后**，所以即使弹着框也能看见
@@ -491,6 +502,7 @@ ApplicationWindow {
             onChangePasswordRequested: window.openChangePassword()
             onNavRequested: (label) => window.navigateTo(label)
             onNotifyRequested: (message, kind) => window.showToast(message, kind)
+            onElectrodeAlertRequested: window.electrodeAlertVisible = true
             // 点「开始采集」先弹确认框，确认后才真正开始
             onPrecheckRequested: window.activeDialog = "precheck"
             onSelectPatientRequested: window.activeDialog = "selectPatient"

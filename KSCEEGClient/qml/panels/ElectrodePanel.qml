@@ -95,6 +95,16 @@ Item {
         }
         return out
     }
+    // 当前激活通道里是否有脱落电极。工作台在扫描完成后用它决定是否弹错误提示框。
+    // 未扫描时 rows 全是「未扫描」，不会误判
+    readonly property bool hasDetachedElectrode: {
+        for (var i = 0; i < rows.length; ++i) {
+            if (rows[i].level === "脱落")
+                return true
+        }
+        return false
+    }
+
     readonly property int rowHeight: 32
     readonly property int viewHeight: 134
     property real scroll: 0

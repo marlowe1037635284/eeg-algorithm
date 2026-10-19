@@ -139,6 +139,7 @@ ApplicationWindow
 | `dialogs/FilterDialog.qml` | 工作台滤波与后处理参数 |
 | `dialogs/DeviceInfoDialog.qml` | 设备连接信息与端口选择 |
 | `dialogs/DeviceDisconnectDialog.qml` | 采集中断线警示 |
+| `dialogs/ElectrodeDetachDialog.qml` | 阻抗扫描后电极脱落提示 |
 | `dialogs/RecordPreviewDialog.qml` | `.eegbin` 记录回放 |
 | `dialogs/ReportDialog.qml` | 报告预览/导出 |
 | `dialogs/UserDialog.qml` | 新建/编辑用户 |

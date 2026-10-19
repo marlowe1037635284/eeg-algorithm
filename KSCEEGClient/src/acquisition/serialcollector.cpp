@@ -8,10 +8,16 @@
 #include <QDebug>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonValue>
 #include <QMutexLocker>
 #include <QSerialPort>
 #include <QVector>
+
+#include "common/unattendedguard.h"
 
 #include <algorithm>
 #include <cmath>
@@ -437,15 +443,18 @@ bool recording_write_frame(Recorder &recorder, const float *values, int channel_
 }
 
 // 切帧并解析。帧头对不上就丢一个字节继续找：设备上电、串口刚打开时缓冲里
-// 常有半截帧，逐字节收敛比整体丢弃重来稳
-void parse_frames(RunState &state, int frame_size, int channel_count, int sample_rate)
+// 常有半截帧，逐字节收敛比整体丢弃重来稳。
+//
+// verify_crc 由 Config::crc_enabled 决定，开启后逐帧做 CRC-16/MODBUS 校验
+void parse_frames(RunState &state, int frame_size, int channel_count, int sample_rate,
+                  bool verify_crc)
 {
     const qint64 sample_period_ns = 1000000000LL / std::max(1, sample_rate);
 
     QByteArray frame;
     serial_protocol::FrameKind kind = serial_protocol::FrameKind::Data;
     while (serial_protocol::take_frame(&state.rx_buffer, frame_size, &state.dropped_bytes,
-                                       &frame, &kind))
+                                       &frame, &kind, verify_crc))
     {
         // 阻抗帧（B0…D0）不是脑电数据：解析出 16 路阻抗存下来，就直接跳过 ——
         // 它既不进样本块（否则会当成 µV 混进波形），也不落盘。
@@ -461,8 +470,8 @@ void parse_frames(RunState &state, int frame_size, int channel_count, int sample
             continue;
         }
 
-        // 帧号只当观察值。协议里没有校验和，帧号既不参与任何运算、语义也未经确认
-        // （是否回绕、是否在掉电后归零都不知道），所以不据此丢帧、也不据此声明
+        // 帧号只当观察值。帧号既不参与任何运算、语义也未经确认
+        //（是否回绕、是否在掉电后归零都不知道），所以不据此丢帧、也不据此声明
         // 数据缺口 —— 误判一次就要白清一次算法的滤波状态与滚动缓存
         const int frame_number = static_cast<quint8>(frame.at(1));
         if (state.collecting && state.last_frame_number >= 0
@@ -651,6 +660,41 @@ QVector<double> SerialCollector::latest_impedance_kohm() const
     return m_latest_impedance;
 }
 
+bool serial_crc_enabled(bool fallback)
+{
+    const QString path = client_config_path();
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+    {
+        qWarning().noquote() << "[serial] 配置文件打不开，CRC 校验用默认值"
+                             << (fallback ? "开启" : "关闭") << ":" << path;
+        return fallback;
+    }
+
+    QJsonParseError parse_error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parse_error);
+    if (parse_error.error != QJsonParseError::NoError || !doc.isObject())
+    {
+        qWarning().noquote() << "[serial] 配置文件解析失败，CRC 校验用默认值"
+                             << (fallback ? "开启" : "关闭") << ":"
+                             << parse_error.errorString();
+        return fallback;
+    }
+
+    const QJsonValue value = doc.object().value(QStringLiteral("serial_crc_enabled"));
+    if (!value.isBool())
+    {
+        qWarning().noquote()
+            << "[serial] 配置里没有 serial_crc_enabled（或类型不是布尔），用默认值"
+            << (fallback ? "开启" : "关闭");
+        return fallback;
+    }
+
+    const bool enabled = value.toBool();
+    qInfo().noquote() << "[serial] CRC-16/MODBUS 校验:" << (enabled ? "开启" : "关闭");
+    return enabled;
+}
+
 // 采集线程主体：开串口 → 循环（执行命令 / 收字节 / 切帧解析 / 按节拍投递）
 // → 收尾关串口。整条命脉都在这一个函数里。
 //
@@ -662,7 +706,7 @@ QVector<double> SerialCollector::latest_impedance_kohm() const
 void SerialCollector::run()
 {
     const int channel_count = m_config.channel_count;
-    const int frame_size = serial_protocol::frame_size(channel_count);
+    const int frame_size = serial_protocol::frame_size(channel_count, m_config.crc_enabled);
     if (frame_size <= 0 || channel_count > kMaxChannels)
     {
         emit port_open_failed(tr("不支持的通道数: %1").arg(channel_count));
@@ -685,10 +729,11 @@ void SerialCollector::run()
     }
     // 丢掉打开瞬间残留在驱动缓冲里的半截数据，免得开头解析出一串假帧
     port.clear(QSerialPort::AllDirections);
-    emit port_opened(tr("串口 %1 已打开（%2 baud，%3 通道）")
+    emit port_opened(tr("串口 %1 已打开（%2 baud，%3 通道，CRC 校验%4）")
                          .arg(m_config.port_name)
                          .arg(m_config.baud_rate)
-                         .arg(channel_count));
+                         .arg(channel_count)
+                         .arg(m_config.crc_enabled ? tr("开启") : tr("关闭")));
 
     RunState state;
     state.wall_clock_base_ns = QDateTime::currentMSecsSinceEpoch() * 1000000LL;
@@ -897,7 +942,8 @@ void SerialCollector::run()
         }
 
         // ---- 3) 切帧、解析、落盘 ----
-        parse_frames(state, frame_size, channel_count, m_config.sample_rate);
+        parse_frames(state, frame_size, channel_count, m_config.sample_rate,
+                     m_config.crc_enabled);
 
         // 解析到新阻抗帧就搬到线程安全的快照里，供 GUI 线程读取
         if (state.impedance_updated)
@@ -1041,8 +1087,10 @@ void check_serial(bool condition, const QString &what)
     qWarning().noquote() << "  [失败]" << what;
 }
 
-// 按协议拼一帧。raw_values 是每个通道的 24 位原始 ADC 值（有符号）
-QByteArray make_test_frame(quint8 frame_number, const QVector<qint32> &raw_values)
+// 按协议拼一帧。raw_values 是每个通道的 24 位原始 ADC 值（有符号）。
+// with_crc 为真时按新固件格式在帧尾前补 2 字节 CRC-16/MODBUS（高字节在前）
+QByteArray make_test_frame(quint8 frame_number, const QVector<qint32> &raw_values,
+                           bool with_crc = false)
 {
     QByteArray frame;
     frame.append(static_cast<char>(serial_protocol::kStartByte));
@@ -1052,6 +1100,12 @@ QByteArray make_test_frame(quint8 frame_number, const QVector<qint32> &raw_value
         frame.append(static_cast<char>((raw >> 16) & 0xFF));
         frame.append(static_cast<char>((raw >> 8) & 0xFF));
         frame.append(static_cast<char>(raw & 0xFF));
+    }
+    if (with_crc)
+    {
+        const quint16 crc = serial_protocol::crc16_modbus(frame);
+        frame.append(static_cast<char>((crc >> 8) & 0xFF));
+        frame.append(static_cast<char>(crc & 0xFF));
     }
     frame.append(static_cast<char>(serial_protocol::kEndByte));
     return frame;
@@ -1221,6 +1275,89 @@ int run_serial_selfcheck()
             }
         }
         check_serial(all_ok, QStringLiteral("样例阻抗帧解析出 16 路 kΩ 值与手算一致"));
+    }
+
+    // ---- CRC-16/MODBUS：新固件帧（51 → 53 字节） ----
+    const int crc_frame_size =
+        serial_protocol::frame_size(serial_protocol::kChannelCount, true);
+    check_serial(crc_frame_size == 53,
+                 QStringLiteral("开启校验后 16 通道帧长 = 53（实际 %1）").arg(crc_frame_size));
+
+    {
+        // 真实数据帧样例，末尾 F2 49 是 CRC（高字节在前），C0 是帧尾
+        const QByteArray data = QByteArray::fromHex(
+            "A0C17F8CC27F9CF97FC4137FC3F77FAB1C7FAB417FC0427FACB6FE82F5FE7C52FE666EFEB185015799"
+            "0150C9013B839C9804F249C0");
+        check_serial(data.size() == crc_frame_size,
+                     QStringLiteral("样例数据帧长 = 53（实际 %1）").arg(data.size()));
+
+        // CRC 覆盖帧头到最后一个数据字节；设备按高字节在前落帧，
+        // 所以帧内 F2 49 解成 0xF249，而不是 0x49F2
+        const quint16 crc = serial_protocol::crc16_modbus(data.left(data.size() - 3));
+        check_serial(crc == 0xF249,
+                     QStringLiteral("样例数据帧 CRC = 0xF249（实际 0x%1）")
+                         .arg(crc, 4, 16, QLatin1Char('0')));
+
+        QByteArray buffer = data;
+        QByteArray frame;
+        serial_protocol::FrameKind kind = serial_protocol::FrameKind::Impedance;
+        qint64 dropped = 0;
+        const bool taken = serial_protocol::take_frame(&buffer, crc_frame_size, &dropped, &frame,
+                                                       &kind, true);
+        check_serial(taken && buffer.isEmpty() && dropped == 0 && frame == data
+                         && kind == serial_protocol::FrameKind::Data,
+                     QStringLiteral("带 CRC 的数据帧校验通过并识别为数据帧"));
+    }
+
+    {
+        // 真实阻抗帧样例：16 路 98 96 80（10000 kΩ），末尾 B2 6C 是 CRC
+        QByteArray hex = QByteArrayLiteral("B001");
+        hex += QByteArray("989680").repeated(serial_protocol::kChannelCount);
+        hex += QByteArrayLiteral("B26CD0");
+        const QByteArray impedance = QByteArray::fromHex(hex);
+        check_serial(impedance.size() == crc_frame_size,
+                     QStringLiteral("样例阻抗帧长 = 53（实际 %1）").arg(impedance.size()));
+
+        const quint16 crc = serial_protocol::crc16_modbus(impedance.left(impedance.size() - 3));
+        check_serial(crc == 0xB26C,
+                     QStringLiteral("样例阻抗帧 CRC = 0xB26C（实际 0x%1）")
+                         .arg(crc, 4, 16, QLatin1Char('0')));
+
+        QByteArray buffer = impedance;
+        QByteArray frame;
+        serial_protocol::FrameKind kind = serial_protocol::FrameKind::Data;
+        qint64 dropped = 0;
+        const bool taken = serial_protocol::take_frame(&buffer, crc_frame_size, &dropped, &frame,
+                                                       &kind, true);
+        check_serial(taken && buffer.isEmpty() && dropped == 0 && frame == impedance
+                         && kind == serial_protocol::FrameKind::Impedance,
+                     QStringLiteral("带 CRC 的阻抗帧校验通过并识别为阻抗帧"));
+
+        const QVector<double> kohm = serial_protocol::parse_impedance_kohm(frame);
+        // 0x989680 按 24 位有符号数是负数，按协议约定记作「未连接」(-1 kΩ)
+        bool all_ok = (kohm.size() == serial_protocol::kChannelCount);
+        for (int i = 0; all_ok && i < kohm.size(); ++i)
+        {
+            all_ok = nearly(kohm.at(i), -1.0, 1e-9);
+        }
+        check_serial(all_ok, QStringLiteral("带 CRC 的阻抗帧解析出 16 路未连接（-1 kΩ）"));
+    }
+
+    {
+        // 数据被改坏后 CRC 必然对不上：整帧应被丢弃，并重新同步到下一帧
+        QVector<qint32> raw;
+        raw.fill(0, serial_protocol::kChannelCount);
+        const QByteArray good = make_test_frame(2, raw, true);
+        QByteArray broken = good;
+        broken[5] = static_cast<char>(broken.at(5) ^ 0x01);
+
+        QByteArray buffer = broken + good;
+        QByteArray frame;
+        qint64 dropped = 0;
+        const bool taken = serial_protocol::take_frame(&buffer, crc_frame_size, &dropped, &frame,
+                                                       nullptr, true);
+        check_serial(taken && dropped > 0 && frame == good,
+                     QStringLiteral("CRC 校验失败时丢弃该帧并重新同步（丢弃 %1 字节）").arg(dropped));
     }
 
     if (g_serial_selfcheck_failures == 0)

@@ -422,6 +422,9 @@ bool AcquisitionBridge::open_port(const QString &port_name, int baud_rate, int s
     // 串口上永远是设备的 16 路；界面上的 4/8/16 只是显示与算法的通道子集
     config.channel_count = serial_protocol::kChannelCount;
     config.sample_rate = m_sample_rate;
+    // 新固件帧里带 CRC-16/MODBUS，由 client-config.json 的 serial_crc_enabled 控制，
+    // 默认关闭（按老固件的 51 字节无 CRC 帧解析）
+    config.crc_enabled = serial_crc_enabled(false);
 
     m_raw_buffer.reset(config.channel_count, m_sample_rate, kMaxWindowSeconds * 6);
     reset_channels(m_channel_count);
